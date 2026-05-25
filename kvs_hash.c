@@ -18,6 +18,9 @@
 kvs_hash_t global_hash;
 
 
+
+
+
 //Connection 
 // 'C' + 'o' + 'n'
 static int _hash(char *key, int size) {
