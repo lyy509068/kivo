@@ -1,0 +1,210 @@
+1 基础知识
+什么是io多路复用？
+
+用一个线程同时监控多个文件描述符。
+
+常用函数：
+
+bind(sockfd, addr, addrlen)：绑定套接字；
+
+connect(connfd,addr, addr_len)：客户端向服务器端发起连接；
+
+listen(sockfd,backlog)：用于TCP服务器，将sockfd设置为被动监听模式，backlog为等待队列最大长度，超出这个长度服务器会拒绝连接；
+
+内核创建两个队列：半连接队列 (SYN Queue)和全连接队列(ACK Queue)：当服务器收到客户端的 SYN 包时，会将连接信息放入半连接队列，当服务器收到客户端的 ACK 包后，会把连接从半连接队列移到这个全连接队列。
+
+泛洪：客户端发送大量SYN包但不发ACK包，把半连接队列占满；客户端只建立连接，不发送数据，把全连接队列占满。
+
+解决方法：增大半连接队列和全连接队列的长度；SYN Cookie 机制验证。
+
+accept(sockfd,clientaddr, clientaddrlen)：负责接收客户端的连接，把内核协议栈接收缓冲区的数据拷贝到用户空间；
+
+recv(clientfd,buffer,buflen,0)：负责接收数据，把内核协议栈的接收缓冲区的数据拷贝到用户空间；
+
+send(clientfd,buffer,buflen,0)：负责发送数据，把用户空间的数据拷贝到内核协议栈的发送缓冲区，返回；
+
+close(fd)：关闭连接。
+
+就绪事件：文件描述符（fd）的内核缓冲区状态满足某种 I/O 操作的条件，使得系统调用时不会阻塞，可以理解为：调用accpet或recv时，接收缓存区有数据，可以接收；调用send时，发送缓存区不满，可以发送；
+
+为什么要使用io多路复用？
+
+io多路复用可以用一个线程管理多个连接，节约线程资源（内存），减少系统调用次数（CPU）和上下文切换的次数（时间）。
+
+2 io多路复用实现方式
+2.1select
+原理：使用两个fd_set数组,rfds表示主集合，rset表示工作集合，把负责监听的listenfd和连接过来的clientfd放进主集合rfds，调用select 函数时，需要把rset数组复制到内核中，内核检查哪些fd的事件就绪，修改rset数组，再把rset数组复制回应用层。然后遍历工作集合中所有fd处理事件。
+
+函数：
+
+FD_ZERO(rfds)：清空集合rfds；
+
+FD_SET(sockfd,rfds)：把sockfd加入集合rfds；
+
+select(maxfd,rset,clientfd,0)：返回的时就绪事件数量（遍历的是工作集合， 就绪事件处理完了，可以提前退出）。
+
+优缺点：
+
+（1）fd_set类型的数组最大字节限制1024；
+
+（2）rset在用户和内核之间的拷贝耗时、占用内存和CPU；
+
+（3）遍历时间复杂度为O(n).
+
+2.2poll
+原理：使用pollfd结构数组fds，其中包含fd，感兴趣发生事件event（告诉poll要监控哪些事件），实际发生事件revent（由poll设置），调用poll时需要把fds拷贝到内核中，内核更新revent,再拷贝回应用。然后遍历fds处理事件。
+
+函数：
+
+poll(fds,maxfd,0)：返回就绪事件数量。
+
+优缺点：
+
+（1）结构数组fdsrset仍需要在用户和内核之间的拷贝；
+
+（2）遍历时间复杂度为O(n).
+
+2.3 epoll
+原理：调用epoll_creat时，内核创建红黑树（存放被监控的fd）和就绪链表（存放就绪fd）；调用epoll_ctl时，内核把fd和它对应的事件（可读、可写、异常）加入红黑树，把fd对应socket 的回调函数设置成epoll的回调；epoll_wait的作用：当socket的接收缓冲区从无数据变成有数据时，触发epoll的回调函数，回调函数把fd放进就绪链表中；接下来遍历就绪链表中的就绪事件。
+
+函数：
+
+epoll_creat(1)：在内核中创建一个epoll实例epfd，存放fd及其对应的事件；
+
+epoll_ctl(epfd,add,fd,event)：注册事件，向epfd中添加、删除、修改fd及其对应的事件；
+
+epoll_wait(epfd, events, events.size, -1)：内核把就绪链表写到events数组中，返回就绪事件数量；
+
+注册事件时设置的触发模式：
+
+水平触发（LT）：调用epoll_wait时，只要内核缓存区中还有数据，epoll_wait一直提醒有这些数据，相同的fd可能被epoll_wait计算多次；
+
+边沿触发（ET）：只有内核缓冲区的状态发生变化时，epoll_wait 才会返回该 fd 一次。之后即使缓冲区中还有数据，epoll_wait 也不再返回，需要配合非阻塞socket和while循环一次性把该fd中的数据读完。
+
+优缺点：
+
+（1）因为epfd在内核中，所以只需要把就绪链表拷贝到events数组中，减少一次拷贝；
+
+（2）因为有events数组，所以处理事件时只需要遍历events数组，时间复杂度是O(1)。
+
+2.4 io_uring
+原理：内核开辟一个区域，通过mmap共享给用户，用户和内核都可以修改这个共享区域。这个区域中有提交队列和完成队列，用户把就绪事件放进请求队列，内核把提交队列中的事件拿出来处理，然后再放回完成队列。
+
+函数：
+
+ring是管理两个共享队列的句柄，SQE是提交队列中一个任务单元，CQE是完成队列中一个任务单元，用于存放任务；
+
+io_uring_queue_init_params(len, ring, params)：创建 io_uring 实例，建立共享内存；
+
+io_uring_get_sqe(ring)：从提交队列中获得一个SQE；
+
+io_uring_prep_accept(sqe,sockfd,addr,addrlen,flags)：把连接任务放进提交队列的SQE中；
+
+io_uring_prep_recv(sqe,sockfd,buf,len,flags)：把接收任务放进提交队列的SQE中；
+
+io_uring_prep_send(sqe,sockfd,buf,len,flags)：把发送任务放进提交队列的SQE中；
+
+io_uring_submit(ring)：把提交队列中已填充的SQE交给内核，提醒内核处理；
+
+采用SQPOLL 模式时，可以让内核自动轮询请求队列，减少系统调用io_uring_submit()的次数；
+
+io_uring_wait_cqe(ring, cqe)：阻塞等待一个完成队列的事件，减少CPU占用；
+
+io_uring_peek_batch_cqe(ring, cqes, 128)：非阻塞，返回已完成CQE的数量nready，已完成的位置可以放新的已完成任务，可以知道之后遍历时只处理nready个任务，配合io_uring_cq_advance()函数可以防止完成队列溢出；
+
+io_uring_cq_advance(ring, nready)：从完成队列中移除已完成的CQE；
+
+优缺点：
+
+（1）通过共享内存避免用户和内核之间的拷贝（几乎零拷贝），减少内存消耗；
+
+（2）批量提交并批量完成，系统调用次数大幅减少；
+
+（3）支持文件的I/O操作，例如open，start。
+
+3 epoll和io_uring的QPS测试
+QPS（Queries Per Second）= 每秒完成的完整请求数，QPS测试参数设置：-t表示线程个数，-c表示每个线程TCP连接次数，-n表示总请求数。
+
+epoll端口：2048，io_uring端口：9999
+
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 2048 -t 10 -c 10 -n 2000
+-s: 192.168.92.128
+-p: 2048
+-t: 10
+-c: 10
+-n: 2000
+success: 2000, failed: 0, time_used: 22, qps: 90909
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 9999 -t 10 -c 10 -n 2000
+-s: 192.168.92.128
+-p: 9999
+-t: 10
+-c: 10
+-n: 2000
+success: 2000, failed: 0, time_used: 23, qps: 86956
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 2048 -t 10 -c 100 -n 20000
+-s: 192.168.92.128
+-p: 2048
+-t: 10
+-c: 100
+-n: 20000
+success: 20000, failed: 0, time_used: 273, qps: 73260
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 9999 -t 10 -c 100 -n 20000
+-s: 192.168.92.128
+-p: 9999
+-t: 10
+-c: 100
+-n: 20000
+success: 20000, failed: 0, time_used: 134, qps: 149253
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 2048 -t 10 -c 500 -n 100000
+-s: 192.168.92.128
+-p: 2048
+-t: 10
+-c: 500
+-n: 100000
+success: 100000, failed: 0, time_used: 715, qps: 139860
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 9999 -t 10 -c 500 -n 100000
+-s: 192.168.92.128
+-p: 9999
+-t: 10
+-c: 500
+-n: 100000
+success: 100000, failed: 0, time_used: 672, qps: 148809
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 2048 -t 100 -c 500 -n 1000000
+-s: 192.168.92.128
+-p: 2048
+-t: 100
+-c: 500
+-n: 1000000
+success: 1000000, failed: 0, time_used: 12145, qps: 82338
+lyy@myubuntu:~/course/2.5.1$ ./test_qps_tcpclient -s 192.168.92.128 -p 9999 -t 100 -c 500 -n 1000000
+-s: 192.168.92.128
+-p: 9999
+-t: 100
+-c: 500
+-n: 1000000
+success: 1000000, failed: 0, time_used: 10396, qps: 96190
+AI写代码
+cpp
+运行
+
+根据测试，可以得到
+
+1.连接数较小时（约100连接），epoll 性能优于 io_uring，因为 io_uring 的初始化开销（创建共享内存、队列等）无法被批量提交的优势所抵消；
+
+2.io_uring 在 1000 连接时表现最佳（QPS 翻倍）；
+
+3.高并发下io_uring和epoll差距缩小,但io_uring仍较稳定，epoll 在超大规模连接下性能下降更明显。
+
+4 不同io多路复用方式的对比
+方式        并发程度                             跨平台                                     处理文件  
+
+select         低           所有POSIX系统（Linux/Unix/Windows）          不支持
+
+poll            中         所有POSIX系统（Linux/Unix/BSD/macOS）      不支持
+
+epoll          高                        Linux only（2.6+内核）                        不支持
+
+io_uring     极高                    Linux only（5.1+内核）                          支持
+————————————————
+版权声明：本文为CSDN博主「m0_67522305」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+原文链接：https://blog.csdn.net/m0_67522305/article/details/160737077

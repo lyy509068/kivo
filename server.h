@@ -1,62 +1,35 @@
+#ifndef SERVER_BINARY_H
+#define SERVER_BINARY_H
 
+#include "kvstore.h" // 必须包含，因为 struct conn 里用到了 session_ctx_t (间接依赖)
 
+#define INIT_BUFFER_SIZE 4096
 
+typedef void (*RCALLBACK)(int fd);
 
-#ifndef __SERVER_H__
-#define __SERVER_H__
+// 这里保留 binary_msg_handler 的定义，因为它直接决定了 reactor 如何调用协议层
+typedef int (*binary_msg_handler)(void *msg, int length, session_ctx_t *ctx);
 
-#define BUFFER_LENGTH		1024
-
-#define ENABLE_HTTP			0
-#define ENABLE_WEBSOCKET	0
-#define ENABLE_KVSTORE		1
-
-
-typedef int (*RCALLBACK)(int fd);
-
-
+// 连接结构体：这是网络层的核心
 struct conn {
-	int fd;
-
-	char rbuffer[BUFFER_LENGTH];
-	int rlength;
-
-	char wbuffer[BUFFER_LENGTH];
-	int wlength;
-
-	RCALLBACK send_callback;
-
-	union {
-		RCALLBACK recv_callback;
-		RCALLBACK accept_callback;
-	} r_action;
-
-	int status;
-#if 1 // websocket
-	char *payload;
-	char mask[4];
-#endif
+    int fd;
+    
+    char *rbuffer;   // 动态接收缓冲区
+    int rcapacity;   // 总容量
+    int rlength;     // 已用长度
+    
+    char *wbuffer;   // 动态发送缓冲区
+    int wcapacity;   // 总容量
+    int wlength;
+    
+    RCALLBACK send_callback;
+    RCALLBACK read_callback;
+    RCALLBACK accept_callback;
 };
 
-#if ENABLE_HTTP
-int http_request(struct conn *c);
-int http_response(struct conn *c);
-#endif
-
-#if ENABLE_WEBSOCKET
-int ws_request(struct conn *c);
-int ws_response(struct conn *c);
-#endif
-
-#if ENABLE_KVSTORE
-int kvs_request(struct conn *c);
-int kvs_response(struct conn *c);
+// 启动函数声明
+int reactor_start(unsigned short port, binary_msg_handler handler);
+int proactor_start(unsigned short port, binary_msg_handler handler);
+int ntyco_start(unsigned short port, binary_msg_handler handler);
 
 #endif
-
-
-
-
-#endif
-
-
