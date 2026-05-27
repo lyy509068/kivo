@@ -27,6 +27,9 @@ extern kvs_skip_t global_skip;
 
 static FILE *aof_fp = NULL;
 
+
+static pthread_mutex_t aof_write_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // ⏱️ 新增辅助函数：获取当前毫秒级时间戳
 static int64_t get_current_ms_aof(void) {
     struct timeval tv;
@@ -44,116 +47,131 @@ int kvs_persistence_init(void) {
     return 0;
 }
 
-// 原样输出：写入日志，直接将二进制块写入文件，并刷入磁盘
-// 提示：网络层在调用此函数组装 AOF 缓冲时，需要按照新的协议（如果是 SET/MOD 需包含 8字节 expire_time）拼好后传入
+
 void kvs_persistence_write(const void *data, int len) {
     if (aof_fp && data && len > 0) {
+        pthread_mutex_lock(&aof_write_mutex); // 💡 加锁
         fwrite(data, 1, len, aof_fp);
-        fflush(aof_fp); // 确保数据立刻落盘，防止宕机丢失
+        fflush(aof_fp); 
+        pthread_mutex_unlock(&aof_write_mutex); // 💡 解锁
     }
 }
 
-// ⏱️ 修改：恢复数据，读取包含 expire_time 的 AOF 文件
+
 void kvs_persistence_recover(void) {
     if (!aof_fp) return;
     
-    // 回到文件头部
     fseek(aof_fp, 0, SEEK_SET);
 
     int recovered_count = 0;
-    int expired_cleanup_count = 0; // 记录加载时直接过滤掉的超时日志数量
+    int expired_cleanup_count = 0; 
     int64_t now = get_current_ms_aof();
 
     while (1) {
         int cmd_len = 0, key_len = 0, val_len = 0;
-        int64_t expire_time = 0; // 存储从日志读出的过期时间戳
+        int64_t expire_time = 0; 
         
-        // 读 CMD 长度，如果读不到说明文件结束(EOF)
+        // 1. 读取并校验 CMD 长度
         if (fread(&cmd_len, sizeof(int), 1, aof_fp) != 1) break;
-        char cmd[32] = {0}; // 假设命令不会超过 32 字节
-        fread(cmd, 1, cmd_len, aof_fp);
-        cmd[cmd_len] = '\0'; // 方便做 strcmp
+        
+        // 🛑 防御边界：命令长度明显不合理，说明文件损坏或读到末尾残余，安全退出
+        if (cmd_len <= 0 || cmd_len >= 32) {
+            printf("[AOF Warning] Corrupted cmd_len detected: %d. Stopping recovery.\n", cmd_len);
+            break;
+        }
 
-        // ⏱️ 修改：如果是写命令(SET/MOD)，日志协议里包含了 8 字节的 expire_time，必须先读出来
+        char cmd[32] = {0}; 
+        if (fread(cmd, 1, cmd_len, aof_fp) != (size_t)cmd_len) break;
+        cmd[cmd_len] = '\0'; // 此时安全，因为 cmd_len < 32
+
+        // 2. 判定写命令
         int is_write_cmd = (strcmp(cmd, "SET") == 0 || strcmp(cmd, "MOD") == 0 ||
                             strcmp(cmd, "RSET") == 0 || strcmp(cmd, "RMOD") == 0 ||
                             strcmp(cmd, "HSET") == 0 || strcmp(cmd, "HMOD") == 0 ||
                             strcmp(cmd, "SSET") == 0 || strcmp(cmd, "SMOD") == 0);
         
+        // ⚠️ 核心注意点：如果你的网络层对 DEL 也写了 expire_time，这里必须把 DEL 也加上！
         if (is_write_cmd) {
             if (fread(&expire_time, sizeof(int64_t), 1, aof_fp) != 1) break;
         }
 
-        // 读 KEY
+        // 3. 读取并校验 KEY
         if (fread(&key_len, sizeof(int), 1, aof_fp) != 1) break;
-        void *key = kvs_malloc(key_len);
-        fread(key, 1, key_len, aof_fp);
+        
+        // 🛑 防御边界：防止 Key 长度脏数据爆内存
+        if (key_len <= 0 || key_len > 1024 * 64) { // 限制 Key 最大 64KB
+            printf("[AOF Warning] Corrupted key_len detected: %d. Stopping recovery.\n", key_len);
+            break;
+        }
 
-        // 读 VALUE
+        void *key = kvs_malloc(key_len);
+        if (!key) break;
+        if (fread(key, 1, key_len, aof_fp) != (size_t)key_len) {
+            kvs_free(key);
+            break;
+        }
+
+        // 4. 读取并校验 VALUE
         if (fread(&val_len, sizeof(int), 1, aof_fp) != 1) {
             kvs_free(key);
             break;
         }
+        
+        // 🛑 防御边界：防止 Value 长度脏数据爆内存
+        if (val_len < 0 || val_len > 1024 * 1024 * 10) { // 限制 Value 最大 10MB
+            printf("[AOF Warning] Corrupted val_len detected: %d. Stopping recovery.\n", val_len);
+            kvs_free(key);
+            break;
+        }
+
         void *val = NULL;
         if (val_len > 0) {
             val = kvs_malloc(val_len);
-            fread(val, 1, val_len, aof_fp);
+            if (!val) {
+                kvs_free(key);
+                break;
+            }
+            if (fread(val, 1, val_len, aof_fp) != (size_t)val_len) {
+                kvs_free(key);
+                kvs_free(val);
+                break;
+            }
         }
 
-        // ⏱️ 关键拦截：如果这条写日志已经超时过期，直接净化丢弃，不重放到内存中
+        // 5. 过期拦截
         if (is_write_cmd && expire_time > 0 && now > expire_time) {
             kvs_free(key);
             if (val) kvs_free(val);
             expired_cleanup_count++;
-            continue; // 跳过此条日志，继续还原下一条
+            continue; 
         }
 
-        kv_data_t kv_k;
-        kv_k.data = key;
-        kv_k.len = key_len;
-
-        kv_data_t kv_v;
-        kv_v.data = val;
-        kv_v.len = val_len;
+        // 6. 数据重放还原到各引擎
+        kv_data_t kv_k = {key, key_len};
+        kv_data_t kv_v = {val, val_len};
 
         #if ENABLE_ARRAY
-        if (strcmp(cmd, "SET") == 0) {
-            kvs_array_set(&global_array, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        } else if (strcmp(cmd, "DEL") == 0) {
-            kvs_array_del(&global_array, &kv_k);
-        } else if (strcmp(cmd, "MOD") == 0) {
-            kvs_array_mod(&global_array, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        }
+        if (strcmp(cmd, "SET") == 0) kvs_array_set(&global_array, &kv_k, &kv_v, expire_time);
+        else if (strcmp(cmd, "DEL") == 0) kvs_array_del(&global_array, &kv_k);
+        else if (strcmp(cmd, "MOD") == 0) kvs_array_mod(&global_array, &kv_k, &kv_v, expire_time);
         #endif
         
         #if ENABLE_RBTREE
-        if (strcmp(cmd, "RSET") == 0) {
-            kvs_rbtree_set(&global_rbtree, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        } else if (strcmp(cmd, "RDEL") == 0) {
-            kvs_rbtree_del(&global_rbtree, &kv_k);
-        } else if (strcmp(cmd, "RMOD") == 0) {
-            kvs_rbtree_mod(&global_rbtree, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        }
+        if (strcmp(cmd, "RSET") == 0) kvs_rbtree_set(&global_rbtree, &kv_k, &kv_v, expire_time);
+        else if (strcmp(cmd, "RDEL") == 0) kvs_rbtree_del(&global_rbtree, &kv_k);
+        else if (strcmp(cmd, "RMOD") == 0) kvs_rbtree_mod(&global_rbtree, &kv_k, &kv_v, expire_time);
         #endif
         
         #if ENABLE_HASH
-        if (strcmp(cmd, "HSET") == 0) {
-            kvs_hash_set(&global_hash, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        } else if (strcmp(cmd, "HDEL") == 0) {
-            kvs_hash_del(&global_hash, &kv_k);
-        } else if (strcmp(cmd, "HMOD") == 0) {
-            kvs_hash_mod(&global_hash, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        }
+        if (strcmp(cmd, "HSET") == 0) kvs_hash_set(&global_hash, &kv_k, &kv_v, expire_time);
+        else if (strcmp(cmd, "HDEL") == 0) kvs_hash_del(&global_hash, &kv_k);
+        else if (strcmp(cmd, "HMOD") == 0) kvs_hash_mod(&global_hash, &kv_k, &kv_v, expire_time);
         #endif
         
         #if ENABLE_SKIPLIST
-        if (strcmp(cmd, "SSET") == 0) {
-            kvs_skip_set(&global_skip, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        } else if (strcmp(cmd, "SDEL") == 0) {
-            kvs_skip_del(&global_skip, &kv_k);
-        } else if (strcmp(cmd, "SMOD") == 0) {
-            kvs_skip_mod(&global_skip, &kv_k, &kv_v, expire_time); // ⏱️ 修改：传入时间戳
-        }
+        if (strcmp(cmd, "SSET") == 0) kvs_skip_set(&global_skip, &kv_k, &kv_v, expire_time);
+        else if (strcmp(cmd, "SDEL") == 0) kvs_skip_del(&global_skip, &kv_k);
+        else if (strcmp(cmd, "SMOD") == 0) kvs_skip_mod(&global_skip, &kv_k, &kv_v, expire_time);
         #endif
 
         kvs_free(key);
@@ -161,11 +179,11 @@ void kvs_persistence_recover(void) {
         recovered_count++;
     }
     
-    // 恢复完成后，把文件指针移到末尾，以便后续继续追加
     fseek(aof_fp, 0, SEEK_END);
     printf("AOF recovery finished: %d commands replayed (Purged %d expired logs)\n", 
             recovered_count, expired_cleanup_count);
 }
+
 
 // 原样输出：关闭文件
 void kvs_persistence_close(void) {

@@ -47,7 +47,7 @@ static void close_and_free_connection(int fd) {
 }
 
 void recv_cb(int fd) {
-    printf("\n[Reactor-Recv] ======= Enter recv_cb for fd: %d =======\n", fd);
+    //printf("\n[Reactor-Recv] ======= Enter recv_cb for fd: %d =======\n", fd);
     
     // 1. 抽干内核缓冲区（非阻塞读取直到 EAGAIN）
     while (1) {
@@ -81,15 +81,14 @@ void recv_cb(int fd) {
     }
 
     // 2. 状态机解析循环：[ 4字节 Count ] + [ 命令1 ] + [ 命令2 ] + ...
-    // 核心修改：移除末尾无条件 break，允许 while 循环连续解析 rbuffer 中残留的多个独立大包
     while (conn_list[fd].rlength >= 4) { 
         char *p = conn_list[fd].rbuffer;
         int cmd_count = *(int*)p; // 当前网络包声明的命令总数
         
-        printf("[Reactor-Recv] Protocol Header Checked -> cmd_count parsed: %d\n", cmd_count);
+        //printf("[Reactor-Recv] Protocol Header Checked -> cmd_count parsed: %d\n", cmd_count);
 
         if (cmd_count <= 0 || cmd_count > 100) { 
-            printf("[Reactor-Recv] ALERT! Invalid cmd_count (%d). Dropping buffer and aborting packet.\n", cmd_count);
+            //printf("[Reactor-Recv] ALERT! Invalid cmd_count (%d). Dropping buffer and aborting packet.\n", cmd_count);
             conn_list[fd].rlength = 0; // 防御性重置
             break; 
         }
@@ -101,21 +100,21 @@ void recv_cb(int fd) {
         for (int i = 0; i < cmd_count; i++) {
             // 如果连单条命令的 cmd_len (4字节) 都没收齐，说明当前大包没接收全
             if (conn_list[fd].rlength < total_batch_bytes + 4) { 
-                printf("[Reactor-Recv] Loop-%d: Not enough bytes for cmd_len\n", i);
+                //printf("[Reactor-Recv] Loop-%d: Not enough bytes for cmd_len\n", i);
                 is_all_received = 0; break; 
             }
             int cmd_len = *(int*)(p + total_batch_bytes);
             
             // 检查固定报头偏移是否收齐 [cmd_len(4)] + [cmd] + [key_len(4)]
             if (conn_list[fd].rlength < total_batch_bytes + 4 + cmd_len + 4) { 
-                printf("[Reactor-Recv] Loop-%d: Not enough bytes for fixed header (cmd_len:%d)\n", i, cmd_len);
+                //printf("[Reactor-Recv] Loop-%d: Not enough bytes for fixed header (cmd_len:%d)\n", i, cmd_len);
                 is_all_received = 0; break; 
             }
             int key_len = *(int*)(p + total_batch_bytes + 4 + cmd_len);
             
             // 检查 value_len(4) 是否收齐
             if (conn_list[fd].rlength < total_batch_bytes + 4 + cmd_len + 4 + key_len + 4) { 
-                printf("[Reactor-Recv] Loop-%d: Not enough bytes for value_len\n", i);
+                //printf("[Reactor-Recv] Loop-%d: Not enough bytes for value_len\n", i);
                 is_all_received = 0; break; 
             }
             int value_len = *(int*)(p + total_batch_bytes + 4 + cmd_len + 4 + key_len);
@@ -125,14 +124,14 @@ void recv_cb(int fd) {
             
             // 如果超出了当前接收到的总长度，说明后面还有命令数据没收全
             if (conn_list[fd].rlength < total_batch_bytes) { 
-                printf("[Reactor-Recv] Packet incomplete: rlength (%d) < total_batch_bytes (%d)\n", conn_list[fd].rlength, total_batch_bytes);
+                //printf("[Reactor-Recv] Packet incomplete: rlength (%d) < total_batch_bytes (%d)\n", conn_list[fd].rlength, total_batch_bytes);
                 is_all_received = 0; break; 
             }
         }
 
         // 如果整批命令没有百分之百收全，跳出 while 循环，静静等待下一次 EPOLLIN 事件触发再读
         if (!is_all_received) {
-            printf("[Reactor-Recv] Batch packet NOT fully received yet. Waiting for next EPOLLIN.\n");
+            //printf("[Reactor-Recv] Batch packet NOT fully received yet. Waiting for next EPOLLIN.\n");
             break; 
         }
 
@@ -170,7 +169,7 @@ void recv_cb(int fd) {
             memmove(conn_list[fd].rbuffer, conn_list[fd].rbuffer + total_batch_bytes, remaining_data);
         }
         conn_list[fd].rlength = remaining_data;
-        printf("[Reactor-Recv] Buffer advanced. Remaining unparsed raw data bytes: %d\n", conn_list[fd].rlength);
+        //printf("[Reactor-Recv] Buffer advanced. Remaining unparsed raw data bytes: %d\n", conn_list[fd].rlength);
             
         // 【重要修改】移除了无条件的 break; 
         // 增加防御性判断：如果本轮循环没有消耗任何数据（防止异常数据导致的死循环），才退出
@@ -179,7 +178,7 @@ void recv_cb(int fd) {
         }
     }
     
-    printf("[Reactor-Recv] ======= Exit recv_cb for fd: %d =======\n", fd);
+    //printf("[Reactor-Recv] ======= Exit recv_cb for fd: %d =======\n", fd);
 }
 
 void send_cb(int fd) {

@@ -40,7 +40,7 @@ int64_t get_current_ms(void) {
 #if ENABLE_ARRAY
 void* kvs_array_expire_worker(void* arg) {
     
-    printf("[Expire Thread] Array cleaner started.\n");
+    //printf("[Expire Thread] Array cleaner started.\n");
     while (expire_thread_running) {
         int64_t now = get_current_ms();
         
@@ -82,7 +82,7 @@ void* kvs_array_expire_worker(void* arg) {
 #if ENABLE_HASH
 void* kvs_hash_expire_worker(void* arg) {
     
-    printf("[Expire Thread] Hash cleaner started.\n");
+    //printf("[Expire Thread] Hash cleaner started.\n");
     while (expire_thread_running) {
         int64_t now = get_current_ms();
         
@@ -157,7 +157,7 @@ static void rbtree_collect_expired(rbtree_node_binary_t *node, rbtree_node_binar
 
 void* kvs_rbtree_expire_worker(void* arg) {
     
-    printf("[Expire Thread] RB-Tree cleaner started.\n");
+    //printf("[Expire Thread] RB-Tree cleaner started.\n");
     kv_data_t expired_batch[100];
     
     while (expire_thread_running) {
@@ -194,7 +194,7 @@ void* kvs_rbtree_expire_worker(void* arg) {
 #if ENABLE_SKIPLIST
 void* kvs_skiplist_expire_worker(void* arg) {
     
-    printf("[Expire Thread] Skiplist cleaner started.\n");
+    //printf("[Expire Thread] Skiplist cleaner started.\n");
     kv_data_t expired_batch[100];
     
     while (expire_thread_running) {
@@ -259,7 +259,7 @@ int kvs_expire_thread_start(void) {
     if (res != 0) return -1;
 #endif
 
-    printf("[Expire System] All 4 background timeout threads initialized successfully.\n");
+    //printf("[Expire System] All 4 background timeout threads initialized successfully.\n");
     return 0;
 }
 
@@ -280,5 +280,5 @@ void kvs_expire_thread_stop(void) {
     pthread_join(expire_tids[3], NULL);
 #endif
 
-    printf("[Expire System] All background threads destroyed cleanly.\n");
+    //printf("[Expire System] All background threads destroyed cleanly.\n");
 }

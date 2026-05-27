@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <errno.h>
 #include "server.h" 
 #include "kvstore.h"
 
@@ -25,9 +26,8 @@ static void close_and_free_connection(int fd) {
     memset(&conn_list[fd], 0, sizeof(struct conn));
 }
 
-// 协程客户端处理主流程：相当于同步的 Read -> Parse -> Write
+// 协程客户端处理主流程：支持多包连续动态解析与即时分发
 void server_reader(void *arg) {
-    // 💡 修复原代码中的是指针逃逸 Bug：直接将 void* 强转回 int 提取 fd
     int fd = (int)(intptr_t)arg; 
     
     while (1) {
@@ -43,16 +43,17 @@ void server_reader(void *arg) {
 
         int remaining_space = conn_list[fd].rcapacity - conn_list[fd].rlength;
         
-        // 协程底层的 recv 会在没有数据时自动 yield 让出 CPU
+        // 协程底层的 recv 会在没有数据时自动 yield 让出 CPU 并挂起
         int ret = recv(fd, conn_list[fd].rbuffer + conn_list[fd].rlength, remaining_space, 0);
         
-        if (ret <= 0) { // 对方关闭或发生错误
+        if (ret <= 0) { 
+            if (errno == EINTR) continue; // 被信号中断则重试
             goto exit_coroutine;
         }
         
         conn_list[fd].rlength += ret;
 
-        // 2. ========= 粘包半包解析逻辑 =========
+        // 2. ========= 核心状态机循环：多包连续解析并立即回写 =========
         while (conn_list[fd].rlength >= 4) { 
             char *p = conn_list[fd].rbuffer;
             int cmd_count = *(int*)p; 
@@ -78,9 +79,11 @@ void server_reader(void *arg) {
             }
 
             if (!is_all_received) {
-                break; // 等待下一次 recv 补齐数据
+                // 当前大包的数据还没收全，退出状态机，回到外层循环继续协程 recv
+                break; 
             }
 
+            // 当前大包的业务数据已完全集齐，开始消费
             int p_offset = 4;
             session_ctx_t ctx;
             ctx.wbuffer = &conn_list[fd].wbuffer;
@@ -99,34 +102,41 @@ void server_reader(void *arg) {
                 p_offset += single_cmd_total_len;
             }
 
+            // 裁剪已经处理完的当前包数据
             int remaining_data = conn_list[fd].rlength - total_batch_bytes;
             if (remaining_data > 0) {
                 memmove(conn_list[fd].rbuffer, conn_list[fd].rbuffer + total_batch_bytes, remaining_data);
             }
             conn_list[fd].rlength = remaining_data;
-        }
 
-        // 3. ========= 发送响应逻辑 =========
-        if (conn_list[fd].wlength > 0) {
-            int total_sent = 0;
-            // 协程的 send 可能会写一半，加上循环确保写完
-            while (total_sent < conn_list[fd].wlength) {
-                int s_ret = send(fd, conn_list[fd].wbuffer + total_sent, conn_list[fd].wlength - total_sent, 0);
-                if (s_ret <= 0) {
-                    goto exit_coroutine;
+            // 3. 【核心修改】解完一包，立即发送一包的响应！
+            // 这样如果是多包粘包，可以在本 While 循环里不停地解包->发送，不会错误地回到外层被 recv 挂起
+            if (conn_list[fd].wlength > 0) {
+                int total_sent = 0;
+                while (total_sent < conn_list[fd].wlength) {
+                    // 协程的 send 在无法完全写入时也会自动 yield 让出 CPU，写就绪后自动唤醒恢复
+                    int s_ret = send(fd, conn_list[fd].wbuffer + total_sent, conn_list[fd].wlength - total_sent, 0);
+                    if (s_ret <= 0) {
+                        if (errno == EINTR) continue;
+                        goto exit_coroutine;
+                    }
+                    total_sent += s_ret;
                 }
-                total_sent += s_ret;
+
+                // 发送完毕，重置 wlength 并按需缩容内存
+                conn_list[fd].wlength = 0;
+                if (conn_list[fd].wcapacity > INIT_BUFFER_SIZE * 4) {
+                    char *shrunk_buf = (char *)kvs_realloc(conn_list[fd].wbuffer, INIT_BUFFER_SIZE);
+                    if (shrunk_buf) {
+                        conn_list[fd].wbuffer = shrunk_buf;
+                        conn_list[fd].wcapacity = INIT_BUFFER_SIZE;
+                    }
+                }
             }
 
-            // 发送完毕，重置 wlength 并按需缩容内存
-            conn_list[fd].wlength = 0;
-            
-            if (conn_list[fd].wcapacity > INIT_BUFFER_SIZE * 4) {
-                char *shrunk_buf = (char *)kvs_realloc(conn_list[fd].wbuffer, INIT_BUFFER_SIZE);
-                if (shrunk_buf) {
-                    conn_list[fd].wbuffer = shrunk_buf;
-                    conn_list[fd].wcapacity = INIT_BUFFER_SIZE;
-                }
+            // 防御性异常保护：防止产生死循环
+            if (total_batch_bytes == 0) {
+                break;
             }
         }
     }
@@ -138,12 +148,12 @@ exit_coroutine:
 
 // 监听协程
 void server(void *arg) {
-    unsigned short port = *(unsigned short *)arg;
+    // 💡 修复：通过强转纯数值提取端口号，彻底规避外部栈帧销毁带来的崩溃隐患
+    unsigned short port = (unsigned short)(uintptr_t)arg;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return ;
 
-    // 解决端口被占用(Time-Wait)的问题
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -151,17 +161,24 @@ void server(void *arg) {
     local.sin_family = AF_INET;
     local.sin_port = htons(port);
     local.sin_addr.s_addr = INADDR_ANY;
-    bind(fd, (struct sockaddr*)&local, sizeof(struct sockaddr_in));
+    
+    if (bind(fd, (struct sockaddr*)&local, sizeof(struct sockaddr_in)) < 0) {
+        perror("bind");
+        close(fd);
+        return;
+    }
 
     listen(fd, 20);
     printf("NtyCo Binary Server listening on port : %d\n", port);
 
     while (1) {
         socklen_t len = sizeof(struct sockaddr_in);
-        // 协程底层的 accept 也会挂起，有新连接再继续
         int cli_fd = accept(fd, (struct sockaddr*)&remote, &len);
         
-        if (cli_fd < 0) continue;
+        if (cli_fd < 0) {
+            if (errno == EINTR) continue;
+            continue;
+        }
         if (cli_fd >= CONNECTION_SIZE) {
             close(cli_fd);
             continue;
@@ -181,9 +198,7 @@ void server(void *arg) {
             continue;
         }
 
-        // 创建专属的 Reader 协程去服务这个客户端
         nty_coroutine *read_co;
-        // 💡 修复：将 cli_fd 的值直接转成指针存入 arg，避免指针指向同一块栈内存导致脏数据
         nty_coroutine_create(&read_co, server_reader, (void*)(intptr_t)cli_fd);
     }
 }
@@ -194,9 +209,10 @@ int ntyco_start(unsigned short port, binary_msg_handler handler) {
     g_binary_handler = handler;
 
     nty_coroutine *co = NULL;
-    nty_coroutine_create(&co, server, &port);
+    // 💡 修复：将端口号直接转为 void* 传递，杜绝传局部变量指针引发的野指针风险
+    nty_coroutine_create(&co, server, (void*)(uintptr_t)port);
 
-    nty_schedule_run(); // 启动协程调度器，内部会死循环跑 epoll
+    nty_schedule_run(); 
 
     return 0;
 }

@@ -80,7 +80,6 @@ void kvs_snapshot_auto_save_stop(void);
 #define NETWORK_NTYCO        2
 
 #define NETWORK_SELECT      NETWORK_REACTOR
-
 #define KVS_MAX_TOKENS      128
 
 #define ENABLE_ARRAY        1

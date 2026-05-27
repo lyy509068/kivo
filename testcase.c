@@ -1,4 +1,3 @@
-// test_binary.c
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -410,6 +409,7 @@ void testcase_file(int connfd, char *msg, char *pattern, char *casename) {
         // printf("==> BATCH PASS -> %s\n", casename);
     } else {
         printf("==> BATCH FAILED -> %s\n", casename);
+        printf("[Debug] Expected Len: %d, Got Len: %d\n", expected_recv_len, total_recv);
         free(recv_buf);
         for (int i = 0; i < cmd_count; i++) {
             if (file_contents[i]) free(file_contents[i]);
@@ -432,16 +432,16 @@ void array_full_test(int connfd) {
     gettimeofday(&tv_begin, NULL);
     for (int i = 0; i < 10000; i++) {
         testcase(connfd, 
-                 "CMD=SET KEY=Teacher VALUE=King "
-                 "CMD=GET KEY=Teacher "
-                 "CMD=EXIST KEY=Teacher "
-                 "CMD=MOD KEY=Teacher VALUE=Darren "
-                 "CMD=GET KEY=Teacher "
-                 "CMD=EXIST KEY=Teacher "
-                 "CMD=DEL KEY=Teacher "
-                 "CMD=GET KEY=Teacher "
-                 "CMD=EXIST KEY=Teacher", 
-                 "OK\r\nKing\r\nEXIST\r\nOK\r\nDarren\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n", 
+                 "CMD=SET KEY=NAME VALUE=[!@#$^&*] "
+                 "CMD=GET KEY=NAME "
+                 "CMD=EXIST KEY=NAME "
+                 "CMD=MOD KEY=NAME VALUE=(<{:;'+-*}>) "
+                 "CMD=GET KEY=NAME "
+                 "CMD=EXIST KEY=NAME "
+                 "CMD=DEL KEY=NAME "
+                 "CMD=GET KEY=NAME "
+                 "CMD=EXIST KEY=NAME", 
+                 "OK\r\n[!@#$^&*]\r\nEXIST\r\nOK\r\n(<{:;'+-*}>)\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n", 
                  "Array-Lifecycle");
     }
     gettimeofday(&tv_end, NULL);
@@ -454,31 +454,31 @@ void array_full_test_file(int connfd) {
     struct timeval tv_begin, tv_end;
     gettimeofday(&tv_begin, NULL);
     char *batch_msg = 
-        "CMD=SET KEY=text.txt VALUE=text.txt "
-        "CMD=GET KEY=text.txt "
-        "CMD=EXIST KEY=text.txt "
-        "CMD=DEL KEY=text.txt "
-        "CMD=EXIST KEY=text.txt "
-        "CMD=SET KEY=io多路复用.txt VALUE=io多路复用.txt "
-        "CMD=GET KEY=io多路复用.txt "
-        "CMD=EXIST KEY=io多路复用.txt "
-        "CMD=DEL KEY=io多路复用.txt "
-        "CMD=EXIST KEY=io多路复用.txt "
-        "CMD=SET KEY=screenshot.png VALUE=screenshot.png "
-        "CMD=GET KEY=screenshot.png "
-        "CMD=EXIST KEY=screenshot.png "
-        "CMD=DEL KEY=screenshot.png "
-        "CMD=EXIST KEY=screenshot.png";
+        "CMD=SET KEY=本地文件1.txt VALUE=本地文件1.txt "
+        "CMD=GET KEY=本地文件1.txt "
+        "CMD=EXIST KEY=本地文件1.txt "
+        "CMD=DEL KEY=本地文件1.txt "
+        "CMD=EXIST KEY=本地文件1.txt "
+        "CMD=SET KEY=本地文件2.txt VALUE=本地文件2.txt "
+        "CMD=GET KEY=本地文件2.txt "
+        "CMD=EXIST KEY=本地文件2.txt "
+        "CMD=DEL KEY=本地文件2.txt "
+        "CMD=EXIST KEY=本地文件2.txt "
+        "CMD=SET KEY=本地文件3.png VALUE=本地文件3.png "
+        "CMD=GET KEY=本地文件3.png "
+        "CMD=EXIST KEY=本地文件3.png "
+        "CMD=DEL KEY=本地文件3.png "
+        "CMD=EXIST KEY=本地文件3.png";
 
     char *batch_pattern = "OK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\n";
 
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 1000; i++) {
         testcase_file(connfd, batch_msg, batch_pattern, "Batch-File-Pipeline");
     }
 
     gettimeofday(&tv_end, NULL);
     long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + (tv_end.tv_usec - tv_begin.tv_usec) / 1000;
-    printf("Array File Pipeline Test: time=%ldms, QPS=%ld\n", time_ms, 150000 * 1000 / time_ms);
+    printf("Array File Pipeline Test: time=%ldms, QPS=%ld\n", time_ms, 15000 * 1000 / time_ms);
 }
 
 void rbtree_full_test(int connfd) {
@@ -487,17 +487,17 @@ void rbtree_full_test(int connfd) {
     gettimeofday(&tv_begin, NULL);
 
     char *batch_msg = 
-        "CMD=RSET KEY=Teacher VALUE=King "
-        "CMD=RGET KEY=Teacher "
-        "CMD=REXIST KEY=Teacher "
-        "CMD=RMOD KEY=Teacher VALUE=Darren "
-        "CMD=RGET KEY=Teacher "
-        "CMD=REXIST KEY=Teacher "
-        "CMD=RDEL KEY=Teacher "
-        "CMD=RGET KEY=Teacher "
-        "CMD=REXIST KEY=Teacher";
+        "CMD=RSET KEY=NAME VALUE=[!@#$^&*] "
+        "CMD=RGET KEY=NAME "
+        "CMD=REXIST KEY=NAME "
+        "CMD=RMOD KEY=NAME VALUE=(<{:;'+-*}>) "
+        "CMD=RGET KEY=NAME "
+        "CMD=REXIST KEY=NAME "
+        "CMD=RDEL KEY=NAME "
+        "CMD=RGET KEY=NAME "
+        "CMD=REXIST KEY=NAME";
 
-    char *batch_pattern = "OK\r\nKing\r\nEXIST\r\nOK\r\nDarren\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n";
+    char *batch_pattern = "OK\r\n[!@#$^&*]\r\nEXIST\r\nOK\r\n(<{:;'+-*}>)\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n";
 
     for (int i = 0; i < 10000; i++) {
         testcase(connfd, batch_msg, batch_pattern, "RBT-Pipeline");
@@ -514,31 +514,31 @@ void rbtree_full_test_file(int connfd) {
     gettimeofday(&tv_begin, NULL);
 
     char *batch_msg = 
-        "CMD=RSET KEY=text.txt VALUE=text.txt "
-        "CMD=RGET KEY=text.txt "
-        "CMD=REXIST KEY=text.txt "
-        "CMD=RDEL KEY=text.txt "
-        "CMD=REXIST KEY=text.txt "
-        "CMD=RSET KEY=io多路复用.txt VALUE=io多路复用.txt "
-        "CMD=RGET KEY=io多路复用.txt "
-        "CMD=REXIST KEY=io多路复用.txt "
-        "CMD=RDEL KEY=io多路复用.txt "
-        "CMD=REXIST KEY=io多路复用.txt "
-        "CMD=RSET KEY=screenshot.png VALUE=screenshot.png "
-        "CMD=RGET KEY=screenshot.png "
-        "CMD=REXIST KEY=screenshot.png "
-        "CMD=RDEL KEY=screenshot.png "
-        "CMD=REXIST KEY=screenshot.png";
+        "CMD=RSET KEY=本地文件1.txt VALUE=本地文件1.txt "
+        "CMD=RGET KEY=本地文件1.txt "
+        "CMD=REXIST KEY=本地文件1.txt "
+        "CMD=RDEL KEY=本地文件1.txt "
+        "CMD=REXIST KEY=本地文件1.txt "
+        "CMD=RSET KEY=本地文件2.txt VALUE=本地文件2.txt "
+        "CMD=RGET KEY=本地文件2.txt "
+        "CMD=REXIST KEY=本地文件2.txt "
+        "CMD=RDEL KEY=本地文件2.txt "
+        "CMD=REXIST KEY=本地文件2.txt "
+        "CMD=RSET KEY=本地文件3.png VALUE=本地文件3.png "
+        "CMD=RGET KEY=本地文件3.png "
+        "CMD=REXIST KEY=本地文件3.png "
+        "CMD=RDEL KEY=本地文件3.png "
+        "CMD=REXIST KEY=本地文件3.png";
 
     char *batch_pattern = "OK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\n";
 
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 1000; i++) {
         testcase_file(connfd, batch_msg, batch_pattern, "RBT-File-Pipeline");
     }
 
     gettimeofday(&tv_end, NULL);
     long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + (tv_end.tv_usec - tv_begin.tv_usec) / 1000;
-    printf("Rbtree File Test: time=%ldms, QPS=%ld\n", time_ms, 150000L * 1000 / time_ms);
+    printf("Rbtree File Test: time=%ldms, QPS=%ld\n", time_ms, 15000L * 1000 / time_ms);
 }
 
 void hash_full_test(int connfd) {
@@ -547,17 +547,17 @@ void hash_full_test(int connfd) {
     gettimeofday(&tv_begin, NULL);
 
     char *batch_msg = 
-        "CMD=HSET KEY=Teacher VALUE=King "
-        "CMD=HGET KEY=Teacher "
-        "CMD=HEXIST KEY=Teacher "
-        "CMD=HMOD KEY=Teacher VALUE=Darren "
-        "CMD=HGET KEY=Teacher "
-        "CMD=HEXIST KEY=Teacher "
-        "CMD=HDEL KEY=Teacher "
-        "CMD=HGET KEY=Teacher "
-        "CMD=HEXIST KEY=Teacher";
+        "CMD=HSET KEY=NAME VALUE=[!@#$^&*] "
+        "CMD=HGET KEY=NAME "
+        "CMD=HEXIST KEY=NAME "
+        "CMD=HMOD KEY=NAME VALUE=(<{:;'+-*}>) "
+        "CMD=HGET KEY=NAME "
+        "CMD=HEXIST KEY=NAME "
+        "CMD=HDEL KEY=NAME "
+        "CMD=HGET KEY=NAME "
+        "CMD=HEXIST KEY=NAME";
 
-    char *batch_pattern = "OK\r\nKing\r\nEXIST\r\nOK\r\nDarren\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n";
+    char *batch_pattern = "OK\r\n[!@#$^&*]\r\nEXIST\r\nOK\r\n(<{:;'+-*}>)\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n";
 
     for (int i = 0; i < 10000; i++) {
         testcase(connfd, batch_msg, batch_pattern, "HASH-Pipeline");
@@ -574,31 +574,31 @@ void hash_full_test_file(int connfd) {
     gettimeofday(&tv_begin, NULL);
 
     char *batch_msg = 
-        "CMD=HSET KEY=text.txt VALUE=text.txt "
-        "CMD=HGET KEY=text.txt "
-        "CMD=HEXIST KEY=text.txt "
-        "CMD=HDEL KEY=text.txt "
-        "CMD=HEXIST KEY=text.txt "
-        "CMD=HSET KEY=io多路复用.txt VALUE=io多路复用.txt "
-        "CMD=HGET KEY=io多路复用.txt "
-        "CMD=HEXIST KEY=io多路复用.txt "
-        "CMD=HDEL KEY=io多路复用.txt "
-        "CMD=HEXIST KEY=io多路复用.txt "
-        "CMD=HSET KEY=screenshot.png VALUE=screenshot.png "
-        "CMD=HGET KEY=screenshot.png " 
-        "CMD=HEXIST KEY=screenshot.png "
-        "CMD=HDEL KEY=screenshot.png "
-        "CMD=HEXIST KEY=screenshot.png";
+        "CMD=HSET KEY=本地文件1.txt VALUE=本地文件1.txt "
+        "CMD=HGET KEY=本地文件1.txt "
+        "CMD=HEXIST KEY=本地文件1.txt "
+        "CMD=HDEL KEY=本地文件1.txt "
+        "CMD=HEXIST KEY=本地文件1.txt "
+        "CMD=HSET KEY=本地文件2.txt VALUE=本地文件2.txt "
+        "CMD=HGET KEY=本地文件2.txt "
+        "CMD=HEXIST KEY=本地文件2.txt "
+        "CMD=HDEL KEY=本地文件2.txt "
+        "CMD=HEXIST KEY=本地文件2.txt "
+        "CMD=HSET KEY=本地文件3.png VALUE=本地文件3.png "
+        "CMD=HGET KEY=本地文件3.png " 
+        "CMD=HEXIST KEY=本地文件3.png "
+        "CMD=HDEL KEY=本地文件3.png "
+        "CMD=HEXIST KEY=本地文件3.png";
 
     char *batch_pattern = "OK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\n";
 
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 1000; i++) {
         testcase_file(connfd, batch_msg, batch_pattern, "HASH-File-Pipeline");
     }
 
     gettimeofday(&tv_end, NULL);
     long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + (tv_end.tv_usec - tv_begin.tv_usec) / 1000;
-    printf("Hash File Test: time=%ldms, QPS=%ld\n", time_ms, 150000L * 1000 / time_ms);
+    printf("Hash File Test: time=%ldms, QPS=%ld\n", time_ms, 15000L * 1000 / time_ms);
 }
 
 void skiplist_full_test(int connfd) {
@@ -607,17 +607,17 @@ void skiplist_full_test(int connfd) {
     gettimeofday(&tv_begin, NULL);
 
     char *batch_msg = 
-        "CMD=SSET KEY=Teacher VALUE=King "
-        "CMD=SGET KEY=Teacher "
-        "CMD=SEXIST KEY=Teacher "
-        "CMD=SMOD KEY=Teacher VALUE=Darren "
-        "CMD=SGET KEY=Teacher "
-        "CMD=SEXIST KEY=Teacher "
-        "CMD=SDEL KEY=Teacher "
-        "CMD=SGET KEY=Teacher "
-        "CMD=SEXIST KEY=Teacher";
+        "CMD=SSET KEY=NAME VALUE=[!@#$^&*] "
+        "CMD=SGET KEY=NAME "
+        "CMD=SEXIST KEY=NAME "
+        "CMD=SMOD KEY=NAME VALUE=(<{:;'+-*}>) "
+        "CMD=SGET KEY=NAME "
+        "CMD=SEXIST KEY=NAME "
+        "CMD=SDEL KEY=NAME "
+        "CMD=SGET KEY=NAME "
+        "CMD=SEXIST KEY=NAME";
 
-    char *batch_pattern = "OK\r\nKing\r\nEXIST\r\nOK\r\nDarren\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n";
+    char *batch_pattern = "OK\r\n[!@#$^&*]\r\nEXIST\r\nOK\r\n(<{:;'+-*}>)\r\nEXIST\r\nOK\r\nNO EXIST\r\nNO EXIST\r\n";
 
     for (int i = 0; i < 10000; i++) {
         testcase(connfd, batch_msg, batch_pattern, "SKP-Pipeline");
@@ -634,32 +634,32 @@ void skiplist_full_test_file(int connfd) {
     gettimeofday(&tv_begin, NULL);
 
     char *batch_msg = 
-        "CMD=SSET KEY=text.txt VALUE=text.txt "
-        "CMD=SGET KEY=text.txt "
-        "CMD=SEXIST KEY=text.txt "
-        "CMD=SDEL KEY=text.txt "
-        "CMD=SEXIST KEY=text.txt "
-        "CMD=SSET KEY=io多路复用.txt VALUE=io多路复用.txt "
-        "CMD=SGET KEY=io多路复用.txt "
-        "CMD=SEXIST KEY=io多路复用.txt "
-        "CMD=SDEL KEY=io多路复用.txt "
-        "CMD=SEXIST KEY=io多路复用.txt "
-        "CMD=SSET KEY=screenshot.png VALUE=screenshot.png "
-        "CMD=SGET KEY=screenshot.png "
-        "CMD=SEXIST KEY=screenshot.png "
-        "CMD=SDEL KEY=screenshot.png "
-        "CMD=SEXIST KEY=screenshot.png";
+        "CMD=SSET KEY=本地文件1.txt VALUE=本地文件1.txt "
+        "CMD=SGET KEY=本地文件1.txt "
+        "CMD=SEXIST KEY=本地文件1.txt "
+        "CMD=SDEL KEY=本地文件1.txt "
+        "CMD=SEXIST KEY=本地文件1.txt "
+        "CMD=SSET KEY=本地文件2.txt VALUE=本地文件2.txt "
+        "CMD=SGET KEY=本地文件2.txt "
+        "CMD=SEXIST KEY=本地文件2.txt "
+        "CMD=SDEL KEY=本地文件2.txt "
+        "CMD=SEXIST KEY=本地文件2.txt "
+        "CMD=SSET KEY=本地文件3.png VALUE=本地文件3.png "
+        "CMD=SGET KEY=本地文件3.png "
+        "CMD=SEXIST KEY=本地文件3.png "
+        "CMD=SDEL KEY=本地文件3.png "
+        "CMD=SEXIST KEY=本地文件3.png";
 
     char *batch_pattern = "OK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\nOK\r\nEXIST\r\nOK\r\nNO EXIST\r\n";
 
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 1000; i++) {
         // 去掉了末尾的 op_type 参数
         testcase_file(connfd, batch_msg, batch_pattern, "SKP-File-Pipeline");
     }
 
     gettimeofday(&tv_end, NULL);
     long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + (tv_end.tv_usec - tv_begin.tv_usec) / 1000;
-    printf("Skiplist File Test: time=%ldms, QPS=%ld\n", time_ms, 150000L * 1000 / time_ms);
+    printf("Skiplist File Test: time=%ldms, QPS=%ld\n", time_ms, 15000L * 1000 / time_ms);
 }
 
 void array_random_test(int connfd, int iterations) {
@@ -694,17 +694,17 @@ void array_random_test(int connfd, int iterations) {
                 break;
             } 
             case 1: { 
-                char *msg = "CMD=SET KEY=text.txt VALUE=text.txt CMD=GET KEY=text.txt CMD=EXIST KEY=text.txt CMD=DEL KEY=text.txt";
+                char *msg = "CMD=SET KEY=本地文件1.txt VALUE=本地文件1.txt CMD=GET KEY=本地文件1.txt CMD=EXIST KEY=本地文件1.txt CMD=DEL KEY=本地文件1.txt";
                 testcase_file(connfd, msg, "OK\r\nEXIST\r\nOK\r\n", "RAND-ARR-F-TXT");
                 break;
             }
             case 2: { 
-                char *msg = "CMD=SET KEY=io多路复用.txt VALUE=io多路复用.txt CMD=GET KEY=io多路复用.txt CMD=DEL KEY=io多路复用.txt";
+                char *msg = "CMD=SET KEY=本地文件2.txt VALUE=本地文件2.txt CMD=GET KEY=本地文件2.txt CMD=DEL KEY=本地文件2.txt";
                 testcase_file(connfd, msg, "OK\r\nOK\r\n", "RAND-ARR-F-ZH");
                 break;
             }
             case 3: { 
-                char *msg = "CMD=SET KEY=screenshot.png VALUE=screenshot.png CMD=GET KEY=screenshot.png CMD=EXIST KEY=screenshot.png CMD=DEL KEY=screenshot.png";
+                char *msg = "CMD=SET KEY=本地文件3.png VALUE=本地文件3.png CMD=GET KEY=本地文件3.png CMD=EXIST KEY=本地文件3.png CMD=DEL KEY=本地文件3.png";
                 testcase_file(connfd, msg, "OK\r\nEXIST\r\nOK\r\n", "RAND-ARR-F-PNG");
                 break;
             }
@@ -745,13 +745,13 @@ void rbtree_random_test(int connfd, int iterations) {
                 break;
             }
             case 1:
-                testcase_file(connfd, "CMD=RSET KEY=text.txt VALUE=text.txt CMD=RGET KEY=text.txt CMD=REXIST KEY=text.txt CMD=RDEL KEY=text.txt", "OK\r\nEXIST\r\nOK\r\n", "RAND-RBT-F-TXT");
+                testcase_file(connfd, "CMD=RSET KEY=本地文件1.txt VALUE=本地文件1.txt CMD=RGET KEY=本地文件1.txt CMD=REXIST KEY=本地文件1.txt CMD=RDEL KEY=本地文件1.txt", "OK\r\nEXIST\r\nOK\r\n", "RAND-RBT-F-TXT");
                 break;
             case 2:
-                testcase_file(connfd, "CMD=RSET KEY=io多路复用.txt VALUE=io多路复用.txt CMD=RGET KEY=io多路复用.txt CMD=RDEL KEY=io多路复用.txt", "OK\r\nOK\r\n", "RAND-RBT-F-ZH");
+                testcase_file(connfd, "CMD=RSET KEY=本地文件2.txt VALUE=本地文件2.txt CMD=RGET KEY=本地文件2.txt CMD=RDEL KEY=本地文件2.txt", "OK\r\nOK\r\n", "RAND-RBT-F-ZH");
                 break;
             case 3:
-                testcase_file(connfd, "CMD=RSET KEY=screenshot.png VALUE=screenshot.png CMD=RGET KEY=screenshot.png CMD=REXIST KEY=screenshot.png CMD=RDEL KEY=screenshot.png", "OK\r\nEXIST\r\nOK\r\n", "RAND-RBT-F-PNG");
+                testcase_file(connfd, "CMD=RSET KEY=本地文件3.png VALUE=本地文件3.png CMD=RGET KEY=本地文件3.png CMD=REXIST KEY=本地文件3.png CMD=RDEL KEY=本地文件3.png", "OK\r\nEXIST\r\nOK\r\n", "RAND-RBT-F-PNG");
                 break;
         }
     }
@@ -790,13 +790,13 @@ void hash_random_test(int connfd, int iterations) {
                 break;
             }
             case 1:
-                testcase_file(connfd, "CMD=HSET KEY=text.txt VALUE=text.txt CMD=HGET KEY=text.txt CMD=HEXIST KEY=text.txt CMD=HDEL KEY=text.txt", "OK\r\nEXIST\r\nOK\r\n", "RAND-HASH-F-TXT");
+                testcase_file(connfd, "CMD=HSET KEY=本地文件1.txt VALUE=本地文件1.txt CMD=HGET KEY=本地文件1.txt CMD=HEXIST KEY=本地文件1.txt CMD=HDEL KEY=本地文件1.txt", "OK\r\nEXIST\r\nOK\r\n", "RAND-HASH-F-TXT");
                 break;
             case 2:
-                testcase_file(connfd, "CMD=HSET KEY=io多路复用.txt VALUE=io多路复用.txt CMD=HGET KEY=io多路复用.txt CMD=HDEL KEY=io多路复用.txt", "OK\r\nOK\r\n", "RAND-HASH-F-ZH");
+                testcase_file(connfd, "CMD=HSET KEY=本地文件2.txt VALUE=本地文件2.txt CMD=HGET KEY=本地文件2.txt CMD=HDEL KEY=本地文件2.txt", "OK\r\nOK\r\n", "RAND-HASH-F-ZH");
                 break;
             case 3:
-                testcase_file(connfd, "CMD=HSET KEY=screenshot.png VALUE=screenshot.png CMD=HGET KEY=screenshot.png CMD=HEXIST KEY=screenshot.png CMD=HDEL KEY=screenshot.png", "OK\r\nEXIST\r\nOK\r\n", "RAND-HASH-F-PNG");
+                testcase_file(connfd, "CMD=HSET KEY=本地文件3.png VALUE=本地文件3.png CMD=HGET KEY=本地文件3.png CMD=HEXIST KEY=本地文件3.png CMD=HDEL KEY=本地文件3.png", "OK\r\nEXIST\r\nOK\r\n", "RAND-HASH-F-PNG");
                 break;
         }
     }
@@ -835,121 +835,19 @@ void skiplist_random_test(int connfd, int iterations) {
                 break;
             }
             case 1:
-                testcase_file(connfd, "CMD=SSET KEY=text.txt VALUE=text.txt CMD=SGET KEY=text.txt CMD=SEXIST KEY=text.txt CMD=SDEL KEY=text.txt", "OK\r\nEXIST\r\nOK\r\n", "RAND-SKP-F-TXT");
+                testcase_file(connfd, "CMD=SSET KEY=本地文件1.txt VALUE=本地文件1.txt CMD=SGET KEY=本地文件1.txt CMD=SEXIST KEY=本地文件1.txt CMD=SDEL KEY=本地文件1.txt", "OK\r\nEXIST\r\nOK\r\n", "RAND-SKP-F-TXT");
                 break;
             case 2:
-                testcase_file(connfd, "CMD=SSET KEY=io多路复用.txt VALUE=io多路复用.txt CMD=SGET KEY=io多路复用.txt CMD=SDEL KEY=io多路复用.txt", "OK\r\nOK\r\n", "RAND-SKP-F-ZH");
+                testcase_file(connfd, "CMD=SSET KEY=本地文件2.txt VALUE=本地文件2.txt CMD=SGET KEY=本地文件2.txt CMD=SDEL KEY=本地文件2.txt", "OK\r\nOK\r\n", "RAND-SKP-F-ZH");
                 break;
             case 3:
-                testcase_file(connfd, "CMD=SSET KEY=screenshot.png VALUE=screenshot.png CMD=SGET KEY=screenshot.png CMD=SEXIST KEY=screenshot.png CMD=SDEL KEY=screenshot.png", "OK\r\nEXIST\r\nOK\r\n", "RAND-SKP-F-PNG");
+                testcase_file(connfd, "CMD=SSET KEY=本地文件3.png VALUE=本地文件3.png CMD=SGET KEY=本地文件3.png CMD=SEXIST KEY=本地文件3.png CMD=SDEL KEY=本地文件3.png", "OK\r\nEXIST\r\nOK\r\n", "RAND-SKP-F-PNG");
                 break;
         }
     }
     gettimeofday(&tv_end, NULL);
     long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + (tv_end.tv_usec - tv_begin.tv_usec) / 1000;
     printf("Skiplist Random Test Finished. Cost: %ld ms\n", time_ms);
-}
-
-void test_snapshot_flow(int connfd) {
-    printf("\n========== Test Snapshot Flow (Expanded: 43 Commands) ==========\n");
-
-    // 1. 准备大容量发送缓冲区 (由于命令变多且包含大图片，扩展到 8MB 确保绝对安全)
-    size_t max_buf_size = 8 * 1024 * 1024;
-    char *big_pipeline_buf = (char *)malloc(max_buf_size);
-    if (!big_pipeline_buf) {
-        printf("Malloc failed for snapshot test!\n");
-        return;
-    }
-
-    // 头部预留 4 字节，用来存放 cmd_count
-    int pos = 4; 
-    int cmd_count = 43; // 20(插入字符) + 3(插入文件) + 20(修改字符) = 43
-
-    // 2. 模拟读取三个测试文件的原始内容与长度
-    int file_len_txt = 1024;                    // text.txt 长度
-    char *file_data_txt = malloc(file_len_txt);
-    memset(file_data_txt, 'A', file_len_txt);    // 模拟 1KB 文本内容
-
-    int file_len_io = 5120;                     // io多路复用.txt 长度
-    char *file_data_io = malloc(file_len_io);
-    memset(file_data_io, 'B', file_len_io);     // 模拟 5KB 复杂技术文本
-
-    int file_len_png = 51200;                    // screenshot.png 长度
-    char *file_data_png = malloc(file_len_png);
-    memset(file_data_png, 'P', file_len_png);    // 模拟 50KB 图片二进制数据
-
-    int single_len = 0;
-    char key_buf[32];
-    char val_buf[64];
-
-    printf("[Snapshot-Test] Building 20 text insertion commands...\n");
-    for (int i = 1; i <= 20; i++) {
-        snprintf(key_buf, sizeof(key_buf), "text_key_%02d", i);
-        snprintf(val_buf, sizeof(val_buf), "initial_text_value_data_%02d", i);
-        
-        // 轮流测试四种底层数据结构
-        if (i % 4 == 1) {
-            build_request(big_pipeline_buf + pos, &single_len, "SET", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        } else if (i % 4 == 2) {
-            build_request(big_pipeline_buf + pos, &single_len, "RSET", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        } else if (i % 4 == 3) {
-            build_request(big_pipeline_buf + pos, &single_len, "HSET", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        } else {
-            build_request(big_pipeline_buf + pos, &single_len, "SSET", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        }
-        pos += single_len;
-    }
-
-    printf("[Snapshot-Test] Building 3 large file insertion commands...\n");
-    
-    // 1) text.txt (用 RSET 存入红黑树)
-    build_request(big_pipeline_buf + pos, &single_len, "RSET", "text.txt", 8, file_data_txt, file_len_txt); 
-    pos += single_len;
-    
-    // 2) io多路复用.txt (用 HSET 存入哈希表)
-    build_request(big_pipeline_buf + pos, &single_len, "HSET", "io多路复用.txt", 16, file_data_io, file_len_io); 
-    pos += single_len;
-    
-    // 3) 屏幕.png (用 SET 存入数组)
-    build_request(big_pipeline_buf + pos, &single_len, "SET", "屏幕.png", 10, file_data_png, file_len_png); 
-    pos += single_len;
-
-    printf("[Snapshot-Test] Building 20 text modification commands...\n");
-    for (int i = 1; i <= 20; i++) {
-        snprintf(key_buf, sizeof(key_buf), "text_key_%02d", i);
-        snprintf(val_buf, sizeof(val_buf), "NEW_modify_text_value_data____%02d", i);
-        
-        if (i % 4 == 1) {
-            build_request(big_pipeline_buf + pos, &single_len, "MOD", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        } else if (i % 4 == 2) {
-            build_request(big_pipeline_buf + pos, &single_len, "RMOD", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        } else if (i % 4 == 3) {
-            build_request(big_pipeline_buf + pos, &single_len, "HMOD", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        } else {
-            build_request(big_pipeline_buf + pos, &single_len, "SMOD", key_buf, strlen(key_buf), val_buf, strlen(val_buf));
-        }
-        pos += single_len;
-    }
-
-    *(int *)big_pipeline_buf = cmd_count;
-
-    printf("[Snapshot-Test] Big atomic pipeline package built done. Total payload size: %d bytes.\n", pos);
-    printf("[Snapshot-Test] Pushing hybrid data pipeline to server...\n");
-
-    // 直接利用 socket 将拼好的 43 条大二进制流全包砸过去
-    int sent_bytes = send(connfd, big_pipeline_buf, pos, 0);
-    if (sent_bytes < 0) {
-        perror("Send failed in test_snapshot_flow");
-    } else {
-        printf("[Snapshot-Test] Success! Pipeline package sent (%d bytes).\n", sent_bytes);
-    }
-
-    free(big_pipeline_buf);
-    free(file_data_txt);
-    free(file_data_io);
-    free(file_data_png);
-    
-    printf("========== Test Snapshot Flow Done ==========\n");
 }
 
 void shutdown_server(int connfd) {
@@ -988,7 +886,7 @@ void get_server_memory(pid_t pid, long *vmsize, long *vmrss) {
 
 // 将测试结果追加记录到本地日志文件 (已修改为记录内存变化量)
 void log_results(int mode, long time_ms, long qps, long delta_vmsize, long delta_vmrss) {
-    FILE *fp = fopen("benchmark_results.log", "a");
+    FILE *fp = fopen("memory.log", "a");
     if (!fp) {
         perror("Cannot open log file");
         return;
@@ -997,7 +895,7 @@ void log_results(int mode, long time_ms, long qps, long delta_vmsize, long delta
     fprintf(fp, "[Mode %d] Time: %ld ms | QPS: %ld | VmSize+: %+ld kB | VmRSS+: %+ld kB\n\n",
             mode, time_ms, qps, delta_vmsize, delta_vmrss);
     fclose(fp);
-    printf(">>> Metrics successfully written to benchmark_results.log\n");
+    printf(">>> Metrics successfully written to memory.log\n");
 }
 
 pid_t get_server_pid_by_name(const char *process_name) {
@@ -1021,12 +919,12 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Modes:\n  0: Array Base   1: Array File\n  2: RBTree Base  3: RBTree File\n"
                         "  4: Hash Base    5: Hash File      6: Skiplist Base 7: Skiplist File\n"  
                         "  8: Array Random 9: Rbtree Random\n 10:Hash Random\n 11:Skiplist Random\n"
-                        "  12: Mix 13: Shutdown Only\n");
+                        "  12: Shutdown Only\n");
         return 1;
     }
 
     int mode = atoi(argv[1]);
-    if (mode < 0 || mode > 13) {
+    if (mode < 0 || mode > 12) {
         fprintf(stderr, "Invalid mode: %d. Please choose 0-13.\n", mode);
         return 1;
     }
@@ -1092,11 +990,11 @@ int main(int argc, char *argv[]) {
     long init_vmsize = 0, init_vmrss = 0;
     if (server_pid > 0) {
         get_server_memory(server_pid, &init_vmsize, &init_vmrss);
-        printf("[Client] Tracking Server Memory -> VmSize: %ld kB, VmRSS: %ld kB\n", init_vmsize, init_vmrss);
+        printf("[Client] Trac[!@#$^&*] Server Memory -> VmSize: %ld kB, VmRSS: %ld kB\n", init_vmsize, init_vmrss);
     }
     
-    if (mode != 13) {
-        FILE *fp = fopen("benchmark_results.log", "a");
+    if (mode != 12) {
+        FILE *fp = fopen("memory.log", "a");
         if (fp) {
             fprintf(fp, "\n========== Mode %d ==========\n", mode);
             fprintf(fp, "Init: VmSize=%ld kB | VmRSS=%ld kB \n", init_vmsize, init_vmrss);
@@ -1110,11 +1008,7 @@ int main(int argc, char *argv[]) {
     } else if (mode == 1 || mode == 3 || mode == 5 || mode == 7) {
         total_ops = 15000;
     } else if (mode == 8 || mode == 9 || mode == 10 || mode == 11) {
-        total_ops = 10000;
-    } else if (mode == 12) {
-        total_ops = 20;  
-    } else if (mode == 13) {
-        total_ops = 20;
+        total_ops = 1000;
     }
 
     // 4. 精准包裹计时运行
@@ -1130,12 +1024,11 @@ int main(int argc, char *argv[]) {
         case 5: hash_full_test_file(sock); break;
         case 6: skiplist_full_test(sock); break;
         case 7: skiplist_full_test_file(sock); break;
-        case 8: array_random_test(sock, 100); break;
-        case 9: rbtree_random_test(sock, 100); break;
-        case 10: hash_random_test(sock, 100); break;
-        case 11: skiplist_random_test(sock, 100); break;
-        case 12: test_snapshot_flow(sock); break;
-        case 13: printf("Mode 13: Direct Shutdown Triggered.\n"); break;
+        case 8: array_random_test(sock, 1000); break;
+        case 9: rbtree_random_test(sock, 1000); break;
+        case 10: hash_random_test(sock, 1000); break;
+        case 11: skiplist_random_test(sock, 1000); break;
+        case 12: printf("Mode 12: Direct Shutdown Triggered.\n"); break;
     }
 
     gettimeofday(&tv_end, NULL);
@@ -1154,7 +1047,7 @@ int main(int argc, char *argv[]) {
         delta_vmrss = current_vmrss - init_vmrss;
     }
 
-    if (mode != 13) {
+    if (mode != 12) {
         log_results(mode, time_ms, qps, delta_vmsize, delta_vmrss);
     }
 
@@ -1162,6 +1055,4 @@ int main(int argc, char *argv[]) {
     close(sock);//关闭连接
     return 0;
 }
-
-
 

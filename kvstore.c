@@ -12,13 +12,16 @@
 
 extern const kvs_cmd_map_t kvs_cmd_list[];
 
-
+#define ENABLE_TTL 0
 #define DEFAULT_TTL_MS  20000
+int64_t default_expire = 0;
 
 int expire_time=0;
 
 #define LOCK_SEGMENTS 32
 pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
+// 跳表专属的全局读写锁
+//static pthread_rwlock_t skip_global_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 static pthread_t global_expire_thread;
 static volatile int expire_thread_running = 0;
@@ -356,11 +359,9 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
     
     // 计算分段锁索引与默认过期时间
     int idx = get_segment_index(key, key_len);
-    if(expire_time){
-        int64_t default_expire = 0;
-    }else{
-        int64_t default_expire = get_current_ms() + DEFAULT_TTL_MS;
-    }
+    #if ENABLE_TTL
+    default_expire = get_current_ms() + DEFAULT_TTL_MS;
+    #endif
 
     switch (target_cmd) {
     #if ENABLE_ARRAY
@@ -659,7 +660,7 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
         }
     #endif
 
-    #if ENABLE_SKIPLIST
+    #if ENABLE_SKIPLIST 
         case CMD_SSET: {
             if (ensure_capacity(ctx, 128) != 0) return -1;
             
@@ -685,32 +686,35 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
             }
             break;
         }
-
         case CMD_SGET: {
-            pthread_rwlock_rdlock(&seg_locks[idx]); // 加读锁
-            int val_len = kvs_skip_get_value_len(&global_skip, &kv_key);
-            if (ensure_capacity(ctx, (val_len > 0 ? val_len : 0) + 128) != 0) {
-                pthread_rwlock_unlock(&seg_locks[idx]);
-                return -1;
-            }
-
+            pthread_rwlock_wrlock(&seg_locks[idx]); 
             kv_data_t *result = kvs_skip_get(&global_skip, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-
+            
             if (result && result->data && result->len > 0) {
+                // 拿到实际长度后，再确保缓冲区容量
+                if (ensure_capacity(ctx, result->len + 128) != 0) {
+                    pthread_rwlock_unlock(&seg_locks[idx]);
+                    return -1;
+                }
+
+                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
                 memcpy(write_ptr, result->data, result->len);
                 *(ctx->wlength) += result->len;
-                pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
                 
                 char *tail_ptr = *(ctx->wbuffer) + *(ctx->wlength);
                 *(ctx->wlength) += sprintf(tail_ptr, "\r\n");
-            } else {
+                
                 pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
+            } else {
+                pthread_rwlock_unlock(&seg_locks[idx]); // 没找到或者过期被删除了，先解锁
+                
+                // 扩容和写 buffer 可以在无锁状态下进行（ctx 是当前连接独享的）
+                if (ensure_capacity(ctx, 128) != 0) return -1;
+                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
                 *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
             }
             break;
         }
-
         case CMD_SDEL: {
             if (ensure_capacity(ctx, 128) != 0) return -1;
             
@@ -760,11 +764,9 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
             }
             break;
         }
-
         case CMD_SEXIST: {
             if (ensure_capacity(ctx, 128) != 0) return -1;
-            
-            pthread_rwlock_rdlock(&seg_locks[idx]); // 加读锁
+            pthread_rwlock_wrlock(&seg_locks[idx]); 
             int ret = kvs_skip_exist(&global_skip, &kv_key);
             pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
             
@@ -773,7 +775,131 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
             break;
         }
     #endif
-        
+    
+    #if 0
+        case CMD_SSET: {
+            // 1. 先安全扩容
+            if (ensure_capacity(ctx, 128) != 0) return -1;
+            
+            pthread_rwlock_wrlock(&skip_global_lock); 
+            int ret = kvs_skip_set(&global_skip, &kv_key, &kv_value, default_expire);
+            pthread_rwlock_unlock(&skip_global_lock); 
+            
+            // 2. 💡 核心安全修改：永远在扩容和锁后，重新解引用获取最新的 wbuffer 基地址
+            char *base_ptr = *(ctx->wbuffer);
+            int current_len = *(ctx->wlength);
+            
+            if (ret == 0) {
+                // 动态计算绝对安全的写入偏移量
+                *(ctx->wlength) += sprintf(base_ptr + current_len, "OK\r\n");
+                #if ENABLE_PERSISTENCE
+                log_binary_command("SSET", key, key_len, value, value_len);
+                #endif
+            }
+            else if (ret == 1) {
+                *(ctx->wlength) += sprintf(base_ptr + current_len, "EXIST\r\n");
+            }
+            else {
+                *(ctx->wlength) += sprintf(base_ptr + current_len, "ERROR\r\n");
+            }
+            break;
+        }
+
+        case CMD_SGET: {
+            // 💡 修正：因为底层 get 包含惰性删除，属于隐式写操作，必须加全局写锁
+            pthread_rwlock_wrlock(&skip_global_lock); 
+            kv_data_t *result = kvs_skip_get(&global_skip, &kv_key);
+            
+            if (result && result->data && result->len > 0) {
+                if (ensure_capacity(ctx, result->len + 128) != 0) {
+                    pthread_rwlock_unlock(&skip_global_lock);
+                    return -1;
+                }
+
+                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+                memcpy(write_ptr, result->data, result->len);
+                *(ctx->wlength) += result->len;
+                
+                char *tail_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+                *(ctx->wlength) += sprintf(tail_ptr, "\r\n");
+                
+                pthread_rwlock_unlock(&skip_global_lock); 
+            } else {
+                pthread_rwlock_unlock(&skip_global_lock); 
+                
+                if (ensure_capacity(ctx, 128) != 0) return -1;
+                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
+            }
+            break;
+        }
+
+        case CMD_SDEL: {
+            if (ensure_capacity(ctx, 128) != 0) return -1;
+            
+            // 💡 修正：使用跳表全局写锁
+            pthread_rwlock_wrlock(&skip_global_lock); 
+            int ret = kvs_skip_del(&global_skip, &kv_key);
+            pthread_rwlock_unlock(&skip_global_lock); 
+            
+            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+            
+            if (ret == 0) {
+                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                #if ENABLE_PERSISTENCE
+                log_binary_command("SDEL", key, key_len, NULL, 0); 
+                #endif
+                #if ENABLE_REPLICATION
+                repl_push_cmd("SDEL", key, key_len, NULL, 0);
+                #endif
+            } else {
+                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
+            }
+            break;
+        }
+
+        case CMD_SMOD: {
+            if (ensure_capacity(ctx, 128) != 0) return -1;
+            
+            // 💡 修正：使用跳表全局写锁
+            pthread_rwlock_wrlock(&skip_global_lock); 
+            int ret = kvs_skip_mod(&global_skip, &kv_key, &kv_value, default_expire);
+            pthread_rwlock_unlock(&skip_global_lock); 
+            
+            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+            
+            if (ret == 0) {
+                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                #if ENABLE_PERSISTENCE
+                log_binary_command("SMOD", key, key_len, value, value_len);
+                #endif
+                #if ENABLE_REPLICATION
+                repl_push_cmd("SMOD", key, key_len, value, value_len);
+                #endif
+            }
+            else if (ret == 1) {
+                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
+            }
+            else {
+                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
+            }
+            break;
+        }
+
+        case CMD_SEXIST: {
+            if (ensure_capacity(ctx, 128) != 0) return -1;
+            
+            // 💡 修正：底层存在性判断调用了 get（含惰性删除），必须加全局写锁
+            pthread_rwlock_wrlock(&skip_global_lock); 
+            int ret = kvs_skip_exist(&global_skip, &kv_key);
+            pthread_rwlock_unlock(&skip_global_lock); 
+            
+            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+            *(ctx->wlength) += sprintf(write_ptr, (ret == 0) ? "EXIST\r\n" : "NO EXIST\r\n");
+            break;
+        }
+    #endif
+
         case CMD_SHUTDOWN:
             if (ensure_capacity(ctx, 128) == 0) 
                 *(ctx->wlength) += sprintf(*(ctx->wbuffer), "SHUTDOWN\r\n");

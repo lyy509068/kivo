@@ -125,7 +125,7 @@ void kvs_skip_destroy(kvs_skip_t *skip) {
     skip->count = 0;
 }
 
-// ⏱️ 修改：函数签名增加 expire_time
+
 int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!skip)  { printf("DEBUG: Error, skip is NULL!\n"); return -1; }
     if (!key)   { printf("DEBUG: Error, key is NULL!\n"); return -1; }
@@ -174,7 +174,6 @@ int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t exp
     return 0;
 }
 
-// ⏱️ 修改：加入惰性删除拦截机制
 kv_data_t* kvs_skip_get(kvs_skip_t *skip, kv_data_t *key) {
     if (!skip || !key) return NULL;
     
@@ -201,7 +200,91 @@ kv_data_t* kvs_skip_get(kvs_skip_t *skip, kv_data_t *key) {
     return NULL;
 }
 
-// 原样输出
+
+#if 0
+// ⏱️ 修改：函数签名增加 expire_time
+int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
+    if (!skip)   { printf("DEBUG: Error, skip is NULL!\n"); return -1; }
+    if (!key)    { printf("DEBUG: Error, key is NULL!\n"); return -1; }
+    if (!value)  { printf("DEBUG: Error, value is NULL!\n"); return -1; }
+    
+    if (!skip || !skip->header || !key || !value) return -1;
+    skipnode_binary_t *update[MAX_LEVEL + 1];
+    skipnode_binary_t *current = skip->header;
+    
+    // 查找插入位置，记录每层的前驱
+    for (int i = skip->level; i >= 0; i--) {
+        while (current->forward[i] && 
+               kv_data_compare(&current->forward[i]->key, key) < 0) {
+            current = current->forward[i];
+        }
+        update[i] = current;
+    }
+    
+    current = current->forward[0];
+    
+    // 检查 key 是否已存在
+    if (current && kv_data_compare(&current->key, key) == 0) {
+        // 💡 核心修改：虽然不覆盖 Value，但在高并发 Pipeline 写压测下，
+        // 必须刷新这个 Key 的绝对过期时间，防止后续 get 请求把它误判为过期并执行惰性删除！
+        current->expire_time = expire_time; 
+        
+        return 1;  // 💡 坚守业务铁律：已存在，返回 1
+    }
+    
+    // 随机层数
+    int level = random_level();
+    if (level > skip->level) {
+        for (int i = skip->level + 1; i <= level; i++) {
+            update[i] = skip->header;
+        }
+        skip->level = level;
+    }
+    
+    // 创建新节点（传入 expire_time）
+    skipnode_binary_t *new_node = skipnode_create(level, key, value, expire_time);
+    if (!new_node) return -2;
+    
+    // 插入各层
+    for (int i = 0; i <= level; i++) {
+        new_node->forward[i] = update[i]->forward[i];
+        update[i]->forward[i] = new_node;
+    }
+    
+    skip->count++;
+    return 0;
+}
+
+// ⏱️ 修改：加入惰性删除拦截机制
+kv_data_t* kvs_skip_get(kvs_skip_t *skip, kv_data_t *key) {
+    if (!skip || !key) return NULL;
+    
+    skipnode_binary_t *current = skip->header;
+    
+    for (int i = skip->level; i >= 0; i--) {
+        while (current->forward[i] && 
+               kv_data_compare(&current->forward[i]->key, key) < 0) {
+            current = current->forward[i];
+        }
+    }
+    
+    current = current->forward[0];
+    
+    if (current && kv_data_compare(&current->key, key) == 0) {
+        // ⏱️ 拦截：检查该跳表节点是否已超时过期
+        if (current->expire_time > 0 && get_current_ms_skip() > current->expire_time) {
+            // 💡 核心细节：由于你的上层协议层（SGET/SEXIST）已经全部升级为全局全局写锁（wrlock），
+            // 这里并发调用 kvs_skip_del 是绝对安全的，不会发生多线程 Double Free。
+            kvs_skip_del(skip, key); 
+            return NULL;             // 对上层返回不存在
+        }
+        return &current->value;
+    }
+    
+    return NULL;
+}
+#endif
+
 int kvs_skip_del(kvs_skip_t *skip, kv_data_t *key) {
     if (!skip || !key) return -1;
     

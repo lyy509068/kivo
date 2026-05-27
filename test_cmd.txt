@@ -36,21 +36,21 @@ CMD=EXIST KEY=NAME[4]
 CMD=EXIST KEY=NAME[5]
 
 # ==================== Array 文件命令 ====================
-CMD=SET KEY=text.txt FILE=text.txt
-CMD=EXIST KEY=text.txt
-CMD=GET KEY=text.txt
-CMD=DEL KEY=text.txt
-CMD=EXIST KEY=text.txt
-CMD=SET KEY=io多路复用.txt FILE=io多路复用.txt
-CMD=EXIST KEY=io多路复用.txt
-CMD=GET KEY=io多路复用.txt
-CMD=DEL KEY=io多路复用.txt
-CMD=EXIST KEY=io多路复用.txt
-CMD=SET KEY=screenshot.png FILE=screenshot.png
-CMD=EXIST KEY=screenshot.png
-CMD=GET KEY=screenshot.png
-CMD=DEL KEY=screenshot.png
-CMD=EXIST KEY=screenshot.png
+CMD=SET KEY=本地文件1.txt FILE=本地文件1.txt
+CMD=EXIST KEY=本地文件1.txt
+CMD=GET KEY=本地文件1.txt
+CMD=DEL KEY=本地文件1.txt
+CMD=EXIST KEY=本地文件1.txt
+CMD=SET KEY=本地文件2.txt FILE=本地文件2.txt
+CMD=EXIST KEY=本地文件2.txt
+CMD=GET KEY=本地文件2.txt
+CMD=DEL KEY=本地文件2.txt
+CMD=EXIST KEY=本地文件2.txt
+CMD=SET KEY=本地文件3.png FILE=本地文件3.png
+CMD=EXIST KEY=本地文件3.png
+CMD=GET KEY=本地文件3.png
+CMD=DEL KEY=本地文件3.png
+CMD=EXIST KEY=本地文件3.png
 
 # ==================== RBTree 引擎测试命令 ====================
 CMD=RSET KEY=NAME[1] VALUE=LLL @123456
@@ -90,20 +90,20 @@ CMD=REXIST KEY=NAME[4]
 CMD=REXIST KEY=NAME[5]
 
 # ==================== RBTree 文件命令 ====================
-CMD=RSET KEY=text.txt FILE=text.txt
-CMD=REXIST KEY=text.txt
-CMD=RGET KEY=text.txt
-CMD=RDEL KEY=text.txt
-CMD=REXIST KEY=text.txt
-CMD=RSET KEY=io多路复用.txt FILE=io多路复用.txt
-CMD=REXIST KEY=io多路复用.txt
-CMD=RGET KEY=io多路复用.txt
-CMD=RDEL KEY=io多路复用.txt
-CMD=REXIST KEY=io多路复用.txt
-CMD=RSET KEY=screenshot.png FILE=screenshot.png
-CMD=RGET FILE=screenshot.png
-CMD=RDEL KEY=screenshot.png
-CMD=REXIST KEY=screenshot.png
+CMD=RSET KEY=本地文件1.txt FILE=本地文件1.txt
+CMD=REXIST KEY=本地文件1.txt
+CMD=RGET KEY=本地文件1.txt
+CMD=RDEL KEY=本地文件1.txt
+CMD=REXIST KEY=本地文件1.txt
+CMD=RSET KEY=本地文件2.txt FILE=本地文件2.txt
+CMD=REXIST KEY=本地文件2.txt
+CMD=RGET KEY=本地文件2.txt
+CMD=RDEL KEY=本地文件2.txt
+CMD=REXIST KEY=本地文件2.txt
+CMD=RSET KEY=本地文件3.png FILE=本地文件3.png
+CMD=RGET KEY=本地文件3.png
+CMD=RDEL KEY=本地文件3.png
+CMD=REXIST KEY=本地文件3.png
 
 # ==================== Hash 引擎测试命令 ====================
 CMD=HSET KEY=NAME[1] VALUE=LLL @123456
@@ -143,21 +143,21 @@ CMD=HEXIST KEY=NAME[4]
 CMD=HEXIST KEY=NAME[5]
 
 # ==================== Hash 文件命令 ====================
-CMD=HSET KEY=text.txt FILE=text.txt
-CMD=HEXIST KEY=text.txt
-CMD=HGET KEY=text.txt
-CMD=HDEL KEY=text.txt
-CMD=HEXIST KEY=text.txt
-CMD=HSET KEY=io多路复用.txt FILE=io多路复用.txt
-CMD=HEXIST KEY=io多路复用.txt
-CMD=HGET KEY=io多路复用.txt
-CMD=HDEL KEY=io多路复用.txt
-CMD=HEXIST KEY=io多路复用.txt
-CMD=HSET KEY=screenshot.png FILE=screenshot.png
-CMD=HEXIST KEY=screenshot.png
-CMD=HGET KEY=screenshot.png
-CMD=HDEL KEY=screenshot.png
-CMD=HEXIST KEY=screenshot.png
+CMD=HSET KEY=本地文件1.txt FILE=本地文件1.txt
+CMD=HEXIST KEY=本地文件1.txt
+CMD=HGET KEY=本地文件1.txt
+CMD=HDEL KEY=本地文件1.txt
+CMD=HEXIST KEY=本地文件1.txt
+CMD=HSET KEY=本地文件2.txt FILE=本地文件2.txt
+CMD=HEXIST KEY=本地文件2.txt
+CMD=HGET KEY=本地文件2.txt
+CMD=HDEL KEY=本地文件2.txt
+CMD=HEXIST KEY=本地文件2.txt
+CMD=HSET KEY=本地文件3.png FILE=本地文件3.png
+CMD=HEXIST KEY=本地文件3.png
+CMD=HGET KEY=本地文件3.png
+CMD=HDEL KEY=本地文件3.png
+CMD=HEXIST KEY=本地文件3.png
 
 # ==================== SkipList 引擎测试命令 ====================
 CMD=SSET KEY=NAME[1] VALUE=LLL @123456
@@ -197,18 +197,18 @@ CMD=SEXIST KEY=NAME[4]
 CMD=SEXIST KEY=NAME[5]
 
 # ==================== SkipList 文件命令 ====================
-CMD=SSET KEY=text.txt FILE=text.txt
-CMD=SEXIST KEY=text.txt
-CMD=SGET KEY=text.txt
-CMD=SDEL KEY=text.txt
-CMD=SEXIST KEY=text.txt
-CMD=SSET KEY=io多路复用.txt FILE=io多路复用.txt
-CMD=SEXIST KEY=io多路复用.txt
-CMD=SGET KEY=io多路复用.txt
-CMD=SDEL KEY=io多路复用.txt
-CMD=SEXIST KEY=io多路复用.txt
-CMD=SSET KEY=screenshot.png FILE=screenshot.png
-CMD=SEXIST KEY=screenshot.png
-CMD=SGET KEY=screenshot.png
-CMD=SDEL KEY=screenshot.png
-CMD=SEXIST KEY=screenshot.png
+CMD=SSET KEY=本地文件1.txt FILE=本地文件1.txt
+CMD=SEXIST KEY=本地文件1.txt
+CMD=SGET KEY=本地文件1.txt
+CMD=SDEL KEY=本地文件1.txt
+CMD=SEXIST KEY=本地文件1.txt
+CMD=SSET KEY=本地文件2.txt FILE=本地文件2.txt
+CMD=SEXIST KEY=本地文件2.txt
+CMD=SGET KEY=本地文件2.txt
+CMD=SDEL KEY=本地文件2.txt
+CMD=SEXIST KEY=本地文件2.txt
+CMD=SSET KEY=本地文件3.png FILE=本地文件3.png
+CMD=SEXIST KEY=本地文件3.png
+CMD=SGET KEY=本地文件3.png
+CMD=SDEL KEY=本地文件3.png
+CMD=SEXIST KEY=本地文件3.png
