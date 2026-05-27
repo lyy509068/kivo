@@ -280,5 +280,4 @@ void kvs_expire_thread_stop(void) {
     pthread_join(expire_tids[3], NULL);
 #endif
 
-    //printf("[Expire System] All background threads destroyed cleanly.\n");
 }

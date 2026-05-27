@@ -2,7 +2,6 @@
 #include "kvstore.h"
 #include <string.h>
 
-// 1. 初始化/创建（移除 const，与 kvstore.h 的 void *src 严格对齐）
 int kv_data_create(kv_data_t *data, void *src, size_t len) {
     if (!data) return -1;
     
@@ -31,7 +30,6 @@ int kv_data_create(kv_data_t *data, void *src, size_t len) {
     return 0;
 }
 
-// 2. 释放（保持不变，铁腕清除残渣）
 void kv_data_destroy(kv_data_t *data) {
     if (!data) return;
     
@@ -39,12 +37,10 @@ void kv_data_destroy(kv_data_t *data) {
         kvs_free(data->data);
     }
     
-    // 彻底抹平成绝对安全的纯零状态，防御任何后继的二次释放（Double Free）
     data->data = NULL;
     data->len = 0;
 }
 
-// 3. 深拷贝（移除 const，与 kvstore.h 的 kv_data_t *src 严格对齐）
 int kv_data_dup(kv_data_t *dst, kv_data_t *src) {
     if (!dst) return -1;
     

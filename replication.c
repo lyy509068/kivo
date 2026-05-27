@@ -21,6 +21,7 @@ struct repl_conn {
 };
 
 static struct repl_conn g_repl = { -1, NULL, 0, 0 };
+
 //动态扩容
 static int ensure_wbuffer_capacity(int needed_space) {
     if (g_repl.wcapacity - g_repl.wlength >= needed_space) {
@@ -31,9 +32,9 @@ static int ensure_wbuffer_capacity(int needed_space) {
         new_capacity *= 2;
     }
 
-    char *new_buf = (char *)realloc(g_repl.wbuffer, new_capacity);
+    char *new_buf = (char *)kvs_realloc(g_repl.wbuffer, new_capacity);
     if (!new_buf) {
-        perror("replication wbuffer realloc failed");
+        perror("replication wbuffer kvs_realloc failed");
         return -1;
     }
 
@@ -61,7 +62,7 @@ int repl_connect_to_slave(const char *slave_ip, unsigned short slave_port) {
 
     // 初始化发送缓冲区
     g_repl.wcapacity = REPL_INIT_BUFFER_SIZE;
-    g_repl.wbuffer = (char *)malloc(g_repl.wcapacity);
+    g_repl.wbuffer = (char *)kvs_malloc(g_repl.wcapacity);
     g_repl.wlength = 0;
 
     // 设置为非阻塞模式,防止发包时卡死Master主线程
@@ -78,8 +79,7 @@ int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char
 
     int cmd_len = strlen(cmd_name);
 
-    // 1. ✅ 严丝合缝对齐从端：单条命令的总空间计算公式
-    // [cmd_count(4字节，如果缓冲区为空时需要算进去)] + [cmd_len(4)] + [cmd] + [key_len(4)] + [key] + [value_len(4)] + [value]
+    // 对齐从端
     int single_cmd_len = 4 + cmd_len + 4 + key_len + 4 + value_len;
     int total_needed = single_cmd_len;
     
@@ -93,19 +93,17 @@ int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char
 
     char *p = g_repl.wbuffer + g_repl.wlength;
 
-    // 2. ✅ 处理全局大包头 cmd_count
+    // 处理全局大包头 cmd_count
     if (g_repl.wlength == 0) {
         int cmd_count = 1;
         memcpy(p, &cmd_count, 4); 
         p += 4;
     } else {
-        // 🔥 高级并发优化：如果缓冲区有残留数据，说明上个命令还没发完
-        // 此时我们直接修改缓冲区最开头的 4 字节，将大包内的 cmd_count 计数器直接自增！
         int *batch_cmd_count = (int*)g_repl.wbuffer;
         (*batch_cmd_count)++;
     }
 
-    // 3. ✅ 严格按照从端状态机的交替顺序写入内存 [Len][Data][Len][Data]
+    // 严格按照从端状态机的交替顺序写入内存 [Len][Data][Len][Data]
     // 写入命令
     memcpy(p, &cmd_len, 4);       p += 4;
     memcpy(p, cmd_name, cmd_len); p += cmd_len;
@@ -120,7 +118,7 @@ int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char
         memcpy(p, value, value_len); p += value_len;
     }
 
-    // 4. ✅ 推进发送缓冲区有效数据长度
+    // 推进发送缓冲区有效数据长度
     g_repl.wlength += total_needed;
     
     // 触发非阻塞发送
@@ -133,7 +131,7 @@ int repl_flush() {
 
     int total_sent = 0;
     
-    // ✅ 强力冲刷循环：非阻塞下尽量排空缓冲区
+    // 非阻塞下尽量排空缓冲区
     while (g_repl.wlength > 0) {
         int ret = send(g_repl.fd, g_repl.wbuffer, g_repl.wlength, 0);
         if (ret > 0) {
@@ -158,9 +156,9 @@ int repl_flush() {
         }
     }
 
-    // 按需缩容 (只有当缓冲区完全清空，且容量膨胀到 4 倍初始大小时才执行)
+    // 按需缩容
     if (g_repl.wlength == 0 && g_repl.wcapacity > REPL_INIT_BUFFER_SIZE * 4) {
-        char *shrunk_buf = (char *)realloc(g_repl.wbuffer, REPL_INIT_BUFFER_SIZE);
+        char *shrunk_buf = (char *)kvs_realloc(g_repl.wbuffer, REPL_INIT_BUFFER_SIZE);
         if (shrunk_buf) {
             g_repl.wbuffer = shrunk_buf;
             g_repl.wcapacity = REPL_INIT_BUFFER_SIZE;
@@ -176,7 +174,7 @@ void repl_close() {
         g_repl.fd = -1;
     }
     if (g_repl.wbuffer) {
-        free(g_repl.wbuffer);
+        kvs_free(g_repl.wbuffer);
         g_repl.wbuffer = NULL;
     }
     g_repl.wcapacity = 0;

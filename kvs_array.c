@@ -13,7 +13,7 @@ static int64_t get_current_ms_array(void) {
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-// 原样输出
+
 int kvs_array_create(kvs_array_t *inst) {
     if (!inst) {
         return -1;
@@ -33,7 +33,7 @@ int kvs_array_create(kvs_array_t *inst) {
     return 0;
 }
 
-// 原样输出
+
 void kvs_array_destroy(kvs_array_t *inst) {
     if (!inst) return;
     
@@ -55,7 +55,6 @@ void kvs_array_destroy(kvs_array_t *inst) {
     inst->idx = 0;
 }
 
-// 原样输出：查找 key 是否存在，返回索引，不存在返回 -1
 static int find_key_index(kvs_array_t *inst, kv_data_t *key) {
     for (int i = 0; i < inst->total; i++) {
         if (inst->table[i].key.data && kv_data_compare(&inst->table[i].key, key) == 0) {
@@ -65,7 +64,7 @@ static int find_key_index(kvs_array_t *inst, kv_data_t *key) {
     return -1;
 }
 
-// ⏱️ 修改：函数签名增加 expire_time，并移除原代码里不必要的空洞查询循环
+// 函数签名增加 expire_time，并移除原代码里不必要的空洞查询循环
 int kvs_array_set(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!inst || !key || !value) return -1;
     if (inst->total >= KVS_ARRAY_SIZE) return -1;
@@ -86,7 +85,6 @@ int kvs_array_set(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t e
         return -2;
     }
     
-    // ⏱️ 新增：写入绝对过期时间戳
     inst->table[idx].expire_time = expire_time;
     
     inst->total++;
@@ -95,14 +93,13 @@ int kvs_array_set(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t e
     return 0;
 }
 
-// ⏱️ 修改：增加惰性删除机制
+// 增加惰性删除机制
 kv_data_t* kvs_array_get(kvs_array_t *inst, kv_data_t *key) {
     if (!inst || !key) return NULL;
     
     int idx = find_key_index(inst, key);
     if (idx == -1) return NULL;
     
-    // ⏱️ 检查当前 Key 是否已过期
     if (inst->table[idx].expire_time > 0 && get_current_ms_array() > inst->table[idx].expire_time) {
         kvs_array_del(inst, key); // 惰性删除：当场剔除
         return NULL;              // 对上层假装不存在
@@ -111,7 +108,7 @@ kv_data_t* kvs_array_get(kvs_array_t *inst, kv_data_t *key) {
     return &inst->table[idx].value;
 }
 
-// 原样输出：删除键值对
+
 int kvs_array_del(kvs_array_t *inst, kv_data_t *key) {
     if (!inst || !key) return -1;
     
@@ -135,7 +132,7 @@ int kvs_array_del(kvs_array_t *inst, kv_data_t *key) {
     return 0;
 }
 
-// ⏱️ 修改：函数签名增加 expire_time
+// 函数签名增加 expire_time
 int kvs_array_mod(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!inst || !key || !value) return -1;
     
@@ -146,13 +143,12 @@ int kvs_array_mod(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t e
     kv_data_destroy(&inst->table[idx].value);
     if (kv_data_dup(&inst->table[idx].value, value) != 0) return -2;
     
-    // ⏱️ 新增：重置/覆盖新的过期时间
     inst->table[idx].expire_time = expire_time;
     
     return 0;
 }
 
-// 原样输出
+
 int kvs_array_exist(kvs_array_t *inst, kv_data_t *key) {
     if (!inst || !key) return -1;
     
@@ -161,7 +157,7 @@ int kvs_array_exist(kvs_array_t *inst, kv_data_t *key) {
     return (res == NULL) ? 1 : 0;
 }
 
-// 原样输出
+
 int kvs_array_get_value_len(char *key_ptr, int key_len) {
     if (!key_ptr || key_len <= 0) return 0;
 
@@ -180,7 +176,7 @@ int kvs_array_get_value_len(char *key_ptr, int key_len) {
     return 0; // 没找到返回 0
 }
 
-// 原样输出
+
 void kvs_array_foreach(kvs_array_t *inst, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (!inst || !callback || !inst->table) return;
     

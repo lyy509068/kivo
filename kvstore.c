@@ -12,20 +12,33 @@
 
 extern const kvs_cmd_map_t kvs_cmd_list[];
 
+#if ENABLE_ARRAY
+extern kvs_array_t global_array;
+#endif
+#if ENABLE_RBTREE
+extern kvs_rbtree_t global_rbtree;
+#endif
+#if ENABLE_HASH
+extern kvs_hash_t global_hash;
+#endif
+#if ENABLE_SKIPLIST
+extern kvs_skip_t global_skip;
+#endif
+
+
+
+//超时删除开关
 #define ENABLE_TTL 0
 #define DEFAULT_TTL_MS  20000
 int64_t default_expire = 0;
-
 int expire_time=0;
-
+//分段锁，超时删除时保护数据
 #define LOCK_SEGMENTS 32
 pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
-// 跳表专属的全局读写锁
-//static pthread_rwlock_t skip_global_lock = PTHREAD_RWLOCK_INITIALIZER;
-
+//超时清理线程
 static pthread_t global_expire_thread;
 static volatile int expire_thread_running = 0;
-
+//分配锁
 static inline int get_segment_index(const char *key, size_t len) {
     if (!key || len == 0) return 0;
     unsigned long hash = 5381;
@@ -34,7 +47,7 @@ static inline int get_segment_index(const char *key, size_t len) {
     }
     return hash % LOCK_SEGMENTS;
 }
-
+//初始化锁
 int kvs_init_locks(void) {
     for (int i = 0; i < LOCK_SEGMENTS; i++) {
         if (pthread_rwlock_init(&seg_locks[i], NULL) != 0) {
@@ -43,13 +56,13 @@ int kvs_init_locks(void) {
     }
     return 0;
 }
-
+//销毁锁
 void kvs_destroy_locks(void) {
     for (int i = 0; i < LOCK_SEGMENTS; i++) {
         pthread_rwlock_destroy(&seg_locks[i]);
     }
 }
-
+//初始化删除线程
 int expire_thread_init(void) {
     int ret = kvs_expire_thread_start();
     if (ret != 0) {
@@ -58,10 +71,10 @@ int expire_thread_init(void) {
     }
     return 0;
 }
-
+//销毁删除线程
 void expire_thread_destroy(void) {
     if (expire_thread_running) {
-        expire_thread_running = 0; // 通知线程退出
+        expire_thread_running = 0; 
         pthread_join(global_expire_thread, NULL);
     }
 }
@@ -214,20 +227,6 @@ void mem_pool_stats(mem_pool_t *pool) {
 #endif
 
 
-
-#if ENABLE_ARRAY
-extern kvs_array_t global_array;
-#endif
-#if ENABLE_RBTREE
-extern kvs_rbtree_t global_rbtree;
-#endif
-#if ENABLE_HASH
-extern kvs_hash_t global_hash;
-#endif
-#if ENABLE_SKIPLIST
-extern kvs_skip_t global_skip;
-#endif
-
 void dest_kvengine(void);
 
 enum {
@@ -251,8 +250,9 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
     {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXIST",   6, CMD_SEXIST},
     {"SHUTDOWN", 8, CMD_SHUTDOWN}
 };
-#define KVS_CMD_LIST_SIZE (sizeof(kvs_cmd_list) / sizeof(kvs_cmd_list[0]))
 
+#define KVS_CMD_LIST_SIZE (sizeof(kvs_cmd_list) / sizeof(kvs_cmd_list[0]))//命令总数
+//动态扩容
 static int ensure_capacity(session_ctx_t *ctx, int needed) {
     if (!ctx || !ctx->wbuffer || !ctx->wcapacity || !ctx->wlength) return -1;
 
@@ -916,12 +916,12 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
 }
 
 int init_kvengine(void) {
-// 1. 基础组件初始化（全局锁、内存池）
+// 全局锁
     if (kvs_init_locks() != 0) {
         printf("Failed to init segment locks\n");
         return -1;
     }
-
+//内存池
 #if ENABLE_MEM_POOL
     array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
     rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
@@ -934,7 +934,7 @@ int init_kvengine(void) {
     }
 #endif
 
-// 2. 空引擎结构初始化
+// 引擎结构
 #if ENABLE_ARRAY
     memset(&global_array, 0, sizeof(kvs_array_t));
     kvs_array_create(&global_array);
@@ -952,28 +952,28 @@ int init_kvengine(void) {
     kvs_skip_create(&global_skip);
 #endif
     
-// 3. 从磁盘恢复数据（先快照，再用 AOF 日志追平增量）
+// 恢复数据（先快照，再用AOF日志追平增量）
 #if ENABLE_SNAPSHOT
     kvs_snapshot_load();        
 #endif
 #if ENABLE_PERSISTENCE
     kvs_persistence_init();
-    kvs_persistence_recover(); // 此时内存引擎中数据已完整
+    kvs_persistence_recover(); 
 #endif
 
-// 4. 开启定时持久化任务
+// 定时持久化
 #if ENABLE_SNAPSHOT
     kvs_snapshot_auto_save(1); 
 #endif
 
-// 5. 建立主从同步连接（确保本地数据完全恢复后，再开始同步新数据）
+// 建立主从同步连接
 #if ENABLE_REPLICATION
     const char *slave_ip = "192.168.92.129";
     unsigned short slave_port = 2000;
     repl_connect_to_slave(slave_ip, slave_port); 
 #endif 
 
-    // 6. 最后拉起后端定时超时删除线程（防止恢复期间提前触发删除）
+// 定时超时删除线程
     if (expire_thread_init() != 0) {
         return -1;
     }
@@ -982,16 +982,14 @@ int init_kvengine(void) {
 }
 
 void dest_kvengine(void) {
-// 1. 立刻切断一切外部/后台异步写操作的来源
-    expire_thread_destroy(); // 关掉超时清理线程
-
+// 关掉超时清理线程
+expire_thread_destroy(); 
+// 关闭主从同步
 #if ENABLE_REPLICATION
-    repl_close();            // 优先关闭主从同步，防止后续落盘/销毁阶段产生数据抖动
+    repl_close();            
 #endif
 
 #if ENABLE_SNAPSHOT
-    printf("\n[DEBUG] Entering dest_kvengine...\n");
-    fflush(stdout);
     kvs_snapshot_auto_save_stop();  // 停止自动快照定时器
     kvs_snapshot_save();            // 最后做一次强制全量快照落盘
 #endif
@@ -1000,7 +998,7 @@ void dest_kvengine(void) {
     kvs_persistence_close();        // 关闭并刷盘 AOF 日志文件流
 #endif
 
-// 2. 彻底安全的释放本地内存引擎
+// 释放本地内存引擎
 #if ENABLE_ARRAY
     kvs_array_destroy(&global_array);
 #endif
@@ -1014,7 +1012,7 @@ void dest_kvengine(void) {
     kvs_skip_destroy(&global_skip);
 #endif
 
-// 3. 释放底层支撑组件（内存池、锁）
+// 释放内存池
 #if ENABLE_MEM_POOL
     if (array_item_pool) mem_pool_stats(array_item_pool);
     if (rbtree_node_pool) mem_pool_stats(rbtree_node_pool);
@@ -1027,7 +1025,7 @@ void dest_kvengine(void) {
     mem_pool_destroy(skip_node_pool);
 #endif
 
-    kvs_destroy_locks(); // 最后释放锁
+    kvs_destroy_locks(); // 释放锁
 }
 
 

@@ -14,7 +14,7 @@ int repl_connect_to_slave(const char *slave_ip, unsigned short slave_port);
 int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char *value, int value_len);
 // 刷新缓冲区
 int repl_flush();
-
+// 关闭线程
 void repl_close();
 
 #endif

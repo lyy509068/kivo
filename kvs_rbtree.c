@@ -1,10 +1,9 @@
-// kvs_rbtree_binary.c
-// 二进制安全版本的红黑树存储引擎
 
-#include "kvstore.h"//这里不要改
+
+#include "kvstore.h"
 #include <string.h>
-#include <stdint.h>   // ⏱️ 新增：支持 int64_t
-#include <sys/time.h> // ⏱️ 新增：支持 gettimeofday
+#include <stdint.h>   
+#include <sys/time.h> 
 
 #define RED 0
 #define BLACK 1
@@ -12,7 +11,7 @@
 // 全局红黑树实例
 kvs_rbtree_t global_rbtree = {0};
 
-// ⏱️ 新增辅助函数：获取当前毫秒级时间戳
+
 static int64_t get_current_ms_rbtree(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -226,7 +225,7 @@ static rbtree_node_binary_t* rbtree_delete(rbtree_binary_t *T, rbtree_node_binar
         x = y->right;
     }
     
-    // 【修复点】：无条件赋值！即便 x 是 T->nil，也必须把父节点传给它，供 fixup 回溯
+    // 【无条件赋值！即便 x 是 T->nil，也必须把父节点传给它，供 fixup 回溯
     x->parent = y->parent; 
     
     if (y->parent == T->nil) {
@@ -297,7 +296,7 @@ int kvs_rbtree_create(kvs_rbtree_t *inst) {
     inst->nil->key.len = 0;
     inst->nil->value.data = NULL;
     inst->nil->value.len = 0;
-    inst->nil->expire_time = 0; // ⏱️ 新增
+    inst->nil->expire_time = 0; 
     
     inst->root = inst->nil;
     
@@ -369,7 +368,6 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t
     return 0;
 }
 
-// ⏱️ 修改：增加惰性删除拦截机制
 kv_data_t* kvs_rbtree_get(kvs_rbtree_t *inst, kv_data_t *key) {
     if (!inst || !key) return NULL;
     
@@ -381,7 +379,6 @@ kv_data_t* kvs_rbtree_get(kvs_rbtree_t *inst, kv_data_t *key) {
         return NULL;
     }
     
-    // ⏱️ 检查当前节点是否已过期
     if (node->expire_time > 0 && get_current_ms_rbtree() > node->expire_time) {
         kvs_rbtree_del(inst, key); // 惰性删除：将其从树中剔除并释放
         return NULL;               // 返回空
@@ -408,7 +405,6 @@ int kvs_rbtree_del(kvs_rbtree_t *inst, kv_data_t *key) {
     return 0;
 }
 
-// ⏱️ 修改：函数签名增加 expire_time 参数
 int kvs_rbtree_mod(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!inst || !key || !value) return -1;
     
@@ -419,13 +415,12 @@ int kvs_rbtree_mod(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t
     kv_data_destroy(&node->value);
     if (kv_data_dup(&node->value, value) != 0) return -2;
     
-    // ⏱️ 新增：重置过期时间
     node->expire_time = expire_time;
     
     return 0;
 }
 
-// 原样输出
+
 int kvs_rbtree_exist(kvs_rbtree_t *inst, kv_data_t *key) {
     if (!inst || !key) return -1;
     
@@ -434,7 +429,7 @@ int kvs_rbtree_exist(kvs_rbtree_t *inst, kv_data_t *key) {
     return (res == NULL) ? 1 : 0;
 }
 
-// 原样输出
+
 static void rbtree_foreach_node(rbtree_binary_t *T, rbtree_node_binary_t *node, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (node == T->nil) return;
     rbtree_foreach_node(T, node->left, callback, arg);
@@ -442,14 +437,13 @@ static void rbtree_foreach_node(rbtree_binary_t *T, rbtree_node_binary_t *node, 
     rbtree_foreach_node(T, node->right, callback, arg);
 }
 
-// 原样输出
+
 void kvs_rbtree_foreach(kvs_rbtree_t *inst, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (!inst || !callback) return;
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
     rbtree_foreach_node(T, T->root, callback, arg);
 }
 
-// 原样输出
 int kvs_rbtree_get_value_len(char *key_ptr, int key_len) {
     if (!key_ptr || key_len <= 0) {
         return 0;

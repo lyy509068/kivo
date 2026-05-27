@@ -8,14 +8,13 @@
 
 kvs_hash_t global_hash={0};
 
-// ⏱️ 新增辅助函数：获取当前毫秒级时间戳
 static int64_t get_current_ms_hash(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-// 原样输出
+
 int kvs_hash_create(kvs_hash_t *hash) {
     if (!hash) return -1;
 
@@ -32,7 +31,7 @@ int kvs_hash_create(kvs_hash_t *hash) {
     return 0;
 }
 
-// 原样输出
+
 void kvs_hash_destroy(kvs_hash_t *hash) {
     if (!hash || !hash->buckets) return;
     for (int i = 0; i < hash->max_slots; i++) {
@@ -51,7 +50,6 @@ void kvs_hash_destroy(kvs_hash_t *hash) {
     hash->count = 0;
 }
 
-// ⏱️ 修改：函数签名增加 expire_time
 int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!hash || !key || !value) return -1;
     unsigned long h = kv_data_hash(key, hash->max_slots);
@@ -78,7 +76,6 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
         return -1;
     }
 
-    // ⏱️ 新增：写入绝对过期时间戳
     new_node->expire_time = expire_time;
 
     // 链表头插法
@@ -88,7 +85,6 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     return 0;
 }
 
-// ⏱️ 修改：引入惰性删除拦截机制
 kv_data_t *kvs_hash_get(kvs_hash_t *hash, kv_data_t *key) {
     if (!hash || !key) return NULL;
     unsigned long h = kv_data_hash(key, hash->max_slots);
@@ -96,7 +92,6 @@ kv_data_t *kvs_hash_get(kvs_hash_t *hash, kv_data_t *key) {
     hashnode_t *node = hash->buckets[h];
     while (node) {
         if (kv_data_cmp(&node->key, key) == 0) {
-            // ⏱️ 关键拦截：检查当前节点是否已超时过期
             if (node->expire_time > 0 && get_current_ms_hash() > node->expire_time) {
                 kvs_hash_del(hash, key); // 惰性删除：将其从冲突链表中彻底剥离并释放
                 return NULL;             // 假装数据不存在
@@ -108,7 +103,6 @@ kv_data_t *kvs_hash_get(kvs_hash_t *hash, kv_data_t *key) {
     return NULL;
 }
 
-// ⏱️ 修改：函数签名增加 expire_time
 int kvs_hash_mod(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!hash || !key || !value) return -1;
     unsigned long h = kv_data_hash(key, hash->max_slots);
@@ -120,7 +114,6 @@ int kvs_hash_mod(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
             kv_data_destroy(&node->value);
             int ret = kv_data_dup(&node->value, value);
             if (ret == 0) {
-                // ⏱️ 新增：更新成功后同步覆盖新的过期时间
                 node->expire_time = expire_time;
             }
             return ret;
@@ -130,7 +123,6 @@ int kvs_hash_mod(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     return 1; // 未找到
 }
 
-// 原样输出：删除键值对
 int kvs_hash_del(kvs_hash_t *hash, kv_data_t *key) {
     if (!hash || !key) return -1;
     unsigned long h = kv_data_hash(key, hash->max_slots);
@@ -155,18 +147,18 @@ int kvs_hash_del(kvs_hash_t *hash, kv_data_t *key) {
     return 1; // 未找到
 }
 
-// 原样输出
+
 int kvs_hash_exist(kvs_hash_t *hash, kv_data_t *key) {
     return (kvs_hash_get(hash, key) != NULL) ? 0 : 1;
 }
 
-// 原样输出
+
 int kvs_hash_get_value_len(kvs_hash_t *hash, kv_data_t *key) {
     kv_data_t *val = kvs_hash_get(hash, key);
     return val ? val->len : -1;
 }
 
-// 原样输出
+
 void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (!hash || !callback) return;
     for (int i = 0; i < hash->max_slots; i++) {
