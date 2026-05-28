@@ -41,7 +41,7 @@ typedef struct {
     int *wlength;     // 指向已用长度变量
 } session_ctx_t;
 
-#define ENABLE_MEM_POOL 1 //启用内存池
+#define ENABLE_MEM_POOL 0 //启用内存池
 
 #if ENABLE_MEM_POOL
 extern mem_pool_t *array_item_pool;

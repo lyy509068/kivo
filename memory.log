@@ -289,3 +289,63 @@ Init: VmSize=109588 kB | VmRSS=1096 kB
 
 
 
+
+========== Mode 0 ==========
+Init: VmSize=109588 kB | VmRSS=1096 kB 
+[Mode 0] Time: 1277 ms | QPS: 70477 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 2 ==========
+Init: VmSize=109588 kB | VmRSS=1076 kB 
+[Mode 2] Time: 1330 ms | QPS: 67669 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 4 ==========
+Init: VmSize=109588 kB | VmRSS=1144 kB 
+[Mode 4] Time: 1351 ms | QPS: 66617 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 6 ==========
+Init: VmSize=109588 kB | VmRSS=1100 kB 
+[Mode 6] Time: 1310 ms | QPS: 68702 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 0 ==========
+Init: VmSize=109588 kB | VmRSS=1092 kB 
+[Mode 0] Time: 1357 ms | QPS: 66322 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 2 ==========
+Init: VmSize=109588 kB | VmRSS=1144 kB 
+[Mode 2] Time: 1278 ms | QPS: 70422 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 4 ==========
+Init: VmSize=109588 kB | VmRSS=1108 kB 
+[Mode 4] Time: 1265 ms | QPS: 71146 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 6 ==========
+Init: VmSize=109588 kB | VmRSS=1108 kB 
+[Mode 6] Time: 1373 ms | QPS: 65549 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+========== Mode 0 ==========
+Init: VmSize=58328 kB | VmRSS=3960 kB 
+[Mode 0] Time: 1377 ms | QPS: 65359 | VmSize+: +10240 kB | VmRSS+: +0 kB
+
+
+========== Mode 2 ==========
+Init: VmSize=58328 kB | VmRSS=3968 kB 
+[Mode 2] Time: 1295 ms | QPS: 69498 | VmSize+: +4096 kB | VmRSS+: +0 kB
+
+
+========== Mode 4 ==========
+Init: VmSize=58328 kB | VmRSS=3908 kB 
+[Mode 4] Time: 1323 ms | QPS: 68027 | VmSize+: +4096 kB | VmRSS+: +0 kB
+
+
+========== Mode 6 ==========
+Init: VmSize=58328 kB | VmRSS=3864 kB 
+[Mode 6] Time: 1302 ms | QPS: 69124 | VmSize+: +10240 kB | VmRSS+: +0 kB
+

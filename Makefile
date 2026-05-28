@@ -5,10 +5,8 @@ LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl
 SRCS = kvstore.c mempool.c persistence.c snapshot.c reactor.c proactor.c ntyco.c\
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c expire_thread.c replication.c
 
-TESTCASE_SRCS = testcase.c
-
 TARGET = kvstore
-TESTCASE = testcase
+TESTCASES = testcase testcase2 testcase3
 SUBDIR = ./NtyCo/
 
 OBJS = kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o\
@@ -16,7 +14,8 @@ OBJS = kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o
 
 .PHONY: all clean ECHO $(SUBDIR)
 
-all: $(SUBDIR) $(TARGET) $(TESTCASE)
+# all 依赖所有的测试客户端
+all: $(SUBDIR) $(TARGET) $(TESTCASES)
 
 $(SUBDIR): ECHO
 	make -C $@
@@ -27,12 +26,12 @@ ECHO:
 $(TARGET): $(OBJS) 
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
-$(TESTCASE): $(TESTCASE_SRCS)
-	$(CC) $(CFLAGS) -o $@ $^
+$(TESTCASES): %: %.c
+	$(CC) $(CFLAGS) -o $@ $<
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean: 
-	rm -rf $(OBJS) $(TARGET) $(TESTCASE) kvstore.aof kvstore.snap
+	rm -rf $(OBJS) $(TARGET) $(TESTCASES) kvstore.aof kvstore.snap
 	make -C $(SUBDIR) clean

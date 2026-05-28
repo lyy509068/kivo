@@ -940,7 +940,7 @@ int main(int argc, char *argv[]) {
     
     if (server_pid == 0) {
     
-        int use_jemalloc = 0; 
+        int use_jemalloc = 1; 
 
         if (use_jemalloc) {
             printf("[Client-Fork] <Optimization> Setting LD_PRELOAD for jemalloc pool...\n");
