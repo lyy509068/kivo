@@ -8,7 +8,7 @@
 typedef void (*RCALLBACK)(int fd);
 
 // 这里保留 binary_msg_handler 的定义，因为它直接决定了 reactor 如何调用协议层
-typedef int (*binary_msg_handler)(void *msg, int length, session_ctx_t *ctx);
+typedef int (*binary_msg_handler)(void *msg, int length, kvs_resp_t *resp);
 
 // 连接结构体：这是网络层的核心
 struct conn {

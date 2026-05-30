@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include "mempool.h"
 #include "replication.h"
+#include <arpa/inet.h>
 
 extern const kvs_cmd_map_t kvs_cmd_list[];
 
@@ -252,35 +253,6 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
 };
 
 #define KVS_CMD_LIST_SIZE (sizeof(kvs_cmd_list) / sizeof(kvs_cmd_list[0]))//命令总数
-//动态扩容
-static int ensure_capacity(session_ctx_t *ctx, int needed) {
-    if (!ctx || !ctx->wbuffer || !ctx->wcapacity || !ctx->wlength) return -1;
-
-    // 总容量 = 当前已经攒下的数据长度 + 本次需要追加的长度
-    int total_needed = *(ctx->wlength) + needed;
-
-    // 如果当前总容量不够，则执行扩容
-    if (*(ctx->wcapacity) < total_needed) {
-        // 初始给 4KB，否则按原有容量的 2 倍向上翻倍
-        int new_capacity = (*ctx->wcapacity == 0) ? 4096 : (*ctx->wcapacity * 2);
-        
-        // 如果翻倍后的容量依然装不下 total_needed，则直接扩容到刚好满足 total_needed
-        if (new_capacity < total_needed) {
-            new_capacity = total_needed;
-        }
-
-        // 重新分配内存
-        char *new_buf = (char *)kvs_realloc(*(ctx->wbuffer), new_capacity);
-        if (!new_buf) {
-            perror("kvs_realloc failed in handler");
-            return -1;
-        }
-
-        *(ctx->wbuffer) = new_buf;
-        *(ctx->wcapacity) = new_capacity;
-    }
-    return 0;
-}
 
 #if ENABLE_PERSISTENCE
 void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len) {
@@ -319,33 +291,50 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
 }
 #endif 
 
-int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
-    if (!msg || msg_len <= 0 || !ctx || !ctx->wbuffer) return -1;
+int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
 
-    // 动态计算指针漂移
-    int cmd_len = *(int*)msg;
-    char *cmd   = msg + 4;
+    if (!msg || msg_len <= 0 || !resp) return -1;
 
-    int key_len = *(int*)(msg + 4 + cmd_len);
-    char *key   = msg + 4 + cmd_len + 4;
+    // 初始化响应结构体
+    resp->status = KVS_RESP_ERROR;
+    resp->body = NULL;
+    resp->body_len = 0;
 
-    int value_len = *(int*)(msg + 4 + cmd_len + 4 + key_len);
-    char *value   = msg + 4 + cmd_len + 4 + key_len + 4;
+    int offset=0;
 
-    // 防止解析出来的长度越界
-    if (4 + cmd_len + 4 + key_len + 4 + value_len > msg_len) {
-        if (ensure_capacity(ctx, 128) == 0) {
-            *(ctx->wlength) += sprintf(*(ctx->wbuffer) + *(ctx->wlength), "PARSE ERROR\r\n");
-        }
-        return -1;
-    }
+    if (offset + 4 > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
+    int cmd_len_net;
+    memcpy(&cmd_len_net, (char *)msg + offset, 4); // 从当前偏移位置安全拷贝4字节
+    int cmd_len = ntohl(cmd_len_net);              // 转换为本地小端序
+    offset += 4;                                   // 游标向后移动4字节
+    if (offset + cmd_len > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }// 防止解析出来的长度越界
+    char *cmd = (char *)msg + offset;              // 绑定当前位置给 cmd 指针
+    offset += cmd_len;                             // 游标跳过 cmd 字符串本身
 
-    // 构造面向底层所有引擎的通用二进制安全传输体 (kv_key, kv_value)
+    if (offset + 4 > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
+    int key_len_net;
+    memcpy(&key_len_net, (char *)msg + offset, 4); 
+    int key_len = ntohl(key_len_net);              
+    offset += 4;                                   
+    if (offset + key_len > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
+    char *key = (char *)msg + offset;              
+    offset += key_len;                             
+    
+    if (offset + 4 > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
+    int value_len_net;
+    memcpy(&value_len_net, (char *)msg + offset, 4); 
+    int value_len = ntohl(value_len_net);            
+    offset += 4;                                     
+    if (offset + value_len > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
+    char *value = (char *)msg + offset;            
+    offset += value_len;                           
+
+    // 构造二进制安全传输体
     kv_data_t kv_key = {key, (size_t)key_len};
     kv_data_t kv_value = {value, (size_t)value_len};
     int target_cmd = CMD_UNKNOWN;
 
-    // 匹配字符串命令类型 (将字符串 cmd 转成对应的 target_cmd 枚举)
+    // 匹配字符串命令类型
     for (int i = 0; i < KVS_CMD_LIST_SIZE; i++) {
         if (cmd_len == kvs_cmd_list[i].cmd_len && 
             memcmp(cmd, kvs_cmd_list[i].cmd_name, cmd_len) == 0) {
@@ -356,6 +345,7 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
 
     int ret = 0;
     kv_data_t *result = NULL;
+    unsigned long long default_expire = 0;
     
     // 计算分段锁索引与默认过期时间
     int idx = get_segment_index(key, key_len);
@@ -366,13 +356,9 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
     switch (target_cmd) {
     #if ENABLE_ARRAY
         case CMD_SET:
-            if (ensure_capacity(ctx, 128) != 0) return -1;
             ret = kvs_array_set(&global_array, &kv_key, &kv_value, default_expire);
             if (ret == 0) {
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                int written = sprintf(write_ptr, "OK\r\n");
-                *(ctx->wlength) += written;
-
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SET", key, key_len, value, value_len);
                 #endif
@@ -380,105 +366,62 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
                 repl_push_cmd("SET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) {
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                int written = sprintf(write_ptr, "EXIST\r\n");
-                *(ctx->wlength) += written;
-            }
-            else {
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                int written = sprintf(write_ptr, "ERROR\r\n");
-                *(ctx->wlength) += written;
-            }
+            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
 
-        case CMD_GET: {
-            int val_len = kvs_array_get_value_len(key, key_len);
-            if (ensure_capacity(ctx, (val_len > 0 ? val_len : 0) + 128) != 0) return -1;
-            
+        case CMD_GET:
             result = kvs_array_get(&global_array, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-
             if (result && result->data && result->len > 0) {
-                memcpy(write_ptr, result->data, result->len);
-                *(ctx->wlength) += result->len;
-                //追加换行符
-                char *tail_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                int tail_written = sprintf(tail_ptr, "\r\n");
-                *(ctx->wlength) += tail_written;
-            } else {
-                int written = sprintf(write_ptr, "NO EXIST\r\n");
-                *(ctx->wlength) += written;
-            }
-        }
+                resp->status = KVS_RESP_GET_OK;
+                // 💡 核心安全机制：为了彻底解耦且防并发删除，在锁/生命周期内 malloc 拷贝一份副本
+                resp->body = kvs_malloc(result->len);
+                if (resp->body) {
+                    memcpy(resp->body, result->data, result->len);
+                    resp->body_len = result->len;
+                } else { resp->status = KVS_RESP_ERROR; }
+            } else { resp->status = KVS_RESP_NO_EXIST; }
             break;
         
         case CMD_DEL:
-            if (ensure_capacity(ctx, 128) != 0) return -1;
             ret = kvs_array_del(&global_array, &kv_key);
-            {
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                if (ret == 0) {
-                    int written = sprintf(write_ptr, "OK\r\n");
-                    *(ctx->wlength) += written;
-                    #if ENABLE_PERSISTENCE
-                    log_binary_command("DEL", key, key_len, NULL, 0); 
-                    #endif
-                    #if ENABLE_REPLICATION
-                    repl_push_cmd("DEL", key, key_len, NULL, 0);
-                    #endif
-                } else {
-                    int written = sprintf(write_ptr, "NO EXIST\r\n");
-                    *(ctx->wlength) += written;
-                }
-            }
+            if (ret == 0) {
+                resp->status = KVS_RESP_OK;
+                #if ENABLE_PERSISTENCE
+                log_binary_command("DEL", key, key_len, NULL, 0); 
+                #endif
+                #if ENABLE_REPLICATION
+                repl_push_cmd("DEL", key, key_len, NULL, 0);
+                #endif
+            } else { resp->status = KVS_RESP_NO_EXIST; }
             break;
 
         case CMD_MOD:
-            if (ensure_capacity(ctx, 128) != 0) return -1;
             ret = kvs_array_mod(&global_array, &kv_key, &kv_value, default_expire);
-            {
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                if (ret == 0) {
-                    int written = sprintf(write_ptr, "OK\r\n");
-                    *(ctx->wlength) += written;
-                    
-                    #if ENABLE_PERSISTENCE
-                    log_binary_command("MOD", key, key_len, value, value_len);
-                    #endif
-                    #if ENABLE_REPLICATION
-                    repl_push_cmd("MOD", key, key_len, value, value_len);
-                    #endif 
-                }
-                else if (ret == 1) {
-                    int written = sprintf(write_ptr, "NO EXIST\r\n");
-                    *(ctx->wlength) += written;
-                }
-                else {
-                    int written = sprintf(write_ptr, "ERROR\r\n");
-                    *(ctx->wlength) += written;
-                }
+            if (ret == 0) {
+                resp->status = KVS_RESP_OK;
+                #if ENABLE_PERSISTENCE
+                log_binary_command("MOD", key, key_len, value, value_len);
+                #endif
+                #if ENABLE_REPLICATION
+                repl_push_cmd("MOD", key, key_len, value, value_len);
+                #endif 
             }
+            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
 
         case CMD_EXIST:
-            if (ensure_capacity(ctx, 128) != 0) return -1;
             ret = kvs_array_exist(&global_array, &kv_key);
-            {
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                int written = sprintf(write_ptr, (ret == 0) ? "EXIST\r\n" : "NO EXIST\r\n");
-                *(ctx->wlength) += written;
-            }
+            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
             break;
     #endif
     
     #if ENABLE_RBTREE
-        case CMD_RSET: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_rbtree_set(&global_rbtree, &kv_key, &kv_value, default_expire);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+        case CMD_RSET:
+            ret = kvs_rbtree_set(&global_rbtree, &kv_key, &kv_value, default_expire);
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RSET", key, key_len, value, value_len);
                 #endif
@@ -486,60 +429,39 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
                 repl_push_cmd("RSET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(write_ptr, "EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
-            }
+            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
-        }
 
-        case CMD_RGET: {
-            int val_len = kvs_rbtree_get_value_len(key, key_len);
-            if (ensure_capacity(ctx, (val_len > 0 ? val_len : 0) + 128) != 0) return -1;
-
-            kv_data_t *result = kvs_rbtree_get(&global_rbtree, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-
+        case CMD_RGET:
+            result = kvs_rbtree_get(&global_rbtree, &kv_key);
             if (result && result->data && result->len > 0) {
-                memcpy(write_ptr, result->data, result->len);
-                *(ctx->wlength) += result->len;
-                
-                char *tail_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                *(ctx->wlength) += sprintf(tail_ptr, "\r\n");
-            } else {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
+                resp->status = KVS_RESP_GET_OK;
+                resp->body = kvs_malloc(result->len);
+                if (resp->body) {
+                    memcpy(resp->body, result->data, result->len);
+                    resp->body_len = result->len;
+                } else { resp->status = KVS_RESP_ERROR; }
+            } else { resp->status = KVS_RESP_NO_EXIST; }
             break;
-        }
         
-        case CMD_RDEL: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_rbtree_del(&global_rbtree, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
+        case CMD_RDEL:
+            ret = kvs_rbtree_del(&global_rbtree, &kv_key);
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RDEL", key, key_len, NULL, 0); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("RDEL", key, key_len, NULL, 0);
                 #endif
-            } else {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
+            } else { resp->status = KVS_RESP_NO_EXIST; }
             break;
-        }
 
-        case CMD_RMOD: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_rbtree_mod(&global_rbtree, &kv_key, &kv_value, default_expire);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
+        case CMD_RMOD:
+            ret = kvs_rbtree_mod(&global_rbtree, &kv_key, &kv_value, default_expire);
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RMOD", key, key_len, value, value_len);
                 #endif
@@ -547,32 +469,21 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
                 repl_push_cmd("RMOD", key, key_len, value, value_len);
                 #endif 
             }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
-            }
+            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
-        }
 
-        case CMD_REXIST: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_rbtree_exist(&global_rbtree, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
-            *(ctx->wlength) += sprintf(write_ptr, (ret == 0) ? "EXIST\r\n" : "NO EXIST\r\n");
+        case CMD_REXIST:
+            ret = kvs_rbtree_exist(&global_rbtree, &kv_key);
+            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
             break;
-        }
     #endif
 
     #if ENABLE_HASH
-        case CMD_HSET: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_hash_set(&global_hash, &kv_key, &kv_value, default_expire);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+        case CMD_HSET:
+            ret = kvs_hash_set(&global_hash, &kv_key, &kv_value, default_expire);
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HSET", key, key_len, value, value_len);
                 #endif
@@ -580,60 +491,39 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
                 repl_push_cmd("HSET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(write_ptr, "EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
-            }
+            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
-        }
 
-        case CMD_HGET: {
-            int val_len = kvs_hash_get_value_len(&global_hash, &kv_key);
-            if (ensure_capacity(ctx, (val_len > 0 ? val_len : 0) + 128) != 0) return -1;
-
-            kv_data_t *result = kvs_hash_get(&global_hash, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-
+        case CMD_HGET:
+            result = kvs_hash_get(&global_hash, &kv_key);
             if (result && result->data && result->len > 0) {
-                memcpy(write_ptr, result->data, result->len);
-                *(ctx->wlength) += result->len;
-                
-                char *tail_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                *(ctx->wlength) += sprintf(tail_ptr, "\r\n");
-            } else {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
+                resp->status = KVS_RESP_GET_OK;
+                resp->body = kvs_malloc(result->len);
+                if (resp->body) {
+                    memcpy(resp->body, result->data, result->len);
+                    resp->body_len = result->len;
+                } else { resp->status = KVS_RESP_ERROR; }
+            } else { resp->status = KVS_RESP_NO_EXIST; }
             break;
-        }
 
-        case CMD_HDEL: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_hash_del(&global_hash, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
+        case CMD_HDEL:
+            ret = kvs_hash_del(&global_hash, &kv_key);
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HDEL", key, key_len, NULL, 0); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("HDEL", key, key_len, NULL, 0);
                 #endif
-            } else {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
+            } else { resp->status = KVS_RESP_NO_EXIST; }
             break;
-        }
 
-        case CMD_HMOD: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_hash_mod(&global_hash, &kv_key, &kv_value, default_expire);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
+        case CMD_HMOD:
+            ret = kvs_hash_mod(&global_hash, &kv_key, &kv_value, default_expire);
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HMOD", key, key_len, value, value_len);
                 #endif
@@ -641,36 +531,24 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
                 repl_push_cmd("HMOD", key, key_len, value, value_len);
                 #endif 
             }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
-            }
+            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
-        }
 
-        case CMD_HEXIST: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            int ret = kvs_hash_exist(&global_hash, &kv_key);
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
-            *(ctx->wlength) += sprintf(write_ptr, (ret == 0) ? "EXIST\r\n" : "NO EXIST\r\n");
+        case CMD_HEXIST:
+            ret = kvs_hash_exist(&global_hash, &kv_key);
+            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
             break;
-        }
     #endif
 
     #if ENABLE_SKIPLIST 
-        case CMD_SSET: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
+        case CMD_SSET:
+            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            ret = kvs_skip_set(&global_skip, &kv_key, &kv_value, default_expire);
+            pthread_rwlock_unlock(&seg_locks[idx]); 
             
-            pthread_rwlock_wrlock(&seg_locks[idx]); // 加写锁
-            int ret = kvs_skip_set(&global_skip, &kv_key, &kv_value, default_expire);
-            pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
-            
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SSET", key, key_len, value, value_len);
                 #endif
@@ -678,77 +556,51 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
                 repl_push_cmd("SSET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(write_ptr, "EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
-            }
+            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
-        }
-        case CMD_SGET: {
-            pthread_rwlock_wrlock(&seg_locks[idx]); 
-            kv_data_t *result = kvs_skip_get(&global_skip, &kv_key);
-            
-            if (result && result->data && result->len > 0) {
-                // 拿到实际长度后，再确保缓冲区容量
-                if (ensure_capacity(ctx, result->len + 128) != 0) {
-                    pthread_rwlock_unlock(&seg_locks[idx]);
-                    return -1;
-                }
 
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                memcpy(write_ptr, result->data, result->len);
-                *(ctx->wlength) += result->len;
-                
-                char *tail_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                *(ctx->wlength) += sprintf(tail_ptr, "\r\n");
-                
-                pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
+        case CMD_SGET:
+            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            result = kvs_skip_get(&global_skip, &kv_key);
+            if (result && result->data && result->len > 0) {
+                resp->status = KVS_RESP_GET_OK;
+                // 💡 在锁释放之前完成内存拷贝，多线程下绝对安全
+                resp->body = kvs_malloc(result->len);
+                if (resp->body) {
+                    memcpy(resp->body, result->data, result->len);
+                    resp->body_len = result->len;
+                } else { resp->status = KVS_RESP_ERROR; }
+                pthread_rwlock_unlock(&seg_locks[idx]); 
             } else {
-                pthread_rwlock_unlock(&seg_locks[idx]); // 没找到或者过期被删除了，先解锁
-                
-                // 扩容和写 buffer 可以在无锁状态下进行（ctx 是当前连接独享的）
-                if (ensure_capacity(ctx, 128) != 0) return -1;
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
+                pthread_rwlock_unlock(&seg_locks[idx]); 
+                resp->status = KVS_RESP_NO_EXIST;
             }
             break;
-        }
-        case CMD_SDEL: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            
-            pthread_rwlock_wrlock(&seg_locks[idx]); // 加写锁
-            int ret = kvs_skip_del(&global_skip, &kv_key);
-            pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
-            
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+
+        case CMD_SDEL:
+            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            ret = kvs_skip_del(&global_skip, &kv_key);
+            pthread_rwlock_unlock(&seg_locks[idx]); 
             
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SDEL", key, key_len, NULL, 0); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("SDEL", key, key_len, NULL, 0);
                 #endif
-            } else {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
+            } else { resp->status = KVS_RESP_NO_EXIST; }
             break;
-        }
 
-        case CMD_SMOD: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            
-            pthread_rwlock_wrlock(&seg_locks[idx]); // 加写锁
-            int ret = kvs_skip_mod(&global_skip, &kv_key, &kv_value, default_expire);
-            pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
-            
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
+        case CMD_SMOD:
+            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            ret = kvs_skip_mod(&global_skip, &kv_key, &kv_value, default_expire);
+            pthread_rwlock_unlock(&seg_locks[idx]); 
             
             if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
+                resp->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SMOD", key, key_len, value, value_len);
                 #endif
@@ -756,164 +608,31 @@ int kvs_protocol(void *msg, int msg_len, session_ctx_t *ctx) {
                 repl_push_cmd("SMOD", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
-            }
+            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
+            else { resp->status = KVS_RESP_ERROR; }
             break;
-        }
-        case CMD_SEXIST: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
+
+        case CMD_SEXIST:
             pthread_rwlock_wrlock(&seg_locks[idx]); 
-            int ret = kvs_skip_exist(&global_skip, &kv_key);
-            pthread_rwlock_unlock(&seg_locks[idx]); // 解锁
-            
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            *(ctx->wlength) += sprintf(write_ptr, (ret == 0) ? "EXIST\r\n" : "NO EXIST\r\n");
+            ret = kvs_skip_exist(&global_skip, &kv_key);
+            pthread_rwlock_unlock(&seg_locks[idx]); 
+            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
             break;
-        }
-    #endif
-    
-    #if 0
-        case CMD_SSET: {
-            // 1. 先安全扩容
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            
-            pthread_rwlock_wrlock(&skip_global_lock); 
-            int ret = kvs_skip_set(&global_skip, &kv_key, &kv_value, default_expire);
-            pthread_rwlock_unlock(&skip_global_lock); 
-            
-            // 2. 💡 核心安全修改：永远在扩容和锁后，重新解引用获取最新的 wbuffer 基地址
-            char *base_ptr = *(ctx->wbuffer);
-            int current_len = *(ctx->wlength);
-            
-            if (ret == 0) {
-                // 动态计算绝对安全的写入偏移量
-                *(ctx->wlength) += sprintf(base_ptr + current_len, "OK\r\n");
-                #if ENABLE_PERSISTENCE
-                log_binary_command("SSET", key, key_len, value, value_len);
-                #endif
-            }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(base_ptr + current_len, "EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(base_ptr + current_len, "ERROR\r\n");
-            }
-            break;
-        }
-
-        case CMD_SGET: {
-            // 💡 修正：因为底层 get 包含惰性删除，属于隐式写操作，必须加全局写锁
-            pthread_rwlock_wrlock(&skip_global_lock); 
-            kv_data_t *result = kvs_skip_get(&global_skip, &kv_key);
-            
-            if (result && result->data && result->len > 0) {
-                if (ensure_capacity(ctx, result->len + 128) != 0) {
-                    pthread_rwlock_unlock(&skip_global_lock);
-                    return -1;
-                }
-
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                memcpy(write_ptr, result->data, result->len);
-                *(ctx->wlength) += result->len;
-                
-                char *tail_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                *(ctx->wlength) += sprintf(tail_ptr, "\r\n");
-                
-                pthread_rwlock_unlock(&skip_global_lock); 
-            } else {
-                pthread_rwlock_unlock(&skip_global_lock); 
-                
-                if (ensure_capacity(ctx, 128) != 0) return -1;
-                char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
-            break;
-        }
-
-        case CMD_SDEL: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            
-            // 💡 修正：使用跳表全局写锁
-            pthread_rwlock_wrlock(&skip_global_lock); 
-            int ret = kvs_skip_del(&global_skip, &kv_key);
-            pthread_rwlock_unlock(&skip_global_lock); 
-            
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
-            if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
-                #if ENABLE_PERSISTENCE
-                log_binary_command("SDEL", key, key_len, NULL, 0); 
-                #endif
-                #if ENABLE_REPLICATION
-                repl_push_cmd("SDEL", key, key_len, NULL, 0);
-                #endif
-            } else {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
-            break;
-        }
-
-        case CMD_SMOD: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            
-            // 💡 修正：使用跳表全局写锁
-            pthread_rwlock_wrlock(&skip_global_lock); 
-            int ret = kvs_skip_mod(&global_skip, &kv_key, &kv_value, default_expire);
-            pthread_rwlock_unlock(&skip_global_lock); 
-            
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            
-            if (ret == 0) {
-                *(ctx->wlength) += sprintf(write_ptr, "OK\r\n");
-                #if ENABLE_PERSISTENCE
-                log_binary_command("SMOD", key, key_len, value, value_len);
-                #endif
-                #if ENABLE_REPLICATION
-                repl_push_cmd("SMOD", key, key_len, value, value_len);
-                #endif
-            }
-            else if (ret == 1) {
-                *(ctx->wlength) += sprintf(write_ptr, "NO EXIST\r\n");
-            }
-            else {
-                *(ctx->wlength) += sprintf(write_ptr, "ERROR\r\n");
-            }
-            break;
-        }
-
-        case CMD_SEXIST: {
-            if (ensure_capacity(ctx, 128) != 0) return -1;
-            
-            // 💡 修正：底层存在性判断调用了 get（含惰性删除），必须加全局写锁
-            pthread_rwlock_wrlock(&skip_global_lock); 
-            int ret = kvs_skip_exist(&global_skip, &kv_key);
-            pthread_rwlock_unlock(&skip_global_lock); 
-            
-            char *write_ptr = *(ctx->wbuffer) + *(ctx->wlength);
-            *(ctx->wlength) += sprintf(write_ptr, (ret == 0) ? "EXIST\r\n" : "NO EXIST\r\n");
-            break;
-        }
     #endif
 
         case CMD_SHUTDOWN:
-            if (ensure_capacity(ctx, 128) == 0) 
-                *(ctx->wlength) += sprintf(*(ctx->wbuffer), "SHUTDOWN\r\n");
-            dest_kvengine();
-            exit(0);
+            // 💡 业务层只标记状态，不再粗暴地直接 exit(0)
+            resp->status = KVS_RESP_SHUTDOWN;
+            break;
 
         default:
-            if (ensure_capacity(ctx, 256) == 0)
-                *(ctx->wlength) += sprintf(*(ctx->wbuffer), "UNKNOWN COMMAND\r\n");
+            resp->status = KVS_RESP_UNKNOWN;
             break;
         }
 
     return 0;
 }
+
 
 int init_kvengine(void) {
 // 全局锁

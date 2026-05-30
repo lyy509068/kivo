@@ -12,52 +12,63 @@
 #include "mempool.h"
 
 
+// 业务响应状态码,用来打包业务层回复
+typedef enum {
+    KVS_RESP_OK,           // "OK\r\n"
+    KVS_RESP_EXIST,        // "EXIST\r\n"
+    KVS_RESP_NO_EXIST,     // "NO EXIST\r\n"
+    KVS_RESP_ERROR,        // "ERROR\r\n"
+    KVS_RESP_PARSE_ERROR,  // "PARSE ERROR\r\n"
+    KVS_RESP_UNKNOWN,      // "UNKNOWN COMMAND\r\n"
+    KVS_RESP_SHUTDOWN,     // "SHUTDOWN\r\n"
+    KVS_RESP_GET_OK        //  GET 命令成功找到数据（不固定回复）
+} kvs_resp_status_t;
+// 业务层返回给网络层的标准响应结构体
+typedef struct {
+    kvs_resp_status_t status; // 业务执行结果状态
+    void *body;               // 仅在 GET_OK 时使用：指向查到的二进制数据副本
+    size_t body_len;          // 仅在 GET_OK 时使用：二进制数据的绝对长度
+} kvs_resp_t;
 
+
+
+//业务层命令结构体
 typedef struct {
     const char *cmd_name;
     int cmd_len;
     int cmd_enum;
 } kvs_cmd_map_t;
+void packet_build_batch(kvs_resp_t *resps, int cmd_count, char **wbuf, int *wcap, int *wlen);//打包函数
 
 
-#define KVS_ARRAY_SIZE 1024
-#define MAX_KEY_LEN 128
-#define MAX_VALUE_LEN 512
-#define MAX_TABLE_SIZE 1024
 
+//超时删除
 // 全局分段锁定义，用于多线程安全遍历删除
 #define LOCK_SEGMENTS 32
 extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
-
 // 后台超时线程启动声明
 int kvs_expire_thread_start(void);
 int64_t get_current_ms(void);
 
 
-// 上下文定义
-typedef struct {
-    char **wbuffer;   // 指向网络层 wbuffer 的二级指针，为了能在 handler 中 kvs_realloc 更新它
-    int *wcapacity;   // 指向容量变量
-    int *wlength;     // 指向已用长度变量
-} session_ctx_t;
 
-#define ENABLE_MEM_POOL 0 //启用内存池
 
+//内存池
+#define ENABLE_MEM_POOL 0 
 #if ENABLE_MEM_POOL
 extern mem_pool_t *array_item_pool;
 extern mem_pool_t *rbtree_node_pool;
 extern mem_pool_t *hash_node_pool;
 extern mem_pool_t *skip_node_pool;
 #endif
-
 void *kvs_malloc(size_t size);
 void *kvs_calloc(size_t nmemb, size_t size);
 void *kvs_realloc(void *ptr, size_t new_size);
 void kvs_free(void *ptr);
 
-#define ENABLE_PERSISTENCE        1        
+//增量持久化
+#define ENABLE_PERSISTENCE        0        
 #define PERSISTENCE_FILE    "kvstore.aof"  
-
 #if ENABLE_PERSISTENCE
 int kvs_persistence_init(void);
 void kvs_persistence_write(const void *data, int len);
@@ -65,9 +76,9 @@ void kvs_persistence_recover(void);
 void kvs_persistence_close(void);
 #endif
 
-#define ENABLE_SNAPSHOT           1        
+//全量持久化
+#define ENABLE_SNAPSHOT           0        
 #define SNAPSHOT_FILE     "kvstore.snap"  
-
 #if ENABLE_SNAPSHOT
 int kvs_snapshot_save(void);
 int kvs_snapshot_load(void);
@@ -75,30 +86,27 @@ int kvs_snapshot_auto_save(int interval_seconds);
 void kvs_snapshot_auto_save_stop(void);
 #endif
 
+//网络设置
 #define NETWORK_REACTOR      0
 #define NETWORK_PROACTOR     1
 #define NETWORK_NTYCO        2
 
 #define NETWORK_SELECT      NETWORK_REACTOR
 #define KVS_MAX_TOKENS      128
-
-#define ENABLE_ARRAY        1
-#define ENABLE_RBTREE       1
-#define ENABLE_HASH         1
-#define ENABLE_SKIPLIST     1
-
 //网络传输函数
-typedef int (*binary_msg_handler)(void *msg, int length, session_ctx_t *ctx);
+typedef int (*binary_msg_handler)(void *msg, int length, kvs_resp_t *resp);
 extern int reactor_start(unsigned short port, binary_msg_handler handler);
 extern int proactor_start(unsigned short port, binary_msg_handler handler);
 extern int ntyco_start(unsigned short port, binary_msg_handler handler);
 
-typedef struct {    // 二进制数据块
+
+
+// 二进制数据块
+typedef struct {    
     void *data;     // 指向二进制数据
     size_t len;     // 数据长度
 } kv_data_t;
-
-// 辅助函数
+// 底层数据结构二进制辅助函数
 int kv_data_cmp(kv_data_t *a, kv_data_t *b);
 unsigned long kv_data_hash(kv_data_t *key, int size);
 int kv_data_dup(kv_data_t *dst, kv_data_t *src);
@@ -108,8 +116,15 @@ void kv_data_destroy(kv_data_t *data);// 释放 kv_data_t
 int kv_data_compare(kv_data_t *a, kv_data_t *b);// 比较两个 kv_data_t
 unsigned long kv_data_hash_func(kv_data_t *key, int size);// 哈希计算
 
-#if ENABLE_ARRAY
 
+
+//存储结构
+#define ENABLE_ARRAY        1
+#define ENABLE_RBTREE       1
+#define ENABLE_HASH         1
+#define ENABLE_SKIPLIST     1
+
+#if ENABLE_ARRAY
 typedef struct {
     kv_data_t key;
     kv_data_t value;
