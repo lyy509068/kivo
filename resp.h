@@ -1,0 +1,57 @@
+#ifndef KVS_PROTOCOL_H
+#define KVS_PROTOCOL_H
+
+#include <stdlib.h>
+
+
+// 状态码枚举
+typedef enum {
+    KVS_RESP_OK = 0,          // 0: 执行成功 (返回 +OK)
+    KVS_RESP_ERROR = 1,       // 1: 一般执行错误 (返回 -ERR)
+    KVS_RESP_PARSE_ERROR = 2, // 2: 解析错误
+    KVS_RESP_GET_OK = 3,      // 3: GET 成功 (返回 $len\r\nbody\r\n)
+    KVS_RESP_UNKNOWN = 4,     // 4: 未知命令
+    
+    // 以下顺序必须严格对应你日志里暴露的 6 和 7
+    KVS_RESP_SHUTDOWN = 5,    // 5: 停机指令 (占位，或根据实际调整)
+    KVS_RESP_EXISTS = 6,      // 6: KEY 已存在 (对应 REXISTS 成功返回 1)
+    KVS_RESP_NO_EXISTS = 7,    // 7: KEY 不存在 (返回 $-1\r\n)
+    
+    KVS_RESP_PONG = 8         // 8: PONG 回应
+} kvs_status_t;
+
+// 请求结构体 (协议层解析后，传给业务层)
+typedef struct {
+    int argc;           // 命令的参数总数 (例如: SET key val，argc = 3)
+    char **argv;        // 参数字符串数组 (argv[0]="SET", argv[1]="key")
+    int *argv_len;      // 参数长度数组 (为了保证二进制安全，防止value里包含\0)
+} resp_request_t;
+
+// 响应结构体 (业务层执行完，传回给协议层)
+typedef struct {
+    kvs_status_t status; // 业务层执行状态码
+    void *body;          // 查询到的值 (仅 GET 命令有效，需业务层 malloc，协议层负责 free)
+    int body_len;        // 查询到的值的长度
+} resp_reply_t;
+
+//网络设置
+#define NETWORK_REACTOR      0
+#define NETWORK_PROACTOR     1
+#define NETWORK_NTYCO        2
+#define NETWORK_SELECT      NETWORK_REACTOR
+#define KVS_MAX_TOKENS      128
+typedef int (*cmd_handler_t)(const resp_request_t *req, resp_reply_t *reply);//协议层用来调用业务层
+typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen);//网络层用来调用协议层
+//网络传输函数
+extern int reactor_start(unsigned short port, stream_handler_t handler);
+extern int proactor_start(unsigned short port, stream_handler_t handler);
+extern int ntyco_start(unsigned short port, stream_handler_t handler);
+
+
+void protocol_set_command_handler(cmd_handler_t handler);
+void protocol_process_resp(char *recv_buf, int *recv_len, char *send_buf, int *send_len);
+int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen);
+int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply);
+
+
+#endif 

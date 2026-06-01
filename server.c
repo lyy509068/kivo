@@ -1,0 +1,168 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "kvstore.h"   
+#include "resp.h"    
+#include "network.h"   
+
+
+#if ENABLE_ARRAY
+extern kvs_array_t global_array;
+#endif
+#if ENABLE_RBTREE
+extern kvs_rbtree_t global_rbtree;
+#endif
+#if ENABLE_HASH
+extern kvs_hash_t global_hash;
+#endif
+#if ENABLE_SKIPLIST
+extern kvs_skip_t global_skip;
+#endif
+
+
+
+
+int init_kvengine(void) {
+    #if ENABLE_TTL
+    if (kvs_init_locks() != 0) {
+        printf("Failed to init segment locks\n");
+        return -1;
+    }
+    #endif
+    //内存池
+    #if ENABLE_MEM_POOL
+        array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
+        rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
+        hash_node_pool = mem_pool_create(sizeof(hashnode_t));
+        skip_node_pool = mem_pool_create(sizeof(skipnode_binary_t));
+    
+        if (!array_item_pool || !rbtree_node_pool || !hash_node_pool || !skip_node_pool) {
+            printf("Failed to create memory pools\n");
+            return -1;
+        }
+    #endif
+
+    // 引擎结构
+    #if ENABLE_ARRAY
+        memset(&global_array, 0, sizeof(kvs_array_t));
+        kvs_array_create(&global_array);
+    #endif
+    #if ENABLE_RBTREE
+        memset(&global_rbtree, 0, sizeof(kvs_rbtree_t));
+        kvs_rbtree_create(&global_rbtree);
+    #endif
+    #if ENABLE_HASH
+        memset(&global_hash, 0, sizeof(kvs_hash_t));
+        kvs_hash_create(&global_hash);
+    #endif
+    #if ENABLE_SKIPLIST
+        memset(&global_skip, 0, sizeof(kvs_skip_t));
+        kvs_skip_create(&global_skip);
+    #endif
+    
+    // 恢复数据
+    #if ENABLE_SNAPSHOT
+        kvs_snapshot_load();        
+    #endif
+    #if ENABLE_PERSISTENCE
+        kvs_persistence_init();
+        kvs_persistence_recover(); 
+    #endif
+
+    // 定时持久化
+    #if ENABLE_SNAPSHOT
+        kvs_snapshot_auto_save(1); 
+    #endif
+
+    // 建立主从同步连接
+    #if ENABLE_REPLICATION
+        const char *slave_ip = "192.168.92.129";
+        unsigned short slave_port = 2000;
+        repl_connect_to_slave(slave_ip, slave_port); 
+    #endif 
+
+    #if ENABLE_TTL
+        if (expire_thread_init() != 0) {
+            return -1;
+        }
+    #endif
+
+    return 0;
+}
+
+void dest_kvengine(void) {
+    #if ENABLE_TTL
+        expire_thread_destroy(); 
+    #endif
+
+    // 关闭主从同步
+    #if ENABLE_REPLICATION
+        repl_close();            
+    #endif
+
+    #if ENABLE_SNAPSHOT
+        kvs_snapshot_auto_save_stop();  // 停止自动快照定时器
+        kvs_snapshot_save();            // 最后做一次强制全量快照落盘
+    #endif
+
+    #if ENABLE_PERSISTENCE
+        kvs_persistence_close();        // 关闭并刷盘 AOF 日志文件流
+    #endif
+
+    // 释放本地内存引擎
+    #if ENABLE_ARRAY
+        kvs_array_destroy(&global_array);
+    #endif
+    #if ENABLE_RBTREE
+        kvs_rbtree_destroy(&global_rbtree);
+    #endif
+    #if ENABLE_HASH
+        kvs_hash_destroy(&global_hash);
+    #endif
+    #if ENABLE_SKIPLIST
+        kvs_skip_destroy(&global_skip);
+    #endif
+
+    // 释放内存池
+    #if ENABLE_MEM_POOL
+        if (array_item_pool) mem_pool_stats(array_item_pool);
+        if (rbtree_node_pool) mem_pool_stats(rbtree_node_pool);
+        if (hash_node_pool) mem_pool_stats(hash_node_pool);
+        if (skip_node_pool) mem_pool_stats(skip_node_pool);
+    
+        mem_pool_destroy(array_item_pool);
+        mem_pool_destroy(rbtree_node_pool);
+        mem_pool_destroy(hash_node_pool);
+        mem_pool_destroy(skip_node_pool);
+    #endif
+    #if ENABLE_TTL
+        kvs_destroy_locks(); // 释放锁
+    #endif 
+}
+
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Usage: %s <port>\n", argv[0]);
+        return -1;
+    }
+    int port = atoi(argv[1]);
+
+    init_kvengine();
+    
+
+    // 告诉协议层调用 kvs_execute_command 执行命令
+    protocol_set_command_handler(kvs_execute_command);
+
+    // 告诉网络层调用 protocol_process_stream 去处理包
+    #if (NETWORK_SELECT == NETWORK_REACTOR)
+        reactor_start(port, protocol_process_stream);  
+    #elif (NETWORK_SELECT == NETWORK_PROACTOR)
+        proactor_start(port, protocol_process_stream);
+    #elif (NETWORK_SELECT == NETWORK_NTYCO)
+        ntyco_start(port, protocol_process_stream);
+    #endif
+
+    dest_kvengine();
+    return 0;
+}

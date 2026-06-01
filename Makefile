@@ -2,14 +2,14 @@ CC = gcc
 CFLAGS = -Wall -g -I ./NtyCo/core/
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl
 
-SRCS = kvstore.c mempool.c persistence.c snapshot.c reactor.c packet.c\
+SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c resp.c\
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c expire_thread.c replication.c
 
-TARGET = kvstore
+TARGET = server
 TESTCASES = testcase testcase2 testcase3 client
 SUBDIR = ./NtyCo/
 
-OBJS = kvstore.o mempool.o persistence.o snapshot.o reactor.o packet.o\
+OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o resp.o\
        kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o expire_thread.o replication.o
 
 .PHONY: all clean ECHO $(SUBDIR)

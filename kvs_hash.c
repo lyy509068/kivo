@@ -88,7 +88,7 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
 kv_data_t *kvs_hash_get(kvs_hash_t *hash, kv_data_t *key) {
     if (!hash || !key) return NULL;
     unsigned long h = kv_data_hash(key, hash->max_slots);
-    
+    printf("[HASH_DEBUG] Key data ptr: %p, len: %zu, Slot: %lu\n", key->data, key->len, h);
     hashnode_t *node = hash->buckets[h];
     while (node) {
         if (kv_data_cmp(&node->key, key) == 0) {

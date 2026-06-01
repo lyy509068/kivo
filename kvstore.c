@@ -10,8 +10,9 @@
 #include "mempool.h"
 #include "replication.h"
 #include <arpa/inet.h>
+#include <strings.h> // for strncasecmp
+#include "resp.h" 
 
-extern const kvs_cmd_map_t kvs_cmd_list[];
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -27,15 +28,11 @@ extern kvs_skip_t global_skip;
 #endif
 
 
-
-//超时删除开关
-#define ENABLE_TTL 0
-#define DEFAULT_TTL_MS  20000
-int64_t default_expire = 0;
-int expire_time=0;
-//分段锁，超时删除时保护数据
-#define LOCK_SEGMENTS 32
+//超时删除
 pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
+#if ENABLE_TTL
+#define DEFAULT_TTL_MS  20000
+
 //超时清理线程
 static pthread_t global_expire_thread;
 static volatile int expire_thread_running = 0;
@@ -79,8 +76,9 @@ void expire_thread_destroy(void) {
         pthread_join(global_expire_thread, NULL);
     }
 }
+#endif 
 
-
+//内存池
 #if ENABLE_MEM_POOL
 extern mem_pool_t *array_item_pool;
 extern mem_pool_t *rbtree_node_pool;
@@ -204,7 +202,7 @@ void mem_pool_stats(mem_pool_t *pool) {
     }
 }
 
-#else  // 关闭内存池时，使用系统函数
+#else  
 void *kvs_malloc(size_t size) {
     return malloc(size);
 }
@@ -227,33 +225,7 @@ void mem_pool_stats(mem_pool_t *pool) {
 
 #endif
 
-
-void dest_kvengine(void);
-
-enum {
-    // Array
-    CMD_SET = 0, CMD_GET, CMD_DEL, CMD_MOD, CMD_EXIST,
-    // RBTree
-    CMD_RSET, CMD_RGET, CMD_RDEL, CMD_RMOD, CMD_REXIST,
-    // Hash 
-    CMD_HSET, CMD_HGET, CMD_HDEL, CMD_HMOD, CMD_HEXIST,
-    // SkipList
-    CMD_SSET, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXIST,
-
-    CMD_SHUTDOWN,
-    CMD_UNKNOWN
-};
-
-const kvs_cmd_map_t kvs_cmd_list[] = {
-    {"SET",      3, CMD_SET},      {"GET",      3, CMD_GET},      {"DEL",      3, CMD_DEL},      {"MOD",      3, CMD_MOD},      {"EXIST",    5, CMD_EXIST},
-    {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXIST",   6, CMD_REXIST},
-    {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXIST",   6, CMD_HEXIST},
-    {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXIST",   6, CMD_SEXIST},
-    {"SHUTDOWN", 8, CMD_SHUTDOWN}
-};
-
-#define KVS_CMD_LIST_SIZE (sizeof(kvs_cmd_list) / sizeof(kvs_cmd_list[0]))//命令总数
-
+//增量持久化
 #if ENABLE_PERSISTENCE
 void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len) {
 
@@ -291,74 +263,110 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
 }
 #endif 
 
-int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
 
-    if (!msg || msg_len <= 0 || !resp) return -1;
+
+typedef struct {
+    const char *cmd_name;
+    int cmd_len;
+    int cmd_enum;//序号
+} kvs_cmd_map_t;
+
+enum {
+    // Array
+    CMD_SET = 0, CMD_GET, CMD_DEL, CMD_MOD, CMD_EXISTS,
+    // RBTree
+    CMD_RSET, CMD_RGET, CMD_RDEL, CMD_RMOD, CMD_REXISTS,
+    // Hash 
+    CMD_HSET, CMD_HGET, CMD_HDEL, CMD_HMOD, CMD_HEXISTS,
+    // SkipList
+    CMD_SSET, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
+
+    CMD_PING,
+
+    CMD_SHUTDOWN,
+
+    CMD_UNKNOWN
+};
+
+const kvs_cmd_map_t kvs_cmd_list[] = {
+    {"SET",      3, CMD_SET},      {"GET",      3, CMD_GET},      {"DEL",      3, CMD_DEL},      {"MOD",      3, CMD_MOD},      {"EXISTS",    6, CMD_EXISTS},
+    {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXISTS",   7, CMD_REXISTS},
+    {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXISTS",   7, CMD_HEXISTS},
+    {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXISTS",   7, CMD_SEXISTS},
+    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"UNKNOWN",  7, CMD_UNKNOWN}
+};
+
+
+#define KVS_CMD_LIST_SIZE (sizeof(kvs_cmd_list) / sizeof(kvs_cmd_list[0]))//命令总数
+
+int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
+    if (!req || req->argc == 0 || !reply) return -1;
 
     // 初始化响应结构体
-    resp->status = KVS_RESP_ERROR;
-    resp->body = NULL;
-    resp->body_len = 0;
+    reply->status = KVS_RESP_ERROR;
+    reply->body = NULL;
+    reply->body_len = 0;
 
-    int offset=0;
-
-    if (offset + 4 > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
-    int cmd_len_net;
-    memcpy(&cmd_len_net, (char *)msg + offset, 4); // 从当前偏移位置安全拷贝4字节
-    int cmd_len = ntohl(cmd_len_net);              // 转换为本地小端序
-    offset += 4;                                   // 游标向后移动4字节
-    if (offset + cmd_len > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }// 防止解析出来的长度越界
-    char *cmd = (char *)msg + offset;              // 绑定当前位置给 cmd 指针
-    offset += cmd_len;                             // 游标跳过 cmd 字符串本身
-
-    if (offset + 4 > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
-    int key_len_net;
-    memcpy(&key_len_net, (char *)msg + offset, 4); 
-    int key_len = ntohl(key_len_net);              
-    offset += 4;                                   
-    if (offset + key_len > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
-    char *key = (char *)msg + offset;              
-    offset += key_len;                             
-    
-    if (offset + 4 > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
-    int value_len_net;
-    memcpy(&value_len_net, (char *)msg + offset, 4); 
-    int value_len = ntohl(value_len_net);            
-    offset += 4;                                     
-    if (offset + value_len > msg_len) { resp->status = KVS_RESP_PARSE_ERROR; return -1; }
-    char *value = (char *)msg + offset;            
-    offset += value_len;                           
-
-    // 构造二进制安全传输体
-    kv_data_t kv_key = {key, (size_t)key_len};
-    kv_data_t kv_value = {value, (size_t)value_len};
+    // 提取命令字符串和长度
+    char *cmd_str = req->argv[0];
+    int cmd_len = req->argv_len[0];
     int target_cmd = CMD_UNKNOWN;
 
     // 匹配字符串命令类型
     for (int i = 0; i < KVS_CMD_LIST_SIZE; i++) {
         if (cmd_len == kvs_cmd_list[i].cmd_len && 
-            memcmp(cmd, kvs_cmd_list[i].cmd_name, cmd_len) == 0) {
+            strncasecmp(cmd_str, kvs_cmd_list[i].cmd_name, cmd_len) == 0) {
             target_cmd = kvs_cmd_list[i].cmd_enum;
             break;
         }
     }
 
+    // 提取 Key 和 Value 
+    // RESP 协议层已经帮我们切分好了，直接拿来用
+    char *key = (req->argc > 1) ? req->argv[1] : NULL;
+    int key_len = (req->argc > 1) ? req->argv_len[1] : 0;
+    
+    char *value = (req->argc > 2) ? req->argv[2] : NULL;
+    int value_len = (req->argc > 2) ? req->argv_len[2] : 0;
+
+    #if TEST
+    printf("\n[KVS_DEBUG] ========== New Request Incoming ==========\n");
+    printf("[KVS_DEBUG] Raw Command : %.*s (len: %d), Argc: %d\n", cmd_len, cmd_str, cmd_len, req->argc);
+    printf("[KVS_DEBUG] Matched Enum: %d \n", target_cmd);
+    if (key) {
+        printf("[KVS_DEBUG] Extracted Key: %.*s (len: %d)\n", key_len, key, key_len);
+    } else {
+        printf("[KVS_DEBUG] Extracted Key: NULL\n");
+    }
+    if (value) {
+        printf("[KVS_DEBUG] Extracted Val: %.*s (len: %d)\n", value_len, value, value_len);
+    } else {
+        printf("[KVS_DEBUG] Extracted Val: NULL\n");
+    }
+    #endif
+
+    // 构造底层存储引擎需要的 KV 结构体
+    kv_data_t kv_key = {key, (size_t)key_len};
+    kv_data_t kv_value = {value, (size_t)value_len};
+
     int ret = 0;
     kv_data_t *result = NULL;
     unsigned long long default_expire = 0;
     
-    // 计算分段锁索引与默认过期时间
-    int idx = get_segment_index(key, key_len);
+    // 计算分段锁索引与默认过期时间 (仅当 key 存在时计算 idx，防止 SHUTDOWN 命令越界)
     #if ENABLE_TTL
+    int idx = key ? get_segment_index(key, key_len) : 0;
     default_expire = get_current_ms() + DEFAULT_TTL_MS;
     #endif
 
     switch (target_cmd) {
     #if ENABLE_ARRAY
         case CMD_SET:
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; } 
             ret = kvs_array_set(&global_array, &kv_key, &kv_value, default_expire);
+            //printf("[KVS_DEBUG] [ARRAY_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SET", key, key_len, value, value_len);
                 #endif
@@ -366,40 +374,47 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("SET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
         case CMD_GET:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             result = kvs_array_get(&global_array, &kv_key);
+            //printf("[KVS_DEBUG] [ARRAY_GET] Engine returned result ptr = %p\n", (void*)result); 
             if (result && result->data && result->len > 0) {
-                resp->status = KVS_RESP_GET_OK;
-                // 💡 核心安全机制：为了彻底解耦且防并发删除，在锁/生命周期内 malloc 拷贝一份副本
-                resp->body = kvs_malloc(result->len);
-                if (resp->body) {
-                    memcpy(resp->body, result->data, result->len);
-                    resp->body_len = result->len;
-                } else { resp->status = KVS_RESP_ERROR; }
-            } else { resp->status = KVS_RESP_NO_EXIST; }
+                //printf("[KVS_DEBUG] [ARRAY_GET] Data found! Len: %zu, Content: %.*s\n", result->len, (int)result->len, (char*)result->data); 
+                reply->status = KVS_RESP_GET_OK;
+                // 为了彻底解耦且防并发删除，在锁/生命周期内 malloc 拷贝一份副本
+                reply->body = kvs_malloc(result->len+1);
+                if (reply->body) {
+                    memcpy(reply->body, result->data, result->len);
+                    reply->body_len = result->len;
+                } else { reply->status = KVS_RESP_ERROR; }
+            } else { reply->status = KVS_RESP_NO_EXISTS; }
             break;
         
         case CMD_DEL:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_array_del(&global_array, &kv_key);
+            //printf("[KVS_DEBUG] [ARRAY_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("DEL", key, key_len, NULL, 0); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("DEL", key, key_len, NULL, 0);
                 #endif
-            } else { resp->status = KVS_RESP_NO_EXIST; }
+            } else { reply->status = KVS_RESP_NO_EXISTS; }
             break;
 
         case CMD_MOD:
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_array_mod(&global_array, &kv_key, &kv_value, default_expire);
+            //printf("[KVS_DEBUG] [ARRAY_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("MOD", key, key_len, value, value_len);
                 #endif
@@ -407,21 +422,25 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("MOD", key, key_len, value, value_len);
                 #endif 
             }
-            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
-        case CMD_EXIST:
+        case CMD_EXISTS:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_array_exist(&global_array, &kv_key);
-            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
+            //printf("[KVS_DEBUG] [ARRAY_EXIST] Engine returned ret = %d\n", ret); 
+            reply->status = (ret == 0) ? KVS_RESP_EXISTS : KVS_RESP_NO_EXISTS;
             break;
     #endif
     
     #if ENABLE_RBTREE
         case CMD_RSET:
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_rbtree_set(&global_rbtree, &kv_key, &kv_value, default_expire);
+            //printf("[KVS_DEBUG] [RBTREE_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RSET", key, key_len, value, value_len);
                 #endif
@@ -429,39 +448,46 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("RSET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
         case CMD_RGET:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             result = kvs_rbtree_get(&global_rbtree, &kv_key);
+            //printf("[KVS_DEBUG] [RBTREE_GET] Engine returned result ptr = %p\n", (void*)result); 
             if (result && result->data && result->len > 0) {
-                resp->status = KVS_RESP_GET_OK;
-                resp->body = kvs_malloc(result->len);
-                if (resp->body) {
-                    memcpy(resp->body, result->data, result->len);
-                    resp->body_len = result->len;
-                } else { resp->status = KVS_RESP_ERROR; }
-            } else { resp->status = KVS_RESP_NO_EXIST; }
+                //printf("[KVS_DEBUG] [RBTREE_GET] Data found! Len: %zu, Content: %.*s\n", result->len, (int)result->len, (char*)result->data); 
+                reply->status = KVS_RESP_GET_OK;
+                reply->body = kvs_malloc(result->len+1);
+                if (reply->body) {
+                    memcpy(reply->body, result->data, result->len);
+                    reply->body_len = result->len;
+                } else { reply->status = KVS_RESP_ERROR; }
+            } else { reply->status = KVS_RESP_NO_EXISTS; }
             break;
         
         case CMD_RDEL:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_rbtree_del(&global_rbtree, &kv_key);
+            //printf("[KVS_DEBUG] [RBTREE_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RDEL", key, key_len, NULL, 0); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("RDEL", key, key_len, NULL, 0);
                 #endif
-            } else { resp->status = KVS_RESP_NO_EXIST; }
+            } else { reply->status = KVS_RESP_NO_EXISTS; }
             break;
 
         case CMD_RMOD:
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_rbtree_mod(&global_rbtree, &kv_key, &kv_value, default_expire);
+            //printf("[KVS_DEBUG] [RBTREE_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RMOD", key, key_len, value, value_len);
                 #endif
@@ -469,21 +495,25 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("RMOD", key, key_len, value, value_len);
                 #endif 
             }
-            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
-        case CMD_REXIST:
+        case CMD_REXISTS:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_rbtree_exist(&global_rbtree, &kv_key);
-            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
+            //printf("[KVS_DEBUG] [RBTREE_EXIST] Engine returned ret = %d\n", ret); 
+            reply->status = (ret == 0) ? KVS_RESP_EXISTS : KVS_RESP_NO_EXISTS;
             break;
     #endif
 
     #if ENABLE_HASH
         case CMD_HSET:
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_hash_set(&global_hash, &kv_key, &kv_value, default_expire);
+            //printf("[KVS_DEBUG] [HASH_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HSET", key, key_len, value, value_len);
                 #endif
@@ -491,39 +521,45 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("HSET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
         case CMD_HGET:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             result = kvs_hash_get(&global_hash, &kv_key);
+            //printf("[KVS_DEBUG] [HASH_GET] Engine returned result ptr = %p\n", (void*)result); 
             if (result && result->data && result->len > 0) {
-                resp->status = KVS_RESP_GET_OK;
-                resp->body = kvs_malloc(result->len);
-                if (resp->body) {
-                    memcpy(resp->body, result->data, result->len);
-                    resp->body_len = result->len;
-                } else { resp->status = KVS_RESP_ERROR; }
-            } else { resp->status = KVS_RESP_NO_EXIST; }
+                reply->status = KVS_RESP_GET_OK;
+                reply->body = kvs_malloc(result->len+1);
+                if (reply->body) {
+                    memcpy(reply->body, result->data, result->len);
+                    reply->body_len = result->len;
+                } else { reply->status = KVS_RESP_ERROR; }
+            } else { reply->status = KVS_RESP_NO_EXISTS; }
             break;
 
         case CMD_HDEL:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_hash_del(&global_hash, &kv_key);
+            //printf("[KVS_DEBUG] [HASH_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HDEL", key, key_len, NULL, 0); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("HDEL", key, key_len, NULL, 0);
                 #endif
-            } else { resp->status = KVS_RESP_NO_EXIST; }
+            } else { reply->status = KVS_RESP_NO_EXISTS; }
             break;
 
         case CMD_HMOD:
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_hash_mod(&global_hash, &kv_key, &kv_value, default_expire);
+            //printf("[KVS_DEBUG] [HASH_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HMOD", key, key_len, value, value_len);
                 #endif
@@ -531,24 +567,28 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("HMOD", key, key_len, value, value_len);
                 #endif 
             }
-            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
-        case CMD_HEXIST:
+        case CMD_HEXISTS:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             ret = kvs_hash_exist(&global_hash, &kv_key);
-            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
+            //printf("[KVS_DEBUG] [HASH_EXIST] Engine returned ret = %d\n", ret); 
+            reply->status = (ret == 0) ? KVS_RESP_EXISTS : KVS_RESP_NO_EXISTS;
             break;
     #endif
 
     #if ENABLE_SKIPLIST 
         case CMD_SSET:
-            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
+             
             ret = kvs_skip_set(&global_skip, &kv_key, &kv_value, default_expire);
-            pthread_rwlock_unlock(&seg_locks[idx]); 
+             
+            //printf("[KVS_DEBUG] [SKIP_SET] Engine returned ret = %d\n", ret); 
             
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SSET", key, key_len, value, value_len);
                 #endif
@@ -556,51 +596,57 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("SSET", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) { resp->status = KVS_RESP_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
         case CMD_SGET:
-            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
+            
             result = kvs_skip_get(&global_skip, &kv_key);
+            
             if (result && result->data && result->len > 0) {
-                resp->status = KVS_RESP_GET_OK;
+                reply->status = KVS_RESP_GET_OK;
                 // 💡 在锁释放之前完成内存拷贝，多线程下绝对安全
-                resp->body = kvs_malloc(result->len);
-                if (resp->body) {
-                    memcpy(resp->body, result->data, result->len);
-                    resp->body_len = result->len;
-                } else { resp->status = KVS_RESP_ERROR; }
-                pthread_rwlock_unlock(&seg_locks[idx]); 
+                reply->body = kvs_malloc(result->len+1);
+                if (reply->body) {
+                    memcpy(reply->body, result->data, result->len);
+                    reply->body_len = result->len;
+                } else { reply->status = KVS_RESP_ERROR; }
+                
             } else {
-                pthread_rwlock_unlock(&seg_locks[idx]); 
-                resp->status = KVS_RESP_NO_EXIST;
+                
+                reply->status = KVS_RESP_NO_EXISTS;
             }
             break;
 
         case CMD_SDEL:
-            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
+            
             ret = kvs_skip_del(&global_skip, &kv_key);
-            pthread_rwlock_unlock(&seg_locks[idx]); 
+            
+            //printf("[KVS_DEBUG] [SKIP_DEL] Engine returned ret = %d\n", ret); 
             
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SDEL", key, key_len, NULL, 0); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("SDEL", key, key_len, NULL, 0);
                 #endif
-            } else { resp->status = KVS_RESP_NO_EXIST; }
+            } else { reply->status = KVS_RESP_NO_EXISTS; }
             break;
 
         case CMD_SMOD:
-            pthread_rwlock_wrlock(&seg_locks[idx]); 
+            if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
+            
             ret = kvs_skip_mod(&global_skip, &kv_key, &kv_value, default_expire);
-            pthread_rwlock_unlock(&seg_locks[idx]); 
+            
+            //printf("[KVS_DEBUG] [SKIP_MOD] Engine returned ret = %d\n", ret); 
             
             if (ret == 0) {
-                resp->status = KVS_RESP_OK;
+                reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SMOD", key, key_len, value, value_len);
                 #endif
@@ -608,160 +654,57 @@ int kvs_protocol(void *msg, int msg_len, kvs_resp_t *resp) {
                 repl_push_cmd("SMOD", key, key_len, value, value_len);
                 #endif
             }
-            else if (ret == 1) { resp->status = KVS_RESP_NO_EXIST; }
-            else { resp->status = KVS_RESP_ERROR; }
+            else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
+            else { reply->status = KVS_RESP_ERROR; }
             break;
 
-        case CMD_SEXIST:
-            pthread_rwlock_wrlock(&seg_locks[idx]); 
+        case CMD_SEXISTS:
+            if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
+            
             ret = kvs_skip_exist(&global_skip, &kv_key);
-            pthread_rwlock_unlock(&seg_locks[idx]); 
-            resp->status = (ret == 0) ? KVS_RESP_EXIST : KVS_RESP_NO_EXIST;
+            
+            //printf("[KVS_DEBUG] [SKIP_EXIST] Engine returned ret = %d\n", ret); 
+            reply->status = (ret == 0) ? KVS_RESP_EXISTS : KVS_RESP_NO_EXISTS;
             break;
     #endif
-
-        case CMD_SHUTDOWN:
-            // 💡 业务层只标记状态，不再粗暴地直接 exit(0)
-            resp->status = KVS_RESP_SHUTDOWN;
-            break;
-
-        default:
-            resp->status = KVS_RESP_UNKNOWN;
+        case CMD_PING:{
+            // PING (argc == 1)
+            if (req->argc == 1) {
+                reply->status = KVS_RESP_PONG;
+            } 
+            // 带参数 (argc == 2) Redis 规定要原样回显该参数
+            else if (req->argc == 2) {
+                reply->status = KVS_RESP_GET_OK; // 借用 GET_OK 的打包逻辑
+                reply->body = kvs_malloc(key_len+1);
+                if (reply->body) {
+                    memcpy(reply->body, key, key_len);
+                    reply->body_len = key_len;
+                } else {
+                    reply->status = KVS_RESP_ERROR;
+                }
+            } 
+            // 参数太多了
+            else { 
+                reply->status = KVS_RESP_PARSE_ERROR; 
+            }
             break;
         }
+        
+        case CMD_SHUTDOWN:
+            reply->status = KVS_RESP_SHUTDOWN;
+            break;
+
+        case CMD_UNKNOWN:
+
+        default:
+            reply->status = KVS_RESP_UNKNOWN;
+            break;
+    }
+
+  
+    printf("[KVS_DEBUG] Final Reply Status Set To: %d (OK=0, ERROR=1, GET_OK=3, EXISTS=6, NO_EXISTS=7...请对照你的reply定义)\n", reply->status);
+    printf("[KVS_DEBUG] ==========================================\n\n");
 
     return 0;
 }
 
-
-int init_kvengine(void) {
-// 全局锁
-    if (kvs_init_locks() != 0) {
-        printf("Failed to init segment locks\n");
-        return -1;
-    }
-//内存池
-#if ENABLE_MEM_POOL
-    array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
-    rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
-    hash_node_pool = mem_pool_create(sizeof(hashnode_t));
-    skip_node_pool = mem_pool_create(sizeof(skipnode_binary_t));
-    
-    if (!array_item_pool || !rbtree_node_pool || !hash_node_pool || !skip_node_pool) {
-        printf("Failed to create memory pools\n");
-        return -1;
-    }
-#endif
-
-// 引擎结构
-#if ENABLE_ARRAY
-    memset(&global_array, 0, sizeof(kvs_array_t));
-    kvs_array_create(&global_array);
-#endif
-#if ENABLE_RBTREE
-    memset(&global_rbtree, 0, sizeof(kvs_rbtree_t));
-    kvs_rbtree_create(&global_rbtree);
-#endif
-#if ENABLE_HASH
-    memset(&global_hash, 0, sizeof(kvs_hash_t));
-    kvs_hash_create(&global_hash);
-#endif
-#if ENABLE_SKIPLIST
-    memset(&global_skip, 0, sizeof(kvs_skip_t));
-    kvs_skip_create(&global_skip);
-#endif
-    
-// 恢复数据（先快照，再用AOF日志追平增量）
-#if ENABLE_SNAPSHOT
-    kvs_snapshot_load();        
-#endif
-#if ENABLE_PERSISTENCE
-    kvs_persistence_init();
-    kvs_persistence_recover(); 
-#endif
-
-// 定时持久化
-#if ENABLE_SNAPSHOT
-    kvs_snapshot_auto_save(1); 
-#endif
-
-// 建立主从同步连接
-#if ENABLE_REPLICATION
-    const char *slave_ip = "192.168.92.129";
-    unsigned short slave_port = 2000;
-    repl_connect_to_slave(slave_ip, slave_port); 
-#endif 
-
-// 定时超时删除线程
-    if (expire_thread_init() != 0) {
-        return -1;
-    }
-
-    return 0;
-}
-
-void dest_kvengine(void) {
-// 关掉超时清理线程
-expire_thread_destroy(); 
-// 关闭主从同步
-#if ENABLE_REPLICATION
-    repl_close();            
-#endif
-
-#if ENABLE_SNAPSHOT
-    kvs_snapshot_auto_save_stop();  // 停止自动快照定时器
-    kvs_snapshot_save();            // 最后做一次强制全量快照落盘
-#endif
-
-#if ENABLE_PERSISTENCE
-    kvs_persistence_close();        // 关闭并刷盘 AOF 日志文件流
-#endif
-
-// 释放本地内存引擎
-#if ENABLE_ARRAY
-    kvs_array_destroy(&global_array);
-#endif
-#if ENABLE_RBTREE
-    kvs_rbtree_destroy(&global_rbtree);
-#endif
-#if ENABLE_HASH
-    kvs_hash_destroy(&global_hash);
-#endif
-#if ENABLE_SKIPLIST
-    kvs_skip_destroy(&global_skip);
-#endif
-
-// 释放内存池
-#if ENABLE_MEM_POOL
-    if (array_item_pool) mem_pool_stats(array_item_pool);
-    if (rbtree_node_pool) mem_pool_stats(rbtree_node_pool);
-    if (hash_node_pool) mem_pool_stats(hash_node_pool);
-    if (skip_node_pool) mem_pool_stats(skip_node_pool);
-    
-    mem_pool_destroy(array_item_pool);
-    mem_pool_destroy(rbtree_node_pool);
-    mem_pool_destroy(hash_node_pool);
-    mem_pool_destroy(skip_node_pool);
-#endif
-
-    kvs_destroy_locks(); // 释放锁
-}
-
-
-int main(int argc, char *argv[]) {
-    if (argc != 2) return -1;
-    int port = atoi(argv[1]);
-
-    init_kvengine();
-    
-#if (NETWORK_SELECT == NETWORK_REACTOR)
-    reactor_start(port, kvs_protocol);  
-#elif (NETWORK_SELECT == NETWORK_PROACTOR)
-    proactor_start(port, kvs_protocol);
-#elif (NETWORK_SELECT == NETWORK_NTYCO)
-    ntyco_start(port, kvs_protocol);
-#endif
-
-    dest_kvengine();
-    return 0;
-}

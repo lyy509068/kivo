@@ -54,14 +54,39 @@ int kv_data_dup(kv_data_t *dst, kv_data_t *src) {
     return kv_data_create(dst, src->data, src->len);
 }
 
-// 比较两个 kv_data_t（二进制安全：先比长度，再比内容）
-int kv_data_compare(kv_data_t *a, kv_data_t *b) {
-    if (!a || !b) return 0; // 严谨起见增加安全防御
-    if (a->len != b->len) {
-        return (a->len > b->len) ? 1 : -1; // 修正直接相减可能导致的 int 溢出隐患
+int kv_data_compare(const kv_data_t *a, const kv_data_t *b) {
+    // 1. 安全拦截
+    if (!a || !b) {
+        return (a == b) ? 0 : (!a ? -1 : 1);
     }
-    return memcmp(a->data, b->data, a->len);
+    
+    // 💡 【修正点】：将 a->data 和 b->data 都强制转换为 (char *)，并且修正 b->bdata 的笔误
+    printf("[CMP_TRACE] Comparing A: %.*s (len:%zu) with B: %.*s (len:%zu)\n", 
+           (int)a->len, (char *)a->data, a->len, 
+           (int)b->len, (char *)b->data, b->len);
+
+    if (!a->data && !b->data) return 0;
+    if (!a->data) return -1;
+    if (!b->data) return 1;
+
+    // 2. 取两个 Key 的最小共同长度进行 memcmp 比较
+    size_t min_len = (a->len < b->len) ? a->len : b->len;
+    int cmp = memcmp(a->data, b->data, min_len);
+    
+    // 3. 如果在共同长度内内容就已经不同，直接返回相对大小
+    if (cmp != 0) {
+        return cmp; 
+    }
+    
+    // 4. 如果共同前缀完全一致，谁短谁小
+    if (a->len < b->len) return -1;
+    if (a->len > b->len) return 1;
+    
+    // 5. 长度和内容完全一致，返回 0
+    return 0;
 }
+
+
 
 // 哈希计算（DJB2 算法，支持二进制数据）
 unsigned long kv_data_hash_func(kv_data_t *key, int size) {

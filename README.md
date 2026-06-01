@@ -1,5 +1,11 @@
 # 9.1 Kvstore
-
+1.使用redis-cli测试
+# 自定义文件测试 
+cat test_cmd.txt | redis-cli -p 2000
+redis-cli -p 2000 -x SET io_multiplexing_article < 本地文件.txt
+redis-cli -p 2000 --raw GET io_multiplexing_article | head -n 20
+# -p 端口，-c 50个并发连接，-n 总共发送10000条命令，-t 只测试 set和get命令
+redis-benchmark -p 2000 -c 50 -n 10000 -t set,get
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？

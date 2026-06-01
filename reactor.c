@@ -8,13 +8,19 @@
 #include <sys/epoll.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
-#include "server.h"
+#include "network.h"
 #include "kvstore.h"
+#include "resp.h"
+#include <errno.h>
+
 
 #define MAX_PACKET_SIZE 10 * 1024 * 1024
 #define CONNECTION_SIZE 1024
 
-static binary_msg_handler g_binary_handler = NULL;
+static stream_handler_t g_stream_handler = NULL;
+
+
+
 static int epfd = 0;
 static struct conn conn_list[CONNECTION_SIZE] = {0};
 static struct timeval begin;
@@ -49,9 +55,11 @@ static void close_and_free_connection(int fd) {
     memset(&conn_list[fd], 0, sizeof(struct conn));
 }
 
+
 void recv_cb(int fd) {
-    printf("\n======= Enter recv_cb for fd: %d =======\n", fd);
+    //printf("\n======= Enter recv_cb for fd: %d =======\n", fd);
     
+    // 非阻塞网络读取
     while (1) {
         if (conn_list[fd].rcapacity - conn_list[fd].rlength < 4096) {
             int new_capacity = conn_list[fd].rcapacity * 2;
@@ -65,6 +73,7 @@ void recv_cb(int fd) {
             conn_list[fd].rbuffer = new_buf;
             conn_list[fd].rcapacity = new_capacity;
         }
+        
         int remaining_space = conn_list[fd].rcapacity - conn_list[fd].rlength;
         int count = recv(fd, conn_list[fd].rbuffer + conn_list[fd].rlength, remaining_space, MSG_DONTWAIT);   
         
@@ -81,136 +90,55 @@ void recv_cb(int fd) {
         conn_list[fd].rlength += count;
     }
 
-    while (conn_list[fd].rlength >= 4) { 
-        char *p = conn_list[fd].rbuffer;
-        int cmd_count_net;
-        memcpy(&cmd_count_net, p, 4);
-        int cmd_count = ntohl(cmd_count_net); 
-        
-        printf("[DEBUG-BUF] rlength=%d, rcapacity=%d\n", conn_list[fd].rlength, conn_list[fd].rcapacity);
-        printf("Protocol Header Checked -> cmd_count parsed: %d\n", cmd_count);
+    // 如果没有注入处理器，直接清空缓冲区并返回，防止死循环
+    if (!g_stream_handler) {
+        printf("[DEBUG-WARN] No stream handler registered! Discarding %d bytes.\n", conn_list[fd].rlength);
+        conn_list[fd].rlength = 0;
+        return;
+    }
 
-        if (cmd_count <= 0 || cmd_count > MAX_PACKET_SIZE) { 
-            printf("[DEBUG-ERR] Invalid cmd_count=%d\n", cmd_count);
-            conn_list[fd].rlength = 0; 
-            break; 
+    // 2. 将数据全权委托给协议层处理
+    int total_parsed_bytes = 0; 
+    int commands_executed = 0;
+
+    while (conn_list[fd].rlength > total_parsed_bytes) { 
+        int parsed_bytes = 0;
+
+        int status = g_stream_handler(
+            conn_list[fd].rbuffer + total_parsed_bytes, 
+            conn_list[fd].rlength - total_parsed_bytes, 
+            &parsed_bytes,                              
+            &conn_list[fd].wbuffer,                     
+            &conn_list[fd].wcapacity,                   
+            &conn_list[fd].wlength                      
+        );
+
+        if (status == 1) {
+            break; // 半包，等待下次 EPOLLIN
+        } else if (status < 0) {
+            printf("[DEBUG-ERR] Protocol error or connection termination on fd: %d\n", fd);
+            close_and_free_connection(fd);
+            return;
         }
 
-        int total_batch_bytes = 4; 
-        int is_all_received = 1;
+        total_parsed_bytes += parsed_bytes;
+        commands_executed++;
+    } 
 
-        for (int i = 0; i < cmd_count; i++) {
-            printf("[DEBUG-VERIFY] Loop i=%d, current total_batch_bytes=%d\n", i, total_batch_bytes);
-            if (conn_list[fd].rlength < total_batch_bytes + 4) {
-                printf("[DEBUG-VERIFY] Incomplete: rlength < total_batch_bytes + 4\n");
-                is_all_received = 0; break; 
-            }
-            int cmd_len_net;
-            memcpy(&cmd_len_net, p + total_batch_bytes, 4);
-            int cmd_len = ntohl(cmd_len_net);
-            printf("[DEBUG-VERIFY] Loop i=%d, parsed cmd_len=%d\n", i, cmd_len);
-            
-            if (conn_list[fd].rlength < total_batch_bytes + 4 + cmd_len + 4) { 
-                printf("[DEBUG-VERIFY] Incomplete: rlength < fixed header\n");
-                is_all_received = 0; break; 
-            }
-            int key_len_net;
-            memcpy(&key_len_net, p + total_batch_bytes + 4 + cmd_len, 4);
-            int key_len = ntohl(key_len_net);
-            printf("[DEBUG-VERIFY] Loop i=%d, parsed key_len=%d\n", i, key_len);
-            
-            if (conn_list[fd].rlength < total_batch_bytes + 4 + cmd_len + 4 + key_len + 4) { 
-                printf("[DEBUG-VERIFY] Incomplete: rlength < value_len_header\n");
-                is_all_received = 0; break; 
-            }
-            int value_len_net;
-            memcpy(&value_len_net, p + total_batch_bytes + 4 + cmd_len + 4 + key_len, 4);
-            int value_len = ntohl(value_len_net);
-            printf("[DEBUG-VERIFY] Loop i=%d, parsed value_len=%d\n", i, value_len);
-            
-            total_batch_bytes += (4 + cmd_len + 4 + key_len + 4 + value_len);
-            printf("[DEBUG-VERIFY] Loop i=%d, new total_batch_bytes=%d\n", i, total_batch_bytes);
-            
-            if (conn_list[fd].rlength < total_batch_bytes) { 
-                printf("[DEBUG-VERIFY] Incomplete: rlength < total_batch_bytes\n");
-                is_all_received = 0; break; 
-            }
-        }
-
-        if (!is_all_received) {
-            printf("Batch packet NOT fully received yet. Waiting for next EPOLLIN.\n");
-            break; 
-        }
-
-        int p_offset = 4; // 跳过前4字节的 cmd_count 头部
-
-        // 1. 在栈上或堆上开辟一个响应收集箱（批量命令，动态分配最安全）
-        kvs_resp_t *resps = (kvs_resp_t *)kvs_malloc(sizeof(kvs_resp_t) * cmd_count);
-        if (resps == NULL) {
-            return;// 严重的内存分配失败处理
-        }
-
-        // 2. 循环解析网络层收到的多条命令
-        for (int i = 0; i < cmd_count; i++) {
-            printf("[DEBUG-CONSUME] Loop i=%d, current p_offset=%d\n", i, p_offset);
-            int cmd_len_net, key_len_net, value_len_net;
-    
-            // 仅提取网络序长度
-            memcpy(&cmd_len_net, p + p_offset, 4);
-            int cmd_len = ntohl(cmd_len_net);
-    
-            memcpy(&key_len_net, p + p_offset + 4 + cmd_len, 4);
-            int key_len = ntohl(key_len_net);
-    
-            memcpy(&value_len_net, p + p_offset + 4 + cmd_len + 4 + key_len, 4);
-            int value_len = ntohl(value_len_net);
-    
-            int single_cmd_total_len = 4 + cmd_len + 4 + key_len + 4 + value_len;
-            printf("[DEBUG-CONSUME] Loop i=%d, cmd_len=%d, key_len=%d, value_len=%d, single_total_len=%d\n", 
-           i, cmd_len, key_len, value_len, single_cmd_total_len);
-    
-            // 假设业务层接口调整为：传入当前命令的首地址、总长度，返回标准响应结构体
-            if (g_binary_handler) {            
-                printf("[DEBUG-CONSUME] Before calling g_binary_handler for loop i=%d\n", i);
-        
-                // 业务层内部去解析数据并执行业务，返回结果填入收集箱
-                g_binary_handler(p + p_offset, single_cmd_total_len, &resps[i]);
-        
-                printf("[DEBUG-CONSUME] After calling g_binary_handler for loop i=%d\n", i);
-            } else {
-            resps[i].status = KVS_RESP_UNKNOWN;
-            resps[i].body = NULL;
-            resps[i].body_len = 0;
-            }
-    
-            p_offset += single_cmd_total_len;
-        }
-
-        // 3. 循环结束，将所有命令的回复交给打包层，统一进行“一次性扩容”与“合并打包”
-        // 传入网络层缓冲区的指针，让打包层内部去控扩容
-        packet_build_batch(resps, cmd_count, &conn_list[fd].wbuffer, &conn_list[fd].wcapacity, &conn_list[fd].wlength);
-
-        // 4. 善后工作：释放业务层因为 GET_OK 在堆上申请的 body 副本，以及临时收集箱
-        for (int i = 0; i < cmd_count; i++) {
-            if (resps[i].status == KVS_RESP_GET_OK && resps[i].body != NULL) {
-                kvs_free(resps[i].body); // 对应业务层 get 成功时 malloc 的副本
-            }
-        }
-        kvs_free(resps); // 释放响应箱本身
-
-        set_event(fd, EPOLLOUT, 0); 
-
-        int remaining_data = conn_list[fd].rlength - total_batch_bytes;
-        printf("[DEBUG-END] remaining_data=%d, total_batch_bytes=%d\n", remaining_data, total_batch_bytes);
+    // 3. 统一平移剩下的未解析数据
+    if (total_parsed_bytes > 0) {
+        int remaining_data = conn_list[fd].rlength - total_parsed_bytes;
         if (remaining_data > 0) {
-            memmove(conn_list[fd].rbuffer, conn_list[fd].rbuffer + total_batch_bytes, remaining_data);
+            memmove(conn_list[fd].rbuffer, conn_list[fd].rbuffer + total_parsed_bytes, remaining_data);
         }
         conn_list[fd].rlength = remaining_data;
-
-        printf("Buffer advanced. Remaining unparsed raw data bytes: %d\n", conn_list[fd].rlength);
+        
+        //printf("[DEBUG-END] Executed %d commands. Remaining unparsed raw data: %d bytes\n", commands_executed, conn_list[fd].rlength);
+               
+        set_event(fd, EPOLLOUT, 0); 
     }
     
-    printf("======= Exit recv_cb for fd: %d =======\n", fd);
+    //printf("======= Exit recv_cb for fd: %d =======\n", fd);
 }
 
 
@@ -338,8 +266,8 @@ int init_listen_socket(unsigned short port) {
     return sockfd;
 }
 
-int reactor_start(unsigned short port, binary_msg_handler handler) {
-    g_binary_handler = handler;
+int reactor_start(unsigned short port, stream_handler_t handler) {
+    g_stream_handler = handler;
     
     epfd = epoll_create(1);
     if (epfd < 0) return -1;
@@ -385,3 +313,4 @@ int reactor_start(unsigned short port, binary_msg_handler handler) {
     
     return 0;
 }
+
