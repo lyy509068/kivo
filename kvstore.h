@@ -28,7 +28,7 @@ void expire_thread_destroy(void);
 
 
 //内存池
-#define ENABLE_MEM_POOL 0 
+#define ENABLE_MEM_POOL 1 
 #if ENABLE_MEM_POOL
 extern mem_pool_t *array_item_pool;
 extern mem_pool_t *rbtree_node_pool;
@@ -51,7 +51,7 @@ void kvs_persistence_close(void);
 #endif
 
 //全量持久化
-#define ENABLE_SNAPSHOT           1        
+#define ENABLE_SNAPSHOT           0        
 #define SNAPSHOT_FILE     "kvstore.snap"  
 #if ENABLE_SNAPSHOT
 int kvs_snapshot_save(void);
@@ -77,9 +77,9 @@ unsigned long kv_data_hash_func(kv_data_t *key, int size);// 哈希计算
 
 
 //存储结构
-#define ENABLE_ARRAY        1
-#define ENABLE_RBTREE       1
-#define ENABLE_HASH         1
+#define ENABLE_ARRAY        0
+#define ENABLE_RBTREE       0
+#define ENABLE_HASH         0
 #define ENABLE_SKIPLIST     1
 
 #if ENABLE_ARRAY

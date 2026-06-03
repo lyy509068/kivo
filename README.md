@@ -24,6 +24,8 @@ redis-benchmark -p 2000 -c 50 -n 10000 -t set,get
 4.超时功能测试
 
 5.内存池测试
+array不能用大量数据测试，rbtree最快，hash比rbtree慢一点，skiptable只有前两个的一半
+malloc>jemalloc>mempool(为什么内存池反而比不用内存池慢？)
 
 6.主从同步测试
 

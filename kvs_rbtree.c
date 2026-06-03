@@ -5,6 +5,7 @@
 #include <stdint.h>   
 #include <sys/time.h> 
 
+#if ENABLE_RBTREE
 #define RED 0
 #define BLACK 1
 
@@ -499,3 +500,4 @@ int kvs_rbtree_get_value_len(char *key_ptr, int key_len) {
 kv_data_t* kvs_rbtree_get_global(kv_data_t *key) {
     return kvs_rbtree_get(&global_rbtree, key);
 }
+#endif

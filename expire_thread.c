@@ -110,7 +110,7 @@ void* kvs_hash_expire_worker(void* arg) {
                     log_binary_command("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
                     #endif
                     #if ENABLE_REPLICATION
-                    repl_push_cmd("HDEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
+                    repl_push_cmd("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
                     #endif
                     kv_data_destroy(&curr->key);
                     kv_data_destroy(&curr->value);
@@ -178,7 +178,7 @@ void* kvs_rbtree_expire_worker(void* arg) {
                 log_binary_command("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 #endif
                 #if ENABLE_REPLICATION
-                repl_push_cmd("RDEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
+                repl_push_cmd("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 #endif
                 kvs_rbtree_del(&global_rbtree, &expired_batch[i]);
                 pthread_rwlock_unlock(&seg_locks[1]);
@@ -221,7 +221,7 @@ void* kvs_skiplist_expire_worker(void* arg) {
                 log_binary_command("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 #endif
                 #if ENABLE_REPLICATION
-                repl_push_cmd("SDEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
+                repl_push_cmd("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 #endif
                 kvs_skip_del(&global_skip, &expired_batch[i]);
                 pthread_rwlock_unlock(&seg_locks[2]);

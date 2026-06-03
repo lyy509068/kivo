@@ -20,6 +20,7 @@ static int64_t get_current_ms_snapshot(void) {
 }
 
 // 记录array的键值对，写进快照
+#if ENABLE_ARRAY
 static void snapshot_write_array_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_ARRAY;
@@ -41,7 +42,8 @@ static void snapshot_write_array_cb(kv_data_t *key, kv_data_t *value, void *arg)
     fwrite(&value->len, sizeof(int), 1, fp);
     fwrite(value->data, 1, value->len, fp);
 }
-
+#endif 
+#if ENABLE_RBTREE
 static void snapshot_write_rbtree_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_RBTREE;
@@ -60,8 +62,8 @@ static void snapshot_write_rbtree_cb(kv_data_t *key, kv_data_t *value, void *arg
     fwrite(&value->len, sizeof(int), 1, fp);
     fwrite(value->data, 1, value->len, fp);
 }
-
-
+#endif 
+#if ENABLE_HASH
 static void snapshot_write_hash_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_HASH;
@@ -85,7 +87,8 @@ static void snapshot_write_hash_cb(kv_data_t *key, kv_data_t *value, void *arg) 
     fwrite(&value->len, sizeof(int), 1, fp);
     fwrite(value->data, 1, value->len, fp);
 }
-
+#endif 
+#if ENABLE_SKIPLIST
 static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_SKIPLIST; 
@@ -100,7 +103,7 @@ static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) 
     fwrite(&value->len, sizeof(int), 1, fp);
     fwrite(value->data, 1, value->len, fp);
 }
-
+#endif 
 // 保存二进制快照：把存储结构的节点写进快照
 int kvs_snapshot_save(void) {
     FILE *fp = fopen("kvstore.snap", "wb");

@@ -31,15 +31,38 @@ int init_kvengine(void) {
     #endif
     //内存池
     #if ENABLE_MEM_POOL
-        array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
-        rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
-        hash_node_pool = mem_pool_create(sizeof(hashnode_t));
-        skip_node_pool = mem_pool_create(sizeof(skipnode_binary_t));
-    
-        if (!array_item_pool || !rbtree_node_pool || !hash_node_pool || !skip_node_pool) {
-            printf("Failed to create memory pools\n");
-            return -1;
-        }
+
+#if ENABLE_ARRAY
+    array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
+    if (!array_item_pool) {
+        printf("Failed to create array item memory pool\n");
+        return -1;
+    }
+#endif
+
+#if ENABLE_RBTREE
+    rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
+    if (!rbtree_node_pool) {
+        printf("Failed to create rbtree node memory pool\n");
+        return -1;
+    }
+#endif
+
+#if ENABLE_HASH
+    hash_node_pool = mem_pool_create(sizeof(hashnode_t));
+    if (!hash_node_pool) {
+        printf("Failed to create hash node memory pool\n");
+        return -1;
+    }
+#endif
+
+#if ENABLE_SKIPLIST
+    skip_node_pool = mem_pool_create(sizeof(skipnode_binary_t));
+    if (!skip_node_pool) {
+        printf("Failed to create skiplist node memory pool\n");
+        return -1;
+    }
+#endif
     #endif
 
     // 引擎结构

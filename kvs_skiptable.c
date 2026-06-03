@@ -6,6 +6,8 @@
 #include <stdint.h>   
 #include <sys/time.h> 
 
+#if ENABLE_SKIPLIST
+
 #define MAX_LEVEL 6
 
 // 全局跳表实例
@@ -314,3 +316,4 @@ int kvs_skip_get_value_len(kvs_skip_t *skip, kv_data_t *key) {
     kv_data_t *value = kvs_skip_get(skip, key);
     return value ? (int)value->len : -1;
 }
+#endif

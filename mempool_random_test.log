@@ -1,0 +1,26 @@
+[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 500000 | Time: 35692 ms | QPS: 14008 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 500000 | Time: 45326 ms | QPS: 11031 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 500000 | Time: 79121 ms | QPS: 6319 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 500000 | Time: 36360 ms | QPS: 13751 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 500000 | Time: 43189 ms | QPS: 11577 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 500000 | Time: 75734 ms | QPS: 6602 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 500000 | Time: 35834 ms | QPS: 13953 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 500000 | Time: 45660 ms | QPS: 10950 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 500000 | Time: 94942 ms | QPS: 5266 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+
+
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 500000 | Time: 36877 ms | QPS: 13558 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 500000 | Time: 48492 ms | QPS: 10310 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 500000 | Time: 87054 ms | QPS: 5743 | VmSize+: +0 kB | VmRSS+: +0 kB
+

@@ -3,7 +3,7 @@
 #include <stdint.h>   
 #include <sys/time.h> 
 #include "kvstore.h" 
-
+#if ENABLE_HASH
 #define DEFAULT_HASH_SLOTS 1024 
 
 kvs_hash_t global_hash={0};
@@ -225,3 +225,4 @@ void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data
         }
     }
 }
+#endif 

@@ -4,7 +4,7 @@
 #include "kvstore.h"
 #include <string.h>
 #include <sys/time.h> 
-
+#if ENABLE_ARRAY
 kvs_array_t global_array = {0};
 
 static int64_t get_current_ms_array(void) {
@@ -218,4 +218,4 @@ void kvs_array_foreach(kvs_array_t *inst, void (*callback)(kv_data_t *key, kv_da
         i++; 
     }
 }
-
+#endif

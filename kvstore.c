@@ -88,18 +88,53 @@ extern mem_pool_t *skip_node_pool;
 void *kvs_malloc(size_t size) {
     if (size == 0) return NULL;
 
-    // 根据结构体大小路由到内存池
-        if (size == sizeof(kvs_array_item_t) && array_item_pool) 
-            return mem_pool_alloc(array_item_pool);
-    
-        if (size == sizeof(rbtree_node_binary_t) && rbtree_node_pool)
-            return mem_pool_alloc(rbtree_node_pool);
-        
-        if (size == sizeof(hashnode_t) && hash_node_pool)
-            return mem_pool_alloc(hash_node_pool);
-        
-        if (size == sizeof(skipnode_binary_t) && skip_node_pool)
-            return mem_pool_alloc(skip_node_pool);
+#if ENABLE_ARRAY
+    if (size == sizeof(kvs_array_item_t) && array_item_pool) {
+        void *ptr = mem_pool_alloc(array_item_pool);
+        if (ptr) {
+            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
+            header->owner = array_item_pool; // 显式双向绑定，确保 kvs_free 安全
+            header->size = size;
+        }
+        return ptr;
+    }
+#endif
+
+#if ENABLE_RBTREE
+    if (size == sizeof(rbtree_node_binary_t) && rbtree_node_pool) {
+        void *ptr = mem_pool_alloc(rbtree_node_pool);
+        if (ptr) {
+            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
+            header->owner = rbtree_node_pool;
+            header->size = size;
+        }
+        return ptr;
+    }
+#endif
+
+#if ENABLE_HASH
+    if (size == sizeof(hashnode_t) && hash_node_pool) {
+        void *ptr = mem_pool_alloc(hash_node_pool);
+        if (ptr) {
+            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
+            header->owner = hash_node_pool;
+            header->size = size;
+        }
+        return ptr;
+    }
+#endif
+
+#if ENABLE_SKIPLIST
+    if (size == sizeof(skipnode_binary_t) && skip_node_pool) {
+        void *ptr = mem_pool_alloc(skip_node_pool);
+        if (ptr) {
+            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
+            header->owner = skip_node_pool;
+            header->size = size;
+        }
+        return ptr;
+    }
+#endif
 
     // 如果不在内存池中，走标准 malloc，但“必须”加上 Header！
     size_t chunk_size = sizeof(mem_header_t) + size;
