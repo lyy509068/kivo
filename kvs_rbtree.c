@@ -331,16 +331,23 @@ void kvs_rbtree_destroy(kvs_rbtree_t *inst) {
 int kvs_rbtree_set(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!inst || !key || !value) return -1;
     
-    // 检查 key 是否已存在
-    rbtree_node_binary_t *existing = rbtree_search((rbtree_binary_t*)inst, key);
+    rbtree_binary_t *T = (rbtree_binary_t*)inst;
+    rbtree_node_binary_t *existing = rbtree_search(T, key);
+    
     if (existing != inst->nil) {
-        // 【修复点】：标准的 SET 行为应为直接覆盖旧值，重置过期时间
-        kv_data_destroy(&existing->value);
-        if (kv_data_dup(&existing->value, value) != 0) {
-            return -2;
+        // 【修改点】：如果 key 存在但其实已经过期了
+        if (existing->expire_time > 0 && get_current_ms_rbtree() > existing->expire_time) {
+            // 物理删除这个风化了的僵尸节点，后面会顺理成章地创建全新节点插入
+            kvs_rbtree_del(inst, key); 
+        } else {
+            // 只有当 key 真正健康存活时，才执行覆盖更新逻辑
+            kv_data_destroy(&existing->value);
+            if (kv_data_dup(&existing->value, value) != 0) {
+                return -2;
+            }
+            existing->expire_time = expire_time; // 更新过期时间
+            return 0;  
         }
-        existing->expire_time = expire_time; // 更新过期时间
-        return 0;  // 返回 0 代表处理成功
     }
     
     // 创建新节点逻辑保持不变...
@@ -410,8 +417,15 @@ int kvs_rbtree_del(kvs_rbtree_t *inst, kv_data_t *key) {
 int kvs_rbtree_mod(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!inst || !key || !value) return -1;
     
-    rbtree_node_binary_t *node = rbtree_search((rbtree_binary_t*)inst, key);
+    rbtree_binary_t *T = (rbtree_binary_t*)inst;
+    rbtree_node_binary_t *node = rbtree_search(T, key);
     if (node == inst->nil) return 1;  // 不存在
+    
+    // 若试图修改一个虽然在树中但逻辑上已过期的数据
+    if (node->expire_time > 0 && get_current_ms_rbtree() > node->expire_time) {
+        kvs_rbtree_del(inst, key); // 抹除死节点
+        return 1;                  // 告诉上层“没有找到这个 key”
+    }
     
     // 释放旧 value，拷贝新 value
     kv_data_destroy(&node->value);
@@ -435,7 +449,10 @@ int kvs_rbtree_exist(kvs_rbtree_t *inst, kv_data_t *key) {
 static void rbtree_foreach_node(rbtree_binary_t *T, rbtree_node_binary_t *node, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (node == T->nil) return;
     rbtree_foreach_node(T, node->left, callback, arg);
-    callback(&node->key, &node->value, arg);
+    int64_t now = get_current_ms_rbtree();
+    if (!(node->expire_time > 0 && now > node->expire_time)) {//跳过过期节点
+        callback(&node->key, &node->value, arg);
+    }
     rbtree_foreach_node(T, node->right, callback, arg);
 }
 

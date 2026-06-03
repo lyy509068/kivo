@@ -17,7 +17,8 @@ typedef enum {
     KVS_RESP_EXISTS = 6,      // 6: KEY 已存在 (对应 REXISTS 成功返回 1)
     KVS_RESP_NO_EXISTS = 7,    // 7: KEY 不存在 (返回 $-1\r\n)
     
-    KVS_RESP_PONG = 8         // 8: PONG 回应
+    KVS_RESP_PONG = 8,         // 8: PONG 回应
+    KVS_RESP_SAVE_ERR = 9     // 9: SAVE 快照落盘失败 (返回 -ERR save failed)
 } kvs_status_t;
 
 // 请求结构体 (协议层解析后，传给业务层)

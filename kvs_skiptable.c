@@ -125,9 +125,9 @@ void kvs_skip_destroy(kvs_skip_t *skip) {
 
 
 int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
-    if (!skip)  { printf("DEBUG: Error, skip is NULL!\n"); return -1; }
-    if (!key)   { printf("DEBUG: Error, key is NULL!\n"); return -1; }
-    if (!value) { printf("DEBUG: Error, value is NULL!\n"); return -1; }
+    //if (!skip)  { printf("DEBUG: Error, skip is NULL!\n"); return -1; }
+    //if (!key)   { printf("DEBUG: Error, key is NULL!\n"); return -1; }
+    //if (!value) { printf("DEBUG: Error, value is NULL!\n"); return -1; }
     
     if (!skip || !skip->header || !key || !value) return -1;
     skipnode_binary_t *update[MAX_LEVEL + 1];
@@ -146,7 +146,22 @@ int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t exp
     
     // 检查 key 是否已存在
     if (current && kv_data_compare(&current->key, key) == 0) {
-        return 1;  // 已存在
+        // 如果 key 存在但其实已经过期了
+        if (current->expire_time > 0 && get_current_ms_skip() > current->expire_time) {
+            kvs_skip_del(skip, key); // 物理删除这个风化了的死节点
+            
+            // 因为执行删除后跳表的指针结构和高度发生变化，我们必须重新建立 update 前驱数组
+            current = skip->header;
+            for (int i = skip->level; i >= 0; i--) {
+                while (current->forward[i] && 
+                       kv_data_compare(&current->forward[i]->key, key) < 0) {
+                    current = current->forward[i];
+                }
+                update[i] = current;
+            }
+        } else {
+            return 1;  // 真正健康的已存在
+        }
     }
     
     // 随机层数
@@ -251,6 +266,12 @@ int kvs_skip_mod(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t exp
     current = current->forward[0];
     
     if (current && kv_data_compare(&current->key, key) == 0) {
+
+        if (current->expire_time > 0 && get_current_ms_skip() > current->expire_time) {
+            kvs_skip_del(skip, key); // 抹除死数据
+            return 1;                // 告诉业务层：“此键不存在，修改失败”
+        }
+        
         // 释放旧 value，深拷贝新 value
         kv_data_destroy(&current->value);
         if (kv_data_dup(&current->value, value) != 0) return -2;
@@ -274,9 +295,14 @@ int kvs_skip_exist(kvs_skip_t *skip, kv_data_t *key) {
 
 void kvs_skip_foreach(kvs_skip_t *skip, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (!skip || !callback) return;
-    
+    int64_t now = get_current_ms_skip();
     skipnode_binary_t *node = skip->header->forward[0];
     while (node) {
+        if (node->expire_time > 0 && now > node->expire_time) {
+            node = node->forward[0];
+            continue;
+        }
+        
         callback(&node->key, &node->value, arg);
         node = node->forward[0];
     }

@@ -47,7 +47,7 @@ int kvs_persistence_init(void) {
     return 0;
 }
 
-
+//执行一次命令调用一次
 void kvs_persistence_write(const void *data, int len) {
     if (aof_fp && data && len > 0) {
         pthread_mutex_lock(&aof_write_mutex); 
@@ -57,7 +57,7 @@ void kvs_persistence_write(const void *data, int len) {
     }
 }
 
-
+//从日志文件恢复数据到引擎
 void kvs_persistence_recover(void) {
     if (!aof_fp) return;
     
@@ -69,12 +69,12 @@ void kvs_persistence_recover(void) {
 
     while (1) {
         int cmd_len = 0, key_len = 0, val_len = 0;
-        int64_t expire_time = 0; 
+        int64_t expire_time = 0; //从日志读真正的过期时间
         
         // 读取并校验 CMD 长度
         if (fread(&cmd_len, sizeof(int), 1, aof_fp) != 1) break;
         
-        // 命令长度明显不合理，说明文件损坏或读到末尾残余，安全退出
+        // 命令长度明显不合理安全退出
         if (cmd_len <= 0 || cmd_len >= 32) {
             printf("[AOF Warning] Corrupted cmd_len detected: %d. Stopping recovery.\n", cmd_len);
             break;
@@ -84,13 +84,15 @@ void kvs_persistence_recover(void) {
         if (fread(cmd, 1, cmd_len, aof_fp) != (size_t)cmd_len) break;
         cmd[cmd_len] = '\0'; 
 
-        // 判定写命令
-        int is_write_cmd = (strcmp(cmd, "SET") == 0 || strcmp(cmd, "MOD") == 0 || strcmp(cmd, "RSET") == 0 || strcmp(cmd, "RMOD") == 0 ||
-                            strcmp(cmd, "HSET") == 0 || strcmp(cmd, "HMOD") == 0 || strcmp(cmd, "SSET") == 0 || strcmp(cmd, "SMOD") == 0);
-        
-        if (is_write_cmd) {
-            if (fread(&expire_time, sizeof(int64_t), 1, aof_fp) != 1) break;
-        }
+        // 无论什么命令，我们现在统一在 CMD 之后读取 8 字节的 expire_time
+        // 因为我们在 log_binary_command 中固定了数据结构，所以这里必须按顺序读
+        if (fread(&expire_time, sizeof(int64_t), 1, aof_fp) != 1) break;
+
+        // 判定写命令 (仅用于判断后续是否需要检查过期拦截)
+        int is_write_cmd = (strcmp(cmd, "SET") == 0 || strcmp(cmd, "MOD") == 0 || 
+                            strcmp(cmd, "RSET") == 0 || strcmp(cmd, "RMOD") == 0 ||
+                            strcmp(cmd, "HSET") == 0 || strcmp(cmd, "HMOD") == 0 || 
+                            strcmp(cmd, "SSET") == 0 || strcmp(cmd, "SMOD") == 0);
 
         // 读取并校验 KEY
         if (fread(&key_len, sizeof(int), 1, aof_fp) != 1) break;
@@ -135,7 +137,8 @@ void kvs_persistence_recover(void) {
         }
 
         // 过期拦截
-        if (is_write_cmd && expire_time > 0 && now > expire_time) {
+        if (is_write_cmd && expire_time > 0 && now > expire_time) {//过期时间为0这里会 直接跳过 表示永不过期
+            printf("[AOF Debug] CMD %s skipped because it expired! expire:%ld, now:%ld\n", cmd, expire_time, now);
             kvs_free(key);
             if (val) kvs_free(val);
             expired_cleanup_count++;

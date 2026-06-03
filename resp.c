@@ -94,14 +94,15 @@ static void free_resp_request(resp_request_t *req) {
  */
 static void resp_pack(char *send_buf, int *send_len, resp_reply_t *reply) {
     if (reply->status == KVS_RESP_OK || reply->status == KVS_RESP_SHUTDOWN) {
-        // SHUTDOWN命令在服务器真正关闭连接前，回复+OK\r\n
         *send_len += sprintf(send_buf + *send_len, "+OK\r\n");
     } 
     else if (reply->status == KVS_RESP_PONG) {
         *send_len += sprintf(send_buf + *send_len, "+PONG\r\n");
     }
+    else if (reply->status == KVS_RESP_SAVE_ERR) {
+        *send_len += sprintf(send_buf + *send_len, "-ERR save snapshot failed\r\n");
+    }
     else if (reply->status == KVS_RESP_GET_OK && reply->body) {
-        // 带参数的 PING 也会走到这里，原样回显参数，逻辑完全复用
         *send_len += sprintf(send_buf + *send_len, "$%d\r\n", reply->body_len);
         memcpy(send_buf + *send_len, reply->body, reply->body_len);
         *send_len += reply->body_len;

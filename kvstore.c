@@ -13,6 +13,7 @@
 #include <strings.h> // for strncasecmp
 #include "resp.h" 
 
+extern volatile int server_should_exit;
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -26,7 +27,6 @@ extern kvs_hash_t global_hash;
 #if ENABLE_SKIPLIST
 extern kvs_skip_t global_skip;
 #endif
-
 
 //超时删除
 pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
@@ -225,9 +225,9 @@ void mem_pool_stats(mem_pool_t *pool) {
 
 #endif
 
-//增量持久化
+//增量持久化 日志
 #if ENABLE_PERSISTENCE
-void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len) {
+void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len, int64_t expire_time) {
 
     if (!cmd || !key || key_len <= 0) {
         return; 
@@ -235,7 +235,7 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
 
     int cmd_len = (int)strlen(cmd);
 
-    int payload_len = 4 + cmd_len + 4 + key_len + 4 + (value ? value_len : 0);
+    int payload_len = 4 + cmd_len + 8 + 4 + key_len + 4 + (value ? value_len : 0);
     // 向上进行 8 字节对齐
     int total_len = (payload_len + 7) & ~7; 
 
@@ -248,6 +248,8 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
     // 序列化命令
     *(int*)(buf + pos) = cmd_len; pos += 4;
     memcpy(buf + pos, cmd, cmd_len); pos += cmd_len;
+    //序列化过期时间
+    *(int64_t*)(buf + pos) = expire_time; pos += 8;
     // 序列化 Key
     *(int*)(buf + pos) = key_len; pos += 4;
     memcpy(buf + pos, key, key_len); pos += key_len;
@@ -258,12 +260,13 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
     } else {
         *(int*)(buf + pos) = 0; pos += 4;
     }
-    kvs_persistence_write(buf, payload_len);
+
+    kvs_persistence_write(buf, payload_len);//需要把过期时间写进日志
     kvs_free(buf);
 }
 #endif 
 
-
+extern void dest_kvengine(void);
 
 typedef struct {
     const char *cmd_name;
@@ -281,9 +284,7 @@ enum {
     // SkipList
     CMD_SSET, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
 
-    CMD_PING,
-
-    CMD_SHUTDOWN,
+    CMD_PING, CMD_SHUTDOWN, CMD_SAVE,
 
     CMD_UNKNOWN
 };
@@ -293,7 +294,7 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
     {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXISTS",   7, CMD_REXISTS},
     {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXISTS",   7, CMD_HEXISTS},
     {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXISTS",   7, CMD_SEXISTS},
-    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"UNKNOWN",  7, CMD_UNKNOWN}
+    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"SAVE",     4, CMD_SAVE},     {"UNKNOWN",  7, CMD_UNKNOWN}
 };
 
 
@@ -368,7 +369,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("SET", key, key_len, value, value_len);
+                log_binary_command("SET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("SET", key, key_len, value, value_len);
@@ -401,7 +402,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("DEL", key, key_len, NULL, 0); 
+                log_binary_command("DEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("DEL", key, key_len, NULL, 0);
@@ -416,7 +417,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("MOD", key, key_len, value, value_len);
+                log_binary_command("MOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("MOD", key, key_len, value, value_len);
@@ -442,7 +443,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("RSET", key, key_len, value, value_len);
+                log_binary_command("RSET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("RSET", key, key_len, value, value_len);
@@ -474,7 +475,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("RDEL", key, key_len, NULL, 0); 
+                log_binary_command("RDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("RDEL", key, key_len, NULL, 0);
@@ -489,7 +490,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("RMOD", key, key_len, value, value_len);
+                log_binary_command("RMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("RMOD", key, key_len, value, value_len);
@@ -515,7 +516,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("HSET", key, key_len, value, value_len);
+                log_binary_command("HSET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("HSET", key, key_len, value, value_len);
@@ -546,7 +547,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("HDEL", key, key_len, NULL, 0); 
+                log_binary_command("HDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("HDEL", key, key_len, NULL, 0);
@@ -561,7 +562,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("HMOD", key, key_len, value, value_len);
+                log_binary_command("HMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("HMOD", key, key_len, value, value_len);
@@ -590,7 +591,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("SSET", key, key_len, value, value_len);
+                log_binary_command("SSET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("SSET", key, key_len, value, value_len);
@@ -630,7 +631,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("SDEL", key, key_len, NULL, 0); 
+                log_binary_command("SDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("SDEL", key, key_len, NULL, 0);
@@ -648,7 +649,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 #if ENABLE_PERSISTENCE
-                log_binary_command("SMOD", key, key_len, value, value_len);
+                log_binary_command("SMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION
                 repl_push_cmd("SMOD", key, key_len, value, value_len);
@@ -689,10 +690,27 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             break;
         }
+        case CMD_SAVE: {
+            if (req->argc != 1) {
+                reply->status = KVS_RESP_PARSE_ERROR; 
+            } else {
+                // 调用全量快照持久化落数
+                extern int kvs_snapshot_save(void); 
+                int ret = kvs_snapshot_save();
+                
+                if (ret == 0) {
+                    reply->status = KVS_RESP_OK;       
+                } else {
+                    reply->status = KVS_RESP_SAVE_ERR; 
+                }
+            }
+            break;
+        }
         
         case CMD_SHUTDOWN:
-            reply->status = KVS_RESP_SHUTDOWN;
-            break;
+            reply->status = KVS_RESP_SHUTDOWN;//回复状态码
+            server_should_exit=1;//从网络层跳出的标志
+            break;//调到return 0
 
         case CMD_UNKNOWN:
 
@@ -702,9 +720,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     }
 
   
-    printf("[KVS_DEBUG] Final Reply Status Set To: %d (OK=0, ERROR=1, GET_OK=3, EXISTS=6, NO_EXISTS=7...请对照你的reply定义)\n", reply->status);
-    printf("[KVS_DEBUG] ==========================================\n\n");
+    //printf("[KVS_DEBUG] Final Reply Status Set To: %d \n", reply->status);
+    //printf("[KVS_DEBUG] ==========================================\n\n");
 
-    return 0;
+    return 0;//调到这里 然后反回协议层
 }
 

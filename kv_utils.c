@@ -60,10 +60,7 @@ int kv_data_compare(const kv_data_t *a, const kv_data_t *b) {
         return (a == b) ? 0 : (!a ? -1 : 1);
     }
     
-    // 💡 【修正点】：将 a->data 和 b->data 都强制转换为 (char *)，并且修正 b->bdata 的笔误
-    printf("[CMP_TRACE] Comparing A: %.*s (len:%zu) with B: %.*s (len:%zu)\n", 
-           (int)a->len, (char *)a->data, a->len, 
-           (int)b->len, (char *)b->data, b->len);
+    //printf("[CMP_TRACE] Comparing A: %.*s (len:%zu) with B: %.*s (len:%zu)\n", (int)a->len, (char *)a->data, a->len, (int)b->len, (char *)b->data, b->len);
 
     if (!a->data && !b->data) return 0;
     if (!a->data) return -1;

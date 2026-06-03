@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <stdint.h>   
 #include <sys/time.h> 
+#include <stddef.h> // offsetof 宏
 
 // 用于二进制快照的引擎标识
 #define SNAP_TYPE_ARRAY    1
@@ -12,22 +13,20 @@
 #define SNAP_TYPE_HASH     3
 #define SNAP_TYPE_SKIPLIST 4
 
-static int auto_save_running = 0;
-static pthread_t auto_save_thread;
-
 static int64_t get_current_ms_snapshot(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-// expire_time 的二进制串行化支持
+// 记录array的键值对，写进快照
 static void snapshot_write_array_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_ARRAY;
     
     extern kvs_array_t global_array;
     int64_t expire_time = 0;
+    //线性查找当前键值对的过期时间
     for(int i=0; i<global_array.idx; i++) {
         if(kv_data_compare(&global_array.table[i].key, key) == 0) {
             expire_time = global_array.table[i].expire_time;
@@ -35,7 +34,7 @@ static void snapshot_write_array_cb(kv_data_t *key, kv_data_t *value, void *arg)
         }
     }
 
-    fwrite(&type, sizeof(int), 1, fp);
+    fwrite(&type, sizeof(int), 1, fp);// 写入存储结构类型
     fwrite(&expire_time, sizeof(int64_t), 1, fp); // 写入8字节过期时间
     fwrite(&key->len, sizeof(int), 1, fp);
     fwrite(key->data, 1, key->len, fp);
@@ -47,9 +46,13 @@ static void snapshot_write_rbtree_cb(kv_data_t *key, kv_data_t *value, void *arg
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_RBTREE;
     
+    // 通过 key 的指针，反推回输入节点的首地址
+    rbtree_node_binary_t *node = (rbtree_node_binary_t *)((char *)key - offsetof(rbtree_node_binary_t, key));
+    
     // 获取真实节点的过期时间
-    int64_t expire_time = 0; 
+    int64_t expire_time = node->expire_time; 
 
+    // 顺序写入快照二进制文件
     fwrite(&type, sizeof(int), 1, fp);
     fwrite(&expire_time, sizeof(int64_t), 1, fp); 
     fwrite(&key->len, sizeof(int), 1, fp);
@@ -85,8 +88,10 @@ static void snapshot_write_hash_cb(kv_data_t *key, kv_data_t *value, void *arg) 
 
 static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
-    int type = SNAP_TYPE_SKIPLIST;
-    int64_t expire_time = 0; 
+    int type = SNAP_TYPE_SKIPLIST; 
+
+    skipnode_binary_t *node = (skipnode_binary_t *)((char *)key - offsetof(skipnode_binary_t, key));
+    int64_t expire_time = node->expire_time;
 
     fwrite(&type, sizeof(int), 1, fp);
     fwrite(&expire_time, sizeof(int64_t), 1, fp); 
@@ -96,7 +101,7 @@ static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) 
     fwrite(value->data, 1, value->len, fp);
 }
 
-// 保存二进制快照 
+// 保存二进制快照：把存储结构的节点写进快照
 int kvs_snapshot_save(void) {
     FILE *fp = fopen("kvstore.snap", "wb");
     if (!fp) return -1;
@@ -125,7 +130,7 @@ int kvs_snapshot_save(void) {
     return 0;
 }
 
-
+//从快照文件读取数据，恢复到存储结构中
 int kvs_snapshot_load(void) {
 
     FILE *fp = fopen("kvstore.snap", "rb");
@@ -168,7 +173,7 @@ int kvs_snapshot_load(void) {
             break;
         }
         
-        // 执行冷启动过期净化拦截
+        // 过期释放
         if (expire_time > 0 && now > expire_time) {
             kvs_free(k_buf);
             kvs_free(v_buf);
@@ -214,46 +219,4 @@ int kvs_snapshot_load(void) {
     fclose(fp);
     printf("Snapshot loaded: %d entries (Purged %d expired entries on startup)\n", loaded_count, expired_cleanup_count);
     return 0;
-}
-
-//线程管理
-static void *auto_save_thread_func(void *arg) {
-    // 提取出参数后，立即释放分配的堆内存，防止内存泄漏
-    int interval = *(int*)arg;
-    kvs_free(arg); 
-    
-    while (auto_save_running) {
-        sleep(interval);
-        if (auto_save_running) {
-            kvs_snapshot_save();
-        }
-    }
-    return NULL;
-}
-
-
-int kvs_snapshot_auto_save(int interval_seconds) {
-    if (interval_seconds <= 0) return -1;
-    if (auto_save_running) return -1; 
-    
-    auto_save_running = 1;
-    // 分配并传递给线程
-    int *interval = kvs_malloc(sizeof(int));
-    *interval = interval_seconds;
-    
-    if (pthread_create(&auto_save_thread, NULL, auto_save_thread_func, interval) != 0) {
-        auto_save_running = 0;
-        kvs_free(interval);
-        return -1;
-    }
-    
-    printf("Auto save started, interval: %d seconds\n", interval_seconds);
-    return 0;
-}
-
-
-void kvs_snapshot_auto_save_stop(void) {
-    if (!auto_save_running) return;
-    auto_save_running = 0;
-    pthread_join(auto_save_thread, NULL);
 }

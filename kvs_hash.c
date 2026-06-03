@@ -54,10 +54,17 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     if (!hash || !key || !value) return -1;
     unsigned long h = kv_data_hash(key, hash->max_slots);
     
-    // 检查是否存在（避免重复）
+    // 检查是否存在
     hashnode_t *node = hash->buckets[h];
     while (node) {
-        if (kv_data_cmp(&node->key, key) == 0) return 1; // 已存在
+        if (kv_data_cmp(&node->key, key) == 0) {
+            // 如果存在但已经过期了
+            if (node->expire_time > 0 && get_current_ms_hash() > node->expire_time) {
+                kvs_hash_del(hash, key); // 强行剔除死数据
+                break;                   // 跳出循环，去后面走创建新节点流程
+            }
+            return 1; // 真正健康的已存在
+        }
         node = node->next;
     }
 
@@ -88,7 +95,7 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
 kv_data_t *kvs_hash_get(kvs_hash_t *hash, kv_data_t *key) {
     if (!hash || !key) return NULL;
     unsigned long h = kv_data_hash(key, hash->max_slots);
-    printf("[HASH_DEBUG] Key data ptr: %p, len: %zu, Slot: %lu\n", key->data, key->len, h);
+    //printf("[HASH_DEBUG] Key data ptr: %p, len: %zu, Slot: %lu\n", key->data, key->len, h);
     hashnode_t *node = hash->buckets[h];
     while (node) {
         if (kv_data_cmp(&node->key, key) == 0) {
@@ -110,6 +117,12 @@ int kvs_hash_mod(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     hashnode_t *node = hash->buckets[h];
     while (node) {
         if (kv_data_cmp(&node->key, key) == 0) {
+            // 如果虽然找到了，但数据已经过期了
+            if (node->expire_time > 0 && get_current_ms_hash() > node->expire_time) {
+                kvs_hash_del(hash, key); // 默默清理掉
+                return 1;                // 视同“未找到”
+            }
+
             // 销毁旧值，利用 kv_data_create 更新新值
             kv_data_destroy(&node->value);
             int ret = kv_data_dup(&node->value, value);
@@ -149,7 +162,22 @@ int kvs_hash_del(kvs_hash_t *hash, kv_data_t *key) {
 
 
 int kvs_hash_exist(kvs_hash_t *hash, kv_data_t *key) {
-    return (kvs_hash_get(hash, key) != NULL) ? 0 : 1;
+    if (!hash || !key) return 1; // 1 代表不存在
+    unsigned long h = kv_data_hash(key, hash->max_slots);
+    
+    hashnode_t *node = hash->buckets[h];
+    while (node) {
+        if (kv_data_cmp(&node->key, key) == 0) {
+            // 如果过期了，顺手做惰性删除
+            if (node->expire_time > 0 && get_current_ms_hash() > node->expire_time) {
+                kvs_hash_del(hash, key);
+                return 1; 
+            }
+            return 0; // 0 代表存在
+        }
+        node = node->next;
+    }
+    return 1;
 }
 
 
@@ -161,10 +189,38 @@ int kvs_hash_get_value_len(kvs_hash_t *hash, kv_data_t *key) {
 
 void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (!hash || !callback) return;
+    int64_t now = get_current_ms_hash();
+
     for (int i = 0; i < hash->max_slots; i++) {
         hashnode_t *node = hash->buckets[i];
+        hashnode_t *prev = NULL;
+
         while (node) {
+            // 检查节点是否已过期
+            if (node->expire_time > 0 && now > node->expire_time) {
+                // 1. 从单链表中剔除该节点
+                hashnode_t *next_node = node->next;
+                if (prev) {
+                    prev->next = next_node;
+                } else {
+                    hash->buckets[i] = next_node;
+                }
+
+                // 2. 释放物理内存
+                kv_data_destroy(&node->key);
+                kv_data_destroy(&node->value);
+                kvs_free(node);
+                hash->count--;
+
+                // 3. 转向下一个节点，不更新 prev
+                node = next_node;
+                continue;
+            }
+
+            // 正常未过期节点，调用回调
             callback(&node->key, &node->value, arg);
+            
+            prev = node;
             node = node->next;
         }
     }

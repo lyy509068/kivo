@@ -51,19 +51,17 @@ void kvs_persistence_close(void);
 #endif
 
 //全量持久化
-#define ENABLE_SNAPSHOT           0        
+#define ENABLE_SNAPSHOT           1        
 #define SNAPSHOT_FILE     "kvstore.snap"  
 #if ENABLE_SNAPSHOT
 int kvs_snapshot_save(void);
 int kvs_snapshot_load(void);
-int kvs_snapshot_auto_save(int interval_seconds);
-void kvs_snapshot_auto_save_stop(void);
 #endif
 
 
 // 二进制数据块
 typedef struct {    
-    void *data;     // 指向二进制数据
+    void *data;     // 数据
     size_t len;     // 数据长度
 } kv_data_t;
 // 底层数据结构二进制辅助函数
@@ -91,7 +89,7 @@ typedef struct {
     int64_t expire_time; // 新增：绝对过期时间戳，0表示不过期
 } kvs_array_item_t;
 
-#define KVS_ARRAY_SIZE    1024
+#define KVS_ARRAY_SIZE    100000
 
 typedef struct kvs_array_s {//array结构体
     kvs_array_item_t *table;//指向动态分配的数组，这个数组用来存放键值
@@ -102,12 +100,12 @@ typedef struct kvs_array_s {//array结构体
 int kvs_array_create(kvs_array_t *inst);
 void kvs_array_destroy(kvs_array_t *inst);
 
-int kvs_array_set(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time);
-kv_data_t* kvs_array_get(kvs_array_t *inst, kv_data_t *key);
-int kvs_array_del(kvs_array_t *inst, kv_data_t *key);
-int kvs_array_mod(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time);
-int kvs_array_exist(kvs_array_t *inst, kv_data_t *key);
-void kvs_array_foreach(kvs_array_t *inst, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);
+int kvs_array_set(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time);//把过期时间写入节点
+kv_data_t* kvs_array_get(kvs_array_t *inst, kv_data_t *key);//操作之前会检查是否过期
+int kvs_array_del(kvs_array_t *inst, kv_data_t *key);//操作之前会检查是否过期
+int kvs_array_mod(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time);//操作之前会检查是否过期
+int kvs_array_exist(kvs_array_t *inst, kv_data_t *key);//操作之前会检查是否过期
+void kvs_array_foreach(kvs_array_t *inst, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);//操作之前会检查是否过期，重点检查这个函数
 int kvs_array_get_value_len(char *key_ptr, int key_len);
 
 #endif

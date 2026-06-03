@@ -13,6 +13,7 @@
 #include "resp.h"
 #include <errno.h>
 
+volatile int server_should_exit;
 
 #define MAX_PACKET_SIZE 10 * 1024 * 1024
 #define CONNECTION_SIZE 1024
@@ -243,16 +244,19 @@ void accept_cb(int fd) {
 int init_listen_socket(unsigned short port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) return -1;
-    
     int opt = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt SO_REUSEADDR failed");
+        close(sockfd);
+        return -1;
+    }
     
     struct sockaddr_in servaddr;
     memset(&servaddr, 0, sizeof(servaddr));
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
     servaddr.sin_port = htons(port);
-    
+
     if (-1 == bind(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr))) {
         close(sockfd);
         return -1;
@@ -288,9 +292,13 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     
     gettimeofday(&begin, NULL);
     
+    server_should_exit=0;
+    int shutdown_stage=0;
     while (1) {
         struct epoll_event events[1024] = {0};
-        int nready = epoll_wait(epfd, events, 1024, -1);
+
+        int timeout = server_should_exit ? 50 : -1;
+        int nready = epoll_wait(epfd, events, 1024, timeout);
         
         for (int i = 0; i < nready; i++) {
             int connfd = events[i].data.fd;
@@ -309,8 +317,39 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
                 }
             }
         }
+        if (server_should_exit) {
+            if (shutdown_stage == 0) {
+                //printf("[Reactor] SHUTDOWN sign captured. Closing listener first to flush remaining data...\n");
+                // 1. 先把大门关了，不再接受任何新连接，防止插队
+                if (listen_fd > 0) {
+                    epoll_ctl(epfd, EPOLL_CTL_DEL, listen_fd, NULL);
+                    close(listen_fd);
+                    listen_fd = -1; 
+                }
+                // 2. 状态递进到阶段 1，下一轮循环再来看
+                shutdown_stage = 1;
+                continue; 
+            } 
+            else if (shutdown_stage == 1) {
+                // 此时，经历了上一轮的循环和可能的事件分发，刚才 recv_cb 挂载的 EPOLLOUT 已经被 send_cb 消费掉了！
+                //printf("[Reactor] Flush phase completed. Cleaning up all connections and buffers.\n");
+                
+                // 给系统内核协议栈一点微小的冲刷剩余时间
+                usleep(20000); 
+
+                // 安全释放每个活跃客户端连接的资源和内存
+                for (int fd = 0; fd < CONNECTION_SIZE; fd++) {
+                    if (conn_list[fd].fd > 0) {
+                        close_and_free_connection(fd); 
+                    }
+                }
+                //printf("[Reactor] All client connections cleaned up safely.\n");
+                close(epfd);
+                
+                break; // 完美跳出 while(1) 循环，回到 main 函数
+            }
+        }
     }
-    
     return 0;
 }
 

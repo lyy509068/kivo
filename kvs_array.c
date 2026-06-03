@@ -64,17 +64,21 @@ static int find_key_index(kvs_array_t *inst, kv_data_t *key) {
     return -1;
 }
 
-// 函数签名增加 expire_time，并移除原代码里不必要的空洞查询循环
+
 int kvs_array_set(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!inst || !key || !value) return -1;
-    if (inst->total >= KVS_ARRAY_SIZE) return -1;
     
     // 检查是否已存在
     int idx = find_key_index(inst, key);
     if (idx != -1) {
-        return 1;  // 已存在
+        if (inst->table[idx].expire_time > 0 && get_current_ms_array() > inst->table[idx].expire_time) {
+            kvs_array_del(inst, key); 
+        } else {
+            return 1;  // 真正健康的已存在
+        }
     }
-    
+    if (inst->total >= KVS_ARRAY_SIZE) return -1;
+
     // 由于 del 保证了紧凑性，新元素直接追加在 inst->total 位置
     idx = inst->total;
     
@@ -138,6 +142,11 @@ int kvs_array_mod(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t e
     
     int idx = find_key_index(inst, key);
     if (idx == -1) return 1;  // 不存在
+
+    if (inst->table[idx].expire_time > 0 && get_current_ms_array() > inst->table[idx].expire_time) {
+        kvs_array_del(inst, key);
+        return 1;  // 返回不存在
+    }
     
     // 释放旧 value，拷贝新 value
     kv_data_destroy(&inst->table[idx].value);
@@ -176,15 +185,37 @@ int kvs_array_get_value_len(char *key_ptr, int key_len) {
     return 0; // 没找到返回 0
 }
 
-
 void kvs_array_foreach(kvs_array_t *inst, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (!inst || !callback || !inst->table) return;
     
-    // 因为你的 del 保证了数组的紧凑性，直接线性遍历前 total 个元素即可
-    for (int i = 0; i < inst->total; i++) {
-        // 安全防御：确保该槽位确实存有有效的二进制 key 数据
+    int64_t now = get_current_ms_array();
+
+    for (int i = 0; i < inst->total; ) { // 注意：这里去掉了 i++，交由内部控制
         if (inst->table[i].key.data) {
+            // 1. 检查是否过期
+            if (inst->table[i].expire_time > 0 && now > inst->table[i].expire_time) {
+                // 2. 触发惰性删除：释放当前槽位，且尾部元素会挪动到当前位置 i，会接着检查尾部元素过期了吗？？？
+                kv_data_destroy(&inst->table[i].key);
+                kv_data_destroy(&inst->table[i].value);
+                
+                if (i != inst->total - 1) {
+                    inst->table[i] = inst->table[inst->total - 1];
+                    memset(&inst->table[inst->total - 1], 0, sizeof(kvs_array_item_t));
+                } else {
+                    memset(&inst->table[i], 0, sizeof(kvs_array_item_t));
+                }
+                
+                inst->total--;
+                inst->idx = inst->total;
+                
+                // 因为尾部新元素挪到了当前 i 位置，我们需要在下一轮循环继续检查当前 i
+                continue; 
+            }
+
+            // 3. 没过期，正常回调，并自增索引
             callback(&inst->table[i].key, &inst->table[i].value, arg);
         }
+        i++; 
     }
 }
+

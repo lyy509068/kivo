@@ -69,11 +69,6 @@ int init_kvengine(void) {
         kvs_persistence_recover(); 
     #endif
 
-    // 定时持久化
-    #if ENABLE_SNAPSHOT
-        kvs_snapshot_auto_save(1); 
-    #endif
-
     // 建立主从同步连接
     #if ENABLE_REPLICATION
         const char *slave_ip = "192.168.92.129";
@@ -101,7 +96,6 @@ void dest_kvengine(void) {
     #endif
 
     #if ENABLE_SNAPSHOT
-        kvs_snapshot_auto_save_stop();  // 停止自动快照定时器
         kvs_snapshot_save();            // 最后做一次强制全量快照落盘
     #endif
 
@@ -162,7 +156,6 @@ int main(int argc, char *argv[]) {
     #elif (NETWORK_SELECT == NETWORK_NTYCO)
         ntyco_start(port, protocol_process_stream);
     #endif
-
     dest_kvengine();
     return 0;
 }
