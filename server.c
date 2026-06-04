@@ -32,37 +32,35 @@ int init_kvengine(void) {
     //内存池
     #if ENABLE_MEM_POOL
 
-#if ENABLE_ARRAY
-    array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
-    if (!array_item_pool) {
-        printf("Failed to create array item memory pool\n");
-        return -1;
-    }
-#endif
+    #if ENABLE_ARRAY
+        array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
+        if (!array_item_pool) {
+            printf("Failed to create array item memory pool\n");
+            return -1;
+        }
+    #endif
+    #if ENABLE_RBTREE
+        rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
+        if (!rbtree_node_pool) {
+            printf("Failed to create rbtree node memory pool\n");
+            return -1;
+        }
+    #endif
+    #if ENABLE_HASH
+        hash_node_pool = mem_pool_create(sizeof(hashnode_t));
+        if (!hash_node_pool) {
+            printf("Failed to create hash node memory pool\n");
+            return -1;
+        }
+    #endif
+    #if ENABLE_SKIPLIST
+        skip_node_pool = mem_pool_create(sizeof(skipnode_binary_t));
+        if (!skip_node_pool) {
+            printf("Failed to create skiplist node memory pool\n");
+            return -1;
+        }
+    #endif
 
-#if ENABLE_RBTREE
-    rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
-    if (!rbtree_node_pool) {
-        printf("Failed to create rbtree node memory pool\n");
-        return -1;
-    }
-#endif
-
-#if ENABLE_HASH
-    hash_node_pool = mem_pool_create(sizeof(hashnode_t));
-    if (!hash_node_pool) {
-        printf("Failed to create hash node memory pool\n");
-        return -1;
-    }
-#endif
-
-#if ENABLE_SKIPLIST
-    skip_node_pool = mem_pool_create(sizeof(skipnode_binary_t));
-    if (!skip_node_pool) {
-        printf("Failed to create skiplist node memory pool\n");
-        return -1;
-    }
-#endif
     #endif
 
     // 引擎结构
@@ -93,10 +91,12 @@ int init_kvengine(void) {
     #endif
 
     // 建立主从同步连接
-    #if ENABLE_REPLICATION
-        const char *slave_ip = "192.168.92.129";
+    #if ENABLE_REPLICATION_SLAVE
+        const char *slave_ip = "192.168.92.128";
         unsigned short slave_port = 2000;
-        repl_connect_to_slave(slave_ip, slave_port); 
+        repl_connect_to_master(slave_ip, slave_port); 
+        //接下来发送获取日志的命令
+        //调用网络层 网络层进协议层 协议层不进入业务层（还需要修改协议层） 直接打包好命令 回到网络层 让网络层发送命令   在这里完成
     #endif 
 
     #if ENABLE_TTL
@@ -114,7 +114,7 @@ void dest_kvengine(void) {
     #endif
 
     // 关闭主从同步
-    #if ENABLE_REPLICATION
+    #if ENABLE_REPLICATION_SLAVE
         repl_close();            
     #endif
 

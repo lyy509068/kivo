@@ -93,7 +93,7 @@ static void free_resp_request(resp_request_t *req) {
  * 📦 打包函数：把业务层的回复格式化为 RESP 流
  */
 static void resp_pack(char *send_buf, int *send_len, resp_reply_t *reply) {
-    if (reply->status == KVS_RESP_OK || reply->status == KVS_RESP_SHUTDOWN) {
+    if (reply->status == KVS_RESP_OK || reply->status == KVS_RESP_SHUTDOWN || reply->status == KVS_RESP_SYNC_LOG) {
         *send_len += sprintf(send_buf + *send_len, "+OK\r\n");
     } 
     else if (reply->status == KVS_RESP_PONG) {
@@ -203,44 +203,88 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
 }
 
 /*
- * 🔄 协议层流式处理核心入口
+ * 🔄 统一自适应协议层核心入口（同时支持：1.处理客户端命令  2.处理主端同步回复）
+ * 💡 移除了宏控制，改为运行期动态自适应，让从端完美支持本地客户端访问！
  */
-int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen) {
-    int processed = 0;
-
-    // 只要缓冲区里还有数据，就不断去“吃”命令
-    while (processed < in_len) {
-        int single_cmd_len = 0;
-        
-        // 1. 探测是否有完整 RESP 请求
-        if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
-            break; // 数据不完整（半包），跳出循环，等待网络层下一次接收更多数据
-        }
-
-        // 2. 干净解包
-        resp_request_t req;
-        resp_unpack(in_buf + processed, &req);
-
-        // 3. 调用业务层执行
-        resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; // 给予安全的初始默认状态
-        if (g_command_handler) {
-            g_command_handler(&req, &reply); // 盲调全局指针，执行真正的业务（如 kvs_execute_command）
-        }
-
-        // 4. 打包响应流并自动扩容写缓冲区
-        resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
-
-        // 5. 内存清理
-        free_resp_request(&req); // 释放请求数据
-        
-        if (reply.body) {
-            kvs_free(reply.body);
-            reply.body = NULL;
-        }
-
-        processed += single_cmd_len; // 推进读游标
+int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val) {
+    if (in_len <= 0) {
+        *parsed = 0;
+        return 0;
     }
 
-    *parsed = processed; // 告诉网络层，协议层本次一共安全消费了多少字节
-    return 0;            // 返回 0 代表协议层一切正常
+    // 探测首字节，判定数据流来源
+    char first_byte = in_buf[0];
+
+    //收到的是标准 RESP 请求流（来自本地客户端，或者主端后续同步的实时命令）
+    if (first_byte == '*') {
+        int processed = 0;
+
+        while (processed < in_len) {
+            int single_cmd_len = 0;
+            
+            // 探测是否有完整 RESP 请求
+            if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
+                break; // 半包，跳出循环等下一次
+            }
+
+            resp_request_t req;
+            resp_unpack(in_buf + processed, &req);
+
+            resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
+            if (g_command_handler) {
+                g_command_handler(&req, &reply); 
+            }
+
+            // 如果业务层返回同步日志状态（说明这是主端在处理 SYNC 命令）
+            if (reply.status == KVS_RESP_SYNC_LOG) {
+                resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
+                free_resp_request(&req);
+                processed += single_cmd_len;
+                *parsed = processed; 
+                return 10; // 告诉网络层：可以开始用 sendfile 发文件了
+            }
+
+            // 打包回复给连上来的客户端
+            if (wbuf && wcap && wlen) {
+                resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
+            }
+            
+            free_resp_request(&req); 
+            if (reply.body) {
+                kvs_free(reply.body);
+                reply.body = NULL;
+            }
+
+            processed += single_cmd_len; 
+        }
+
+        *parsed = processed; 
+        return 0; // 返回 0 代表客户端命令（或增量同步命令）处理正常
+    }
+
+    // 收到的是主端的同步握手回复（格式如：+OK\r\n$102400\r\n）
+    else if (first_byte == '+') {
+        if (in_len < 9) return 1; // 半包继续等
+
+        if (strncmp(in_buf, "+OK\r\n", 5) != 0 || in_buf[5] != '$') {
+            return -1; // 非法协议
+        }
+
+        const char *p_size = in_buf + 6;
+        const char *crlf = find_crlf(p_size, in_len - 6);
+        if (!crlf) return 1; // 数字不全，继续等
+
+        if (out_val) {
+            *out_val = atoll(p_size); // 提取出文件大小
+        }
+
+        *parsed = 5 + 1 + (crlf - p_size) + 2;
+        return 20; // 告诉从端网络层：成功脱帽，请切换到裸文件流落盘模式！
+    }
+
+    // 未知的协议首字节，直接报错拦截
+    else {
+        return -1; 
+    }
 }
+

@@ -8,13 +8,13 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>     
-#include <pthread.h>   
+#include <pthread.h> 
 #include "mempool.h"
 
 
 //超时删除
 #define LOCK_SEGMENTS 32
-extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
+extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];//identifier "pthread_rwlock_t" is undefined
 #define ENABLE_TTL 0
 #if ENABLE_TTL
 
@@ -41,7 +41,7 @@ void *kvs_realloc(void *ptr, size_t new_size);
 void kvs_free(void *ptr);
 
 //增量持久化
-#define ENABLE_PERSISTENCE        0        
+#define ENABLE_PERSISTENCE        1        
 #define PERSISTENCE_FILE    "kvstore.aof"  
 #if ENABLE_PERSISTENCE
 int kvs_persistence_init(void);
@@ -51,7 +51,7 @@ void kvs_persistence_close(void);
 #endif
 
 //全量持久化
-#define ENABLE_SNAPSHOT           0        
+#define ENABLE_SNAPSHOT           0       
 #define SNAPSHOT_FILE     "kvstore.snap"  
 #if ENABLE_SNAPSHOT
 int kvs_snapshot_save(void);
@@ -77,9 +77,9 @@ unsigned long kv_data_hash_func(kv_data_t *key, int size);// 哈希计算
 
 
 //存储结构
-#define ENABLE_ARRAY        0
-#define ENABLE_RBTREE       0
-#define ENABLE_HASH         0
+#define ENABLE_ARRAY        1
+#define ENABLE_RBTREE       1
+#define ENABLE_HASH         1
 #define ENABLE_SKIPLIST     1
 
 #if ENABLE_ARRAY

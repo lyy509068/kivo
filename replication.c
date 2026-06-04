@@ -9,7 +9,9 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <errno.h>
-#include "kvstore.h"
+#include <sys/epoll.h>    
+#include "network.h"
+#include "kvstore.h"      
 
 
 // 连接与缓冲区状态
@@ -43,35 +45,82 @@ static int ensure_wbuffer_capacity(int needed_space) {
     return 0;
 }
 
-int repl_connect_to_slave(const char *slave_ip, unsigned short slave_port) {
+int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
+    // 创建套接字
     g_repl.fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_repl.fd < 0) return -1;
+    if (g_repl.fd < 0) {
+        perror("Slave: Create socket failed");
+        return -1;
+    }
+    // 配置主端（Master）的服务器地址
+    struct sockaddr_in master_addr;
+    memset(&master_addr, 0, sizeof(master_addr));
+    master_addr.sin_family = AF_INET;
+    master_addr.sin_port = htons(master_port);
+    master_addr.sin_addr.s_addr = inet_addr(master_ip);
+    // 主动向主端发起连接（此时 connect 会阻塞直到成功或超时失败）
+    printf("Slave: Trying to connect to Master at %s:%d...\n", master_ip, master_port);
+    if (connect(g_repl.fd, (struct sockaddr*)&master_addr, sizeof(master_addr)) < 0) {
+        // 如果主端没打开，这里会触发 Connection refused 错误
+        perror("Slave: Connect to master failed");
+        close(g_repl.fd);
+        g_repl.fd = -1;
+        return -1; 
+    }
+    // 连接成功，初始化接收/发送缓冲区
+    if (g_repl.wbuffer == NULL) {
+        g_repl.wcapacity = REPL_INIT_BUFFER_SIZE;
+        g_repl.wbuffer = (char *)kvs_malloc(g_repl.wcapacity);
+        if (!g_repl.wbuffer) {
+            perror("Slave: malloc wbuffer failed");
+            close(g_repl.fd);
+            g_repl.fd = -1;
+            return -1;
+        }
+    }
+    g_repl.wlength = 0;
+    // 设置为非阻塞模式
+    // 从端连接成功后，后续通常会配合 epoll 或是专用的 IO 线程进行数据读取，防止 recv 永远死等
+    int flags = fcntl(g_repl.fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(g_repl.fd, F_SETFL, flags | O_NONBLOCK);
+    }
+    printf("Slave: Successfully connected to Master at %s:%d\n", master_ip, master_port);
+    
+    // ====================================================================
+    // 🚀 核心新增：既然连接成功，在这里直接完成【协议打包】与【初次发送】
+    // ====================================================================
+    // 1) 按照主端解包匹配的 RESP 协议格式打包同步命令
+    const char *sync_cmd = "*1\r\n$4\r\nSYNC\r\n"; 
+    int cmd_len = strlen(sync_cmd);
 
-    struct sockaddr_in slave_addr;
-    memset(&slave_addr, 0, sizeof(slave_addr));
-    slave_addr.sin_family = AF_INET;
-    slave_addr.sin_port = htons(slave_port);
-    slave_addr.sin_addr.s_addr = inet_addr(slave_ip);
+    // 2) 灌入主从专用的全局写缓冲区 g_repl.wbuffer
+    if (g_repl.wlength + cmd_len <= g_repl.wcapacity) {
+        memcpy(g_repl.wbuffer + g_repl.wlength, sync_cmd, cmd_len);
+        g_repl.wlength += cmd_len;
+    }
 
-    if (connect(g_repl.fd, (struct sockaddr*)&slave_addr, sizeof(slave_addr)) < 0) {
-        perror("Connect to slave failed");
+    // 3) 直接把写缓冲区里的数据全量送给主端
+    int sent = send(g_repl.fd, g_repl.wbuffer, g_repl.wlength, 0);
+    if (sent > 0) {
+        g_repl.wlength -= sent; // 记账
+    }
+
+    // ====================================================================
+    // 🛰️ 完美避坑：调用网络层的封装接口，安全完成 Reactor 托孤
+    // ====================================================================
+    if (reactor_host_slave_connection(g_repl.fd, g_repl.wbuffer, g_repl.wcapacity, g_repl.wlength) < 0) {
+        printf("Slave: Failed to host master connection to Reactor\n");
         close(g_repl.fd);
         g_repl.fd = -1;
         return -1;
     }
-
-    // 初始化发送缓冲区
-    g_repl.wcapacity = REPL_INIT_BUFFER_SIZE;
-    g_repl.wbuffer = (char *)kvs_malloc(g_repl.wcapacity);
-    g_repl.wlength = 0;
-
-    // 设置为非阻塞模式,防止发包时卡死Master主线程
-    int flags = fcntl(g_repl.fd, F_GETFL, 0);
-    fcntl(g_repl.fd, F_SETFL, flags | O_NONBLOCK);
-
-    printf("Successfully connected to Slave at %s:%d\n", slave_ip, slave_port);
+    
+    printf("Slave: SYNC command sent. Master connection fd %d is now hosted by Reactor.\n", g_repl.fd);
+    
     return 0;
 }
+
 
 int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char *value, int value_len) {
     if (g_repl.fd < 0) return -1;

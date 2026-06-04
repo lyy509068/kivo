@@ -24,3 +24,10 @@
 
 [Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 500000 | Time: 87054 ms | QPS: 5743 | VmSize+: +0 kB | VmRSS+: +0 kB
 
+打开日志测试10000条数据
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 10000 | Time: 1015 ms | QPS: 9852 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 10000 | Time: 1108 ms | QPS: 9025 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 10000 | Time: 1070 ms | QPS: 9345 | VmSize+: +0 kB | VmRSS+: +0 kB
+

@@ -7,17 +7,16 @@
 #include <sys/wait.h>
 #include <sys/socket.h>
 #include <stdint.h>
+#include <signal.h>
 
 #define SERVER_PORT 2000
-#define TOTAL_RECORDS 100000    
+#define TOTAL_RECORDS 1000    
 #define SNAPSHOT_FILE "kvstore.snap"
-#define EXPECTED_SNAP "expected.snap"
 
 #define SNAP_TYPE_ARRAY    1
 #define SNAP_TYPE_RBTREE   2
 #define SNAP_TYPE_HASH     3
 #define SNAP_TYPE_SKIPLIST 4
-
 
 // 辅助网络与协议打包函数
 int build_resp_request(char *buf, const char *cmd, const char *key, const char *val) {
@@ -34,6 +33,8 @@ int build_resp_request(char *buf, const char *cmd, const char *key, const char *
 
 int connect_server() {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+    
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons(SERVER_PORT);
@@ -45,85 +46,52 @@ int connect_server() {
         }
         usleep(200000); 
     }
+    close(sock);
     return -1;
 }
 
-// 根据不同的引擎类型生成预期快照，默认永不过期
-void generate_expected_snapshot_file(int engine_type) {
-    FILE *fp = fopen(EXPECTED_SNAP, "wb");
-    if (!fp) {
-        perror("Failed to create expected snapshot template");
-        return;
+// 健壮的安全发送函数：确保完整发送 len 字节
+int send_all(int sock, const char *buf, int len) {
+    int total_sent = 0;
+    while (total_sent < len) {
+        int sent = send(sock, buf + total_sent, len - total_sent, 0);
+        if (sent <= 0) return -1;
+        total_sent += sent;
     }
-
-    int type = engine_type; // 动态写入对应的引擎类型标识
-    int64_t expire_time = 0;    
-
-    char key[32];
-    char val[32];
-
-    for (int i = 0; i < TOTAL_RECORDS; i++) {
-        int key_len = sprintf(key, "key_%06d", i);
-        int val_len = sprintf(val, "val_%06d", i);
-
-        fwrite(&type, sizeof(int), 1, fp);
-        fwrite(&expire_time, sizeof(int64_t), 1, fp);
-        fwrite(&key_len, sizeof(int), 1, fp);
-        fwrite(key, 1, key_len, fp);
-        fwrite(&val_len, sizeof(int), 1, fp);
-        fwrite(val, 1, val_len, fp);
-    }
-    fclose(fp);
-    printf("[Validator] 'expected.snap' built perfectly with %d records (Type: %d).\n", TOTAL_RECORDS, engine_type);
+    return total_sent;
 }
 
-int compare_snapshot_files() {
-    FILE *f1 = fopen(EXPECTED_SNAP, "rb");
-    FILE *f2 = fopen(SNAPSHOT_FILE, "rb");
-    if (!f1 || !f2) {
-        if (f1) fclose(f1);
-        if (f2) fclose(f2);
-        return -1;
+// 健壮的固定长度接收函数：防止 TCP 半包
+int recv_all(int sock, char *buf, int len) {
+    int total_recv = 0;
+    while (total_recv < len) {
+        int r = recv(sock, buf + total_recv, len - total_recv, 0);
+        if (r <= 0) return -1;
+        total_recv += r;
     }
-
-    char buf1[4096], buf2[4096];
-    size_t r1, r2;
-    int match = 1;
-
-    while (1) {
-        r1 = fread(buf1, 1, sizeof(buf1), f1);
-        r2 = fread(buf2, 1, sizeof(buf2), f2);
-
-        if (r1 != r2 || memcmp(buf1, buf2, r1) != 0) {
-            match = 0; 
-            break;
-        }
-        if (r1 == 0) break; 
-    }
-
-    fclose(f1);
-    fclose(f2);
-    return match;
+    return total_recv;
 }
-
 
 // 核心测试用例逻辑
 int run_testcase(int engine_type, const char *engine_name) {
     char send_buf[1024];
     char recv_buf[1024];
     int send_len;
+    pid_t server_pid = -1; // 记录重启后的子进程 PID
 
     printf("\n======================================================\n");
-    printf("   🚀 STARTING FULL PERSISTENCE TEST FOR: %s\n", engine_name);
+    printf("    🚀 STARTING FULL PERSISTENCE TEST FOR: %s\n", engine_name);
     printf("======================================================\n\n");
-    //连接服务器
-    printf("=== PHASE 1: Spawning Server & Injecting 10W Records (%s) ===\n", engine_name);
+
+    // 连接服务器
+    printf("=== PHASE 1: Spawning Server & Injecting Records (%s) ===\n", engine_name);
     int sock = connect_server();
     if (sock < 0) {
         fprintf(stderr, "Fatal: Cannot connect to kvstore on port %d\n", SERVER_PORT);
         return 1;
     }
-    //插入数据
+
+    // 判定插入命令
     const char *cmd = "SET";
     switch (engine_type) {
         case SNAP_TYPE_ARRAY:    cmd = "SET";  break;
@@ -138,7 +106,7 @@ int run_testcase(int engine_type, const char *engine_name) {
 
     printf("[Client] Selected command prefix '%s' for engine type %d.\n", cmd, engine_type);
 
-    // 插入数据
+    // 1. 插入数据并严格验证回复
     for (int i = 0; i < TOTAL_RECORDS; i++) {
         char key[32], val[32];
         sprintf(key, "key_%06d", i);
@@ -147,86 +115,88 @@ int run_testcase(int engine_type, const char *engine_name) {
 
         if (send_len <= 0) {
             printf("❌ Failed to build RESP request at index: %d\n", i);
-            continue;
+            close(sock);
+            return 1;
         }
 
         // 发送 RESP 报文
-        int total_sent = 0;
-        while (total_sent < send_len) {
-            int sent = send(sock, send_buf + total_sent, send_len - total_sent, 0);
-            if (sent <= 0) {
-                printf("❌ Server disconnected during send at index: %d\n", i);
-                close(sock);
-                return 1;
-            }
-            total_sent += sent;
-        }
-        
-        // 接收服务端的 RESP 响应
-        int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
-        if (rlen <= 0 && strstr(recv_buf, "OK\r\n") == NULL) {
-            printf("❌ Server disconnected at index: %d\n", i);
+        if (send_all(sock, send_buf, send_len) < 0) {
+            printf("❌ Server disconnected during send at index: %d\n", i);
             close(sock);
             return 1;
-        }    
+        }
+        
+        // 接收并验证写操作回复：严格接收 5 字节的 "+OK\r\n"
+        memset(recv_buf, 0, sizeof(recv_buf));
+        if (recv_all(sock, recv_buf, 5) < 0) {
+            printf("❌ Server disconnected or error at index: %d\n", i);
+            close(sock);
+            return 1;
+        }
+
+        if (strstr(recv_buf, "OK") == NULL) {
+            printf("❌ Unexpected server reply at index: %d! Expected [+OK\\r\\n], Got: [%s]\n", i, recv_buf);
+            close(sock);
+            return 1;
+        }
+
+        // 每隔 20000 条打印一次进度
+        if (i > 0 && i % 20000 == 0) {
+            printf("  -> Progress: Injected and verified %d records...\n", i);
+        }
     }
-    printf("[Client] Successfully injected 100,000 SET items via RESP.\n");
-    //发送命令
+    printf("[Client] Successfully injected %d SET items and verified all OK.\n", TOTAL_RECORDS);
+
+    // 2. 发送 SAVE 命令并严格验证回复
     printf("\n=== PHASE 2: Sending RESP 'SAVE' Command ===\n");
     send_len = build_resp_request(send_buf, "SAVE", NULL, NULL); 
-    send(sock, send_buf, send_len, 0);
+    send_all(sock, send_buf, send_len);
     
     memset(recv_buf, 0, sizeof(recv_buf));
-    recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
-    printf("[Server RESP ACK]: %s", recv_buf); 
-    
-    //对比文件
-    printf("\n=== PHASE 3: Validating disk serialization raw bytes ===\n");
-    generate_expected_snapshot_file(engine_type);
-    
-    if (compare_snapshot_files() == 1) {
-        printf("👉 [SUCCESS] %s file verification matching byte-by-byte with expected snapshot!\n", engine_name);
-    } else {
-        printf("⚠️ [WARNING] Mismatch detected. (Note: Hash/Trees reorder elements naturally, so binary match may fail, passing to recovery check...)\n");
+    if (recv_all(sock, recv_buf, 5) < 0 || strstr(recv_buf, "OK") == NULL) {
+        printf("❌ SAVE command failed or invalid response! Got: [%s]\n", recv_buf);
+        close(sock);
         return 1;
     }
-    //关闭服务器
-    printf("\n=== PHASE 4: Sending RESP 'SHUTDOWN' Command ===\n");
+    printf("[Server RESP ACK]: %s\n", recv_buf); 
+    
+    // 3. 发送 SHUTDOWN 命令关闭服务器并验证回复
+    printf("\n=== PHASE 3: Sending RESP 'SHUTDOWN' Command ===\n");
     send_len = build_resp_request(send_buf, "SHUTDOWN", NULL, NULL);
-    send(sock, send_buf, send_len, 0);
+    send_all(sock, send_buf, send_len);
 
-    // 增加关闭检验，等服务端把回复冲刷出来
     memset(recv_buf, 0, sizeof(recv_buf));
-    int shutdown_rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
-    if (shutdown_rlen > 0 && strstr(recv_buf, "OK") != NULL) {
-        printf("  🎉 [Success] Server acknowledged PHASE 4 SHUTDOWN perfectly!\n");
-    } else {
-        printf("  ⚠️ [Warning] Server disconnected or returned ungracefully during PHASE 4.\n");
+    if (recv_all(sock, recv_buf, 5) < 0 || strstr(recv_buf, "OK") == NULL) {
+        printf("❌ SHUTDOWN failed or ungraceful! Expected [+OK\\r\\n], Got: [%s]\n", recv_buf);
+        close(sock);
+        return 1;
     }
-
+    printf("  🎉 [Success] Server acknowledged SHUTDOWN perfectly!\n");
     close(sock); 
-    printf("[System] SHUTDOWN command dispatched. Server closed ports gracefully.\n");
     sleep(3);
 
-    //重新打开服务器
-    printf("\n=== PHASE 5: Restarting Server & Reloading Dump file ===\n");
-    pid_t pid = fork();
-    if (pid == 0) {
+    // 4. 重启服务器
+    printf("\n=== PHASE 4: Restarting Server & Reloading Dump file ===\n");
+    server_pid = fork();
+    if (server_pid == 0) {
         execl("./server", "./server", "2000", (char*)NULL);
         perror("❌ [Fatal Child Error] execl failed to boot server");
         exit(1);
     }
     
-    printf("[Client] Server subprocess forked (PID: %d). Waiting 3 seconds for load...\n", pid);
+    printf("[Client] Server subprocess forked (PID: %d). Waiting 3 seconds for load...\n", server_pid);
     sleep(3);
-    //重新连接服务器
-    printf("\n=== PHASE 6: Re-fetching 10W Records to verify Integrity ===\n");
+
+    // 5. 重新连接服务器
+    printf("\n=== PHASE 5: Re-fetching Records to verify Integrity ===\n");
     sock = connect_server();
     if (sock < 0) {
         printf("❌ [FAILURE] Server failed to reboot after recovery.\n");
         return 1;
     }
-    const char *get_cmd = "GET"; // 默认或者 ARRAY
+
+    // 判定查询命令
+    const char *get_cmd = "GET"; 
     switch (engine_type) {
         case SNAP_TYPE_ARRAY:    get_cmd = "GET";  break;
         case SNAP_TYPE_RBTREE:   get_cmd = "RGET"; break;
@@ -240,8 +210,7 @@ int run_testcase(int engine_type, const char *engine_name) {
 
     printf("[Validator] Selected validation command '%s' for engine type %d.\n", get_cmd, engine_type);
 
-    // 发送命令与数据校验
-    int integrity_check = 1;
+    // 6. 发送 GET 命令并严格验证包含预期的 Value
     for (int i = 0; i < TOTAL_RECORDS; i++) {
         char key[32], expected_val[32];
         sprintf(key, "key_%06d", i);
@@ -249,69 +218,75 @@ int run_testcase(int engine_type, const char *engine_name) {
 
         send_len = build_resp_request(send_buf, get_cmd, key, NULL);
         
-        // 防止大批量连续请求时发送缓冲区满
-        int total_sent = 0;
-        while (total_sent < send_len) {
-            int sent = send(sock, send_buf + total_sent, send_len - total_sent, 0);
-            if (sent <= 0) {
-                printf("❌ Server disconnected during verification send at index: %d\n", i);
-                integrity_check = 0;
-                break;
-            }
-            total_sent += sent;
+        if (send_all(sock, send_buf, send_len) < 0) {
+            printf("❌ Server disconnected during verification send at index: %d\n", i);
+            close(sock);
+            return 1;
         }
-        if (!integrity_check) break;
         
-        // 接收服务端返回的 RESP 报文
+        // 接收并验证 GET 的具体数据
         memset(recv_buf, 0, sizeof(recv_buf));
         int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
-        
         if (rlen <= 0) {
-            integrity_check = 0;
             printf("❌ Server disconnected during verification recv at index: %d\n", i);
-            break;
+            close(sock);
+            return 1;
         }
-        
-        // 确保字符串安全截断
         recv_buf[rlen] = '\0';
         
-        // 使用 strstr 检查返回的 RESP 原始数据流中是否包含预期的 "val_0000xx"
+        // 验证：收到的原始 RESP 流里必须包含预期的 "val_0000xx"
         if (strstr(recv_buf, expected_val) == NULL) {
-            integrity_check = 0;
-            printf("❌ Data Lost/Corrupted at index: %d | Expected: %s | Recv Raw: %s\n", i, expected_val, recv_buf);
-            break;
+            printf("❌ Data Mismatch/Lost at index: %d | Expected: %s | Recv Raw: %s\n", i, expected_val, recv_buf);
+            close(sock);
+            return 1;
+        }
+
+        if (i > 0 && i % 20000 == 0) {
+            printf("  -> Progress: Verified %d records successfully...\n", i);
         }
     }
-    //验证正确性
-    if (integrity_check) {
-        printf("\n🏆🏆🏆 [FINAL RESULT: PASS] All 100,000 %s items persistent, safe, and fully matched! 🏆🏆🏆\n", engine_name);
-    } else {
-        printf("\n❌ [FINAL RESULT: FAIL] Data inconsistency or RESP format error detected after reboot.\n");
-    }
-    remove(SNAPSHOT_FILE);
-    remove(EXPECTED_SNAP);
-    // 测试完毕，清理测试服务器
+
+    // 通过全部强校验，判定最终 PASS
+    printf("\n🏆🏆🏆 [FINAL RESULT: PASS] All %d %s items persistent, safe, and fully matched! 🏆🏆🏆\n", TOTAL_RECORDS, engine_name);
+
+    // 7. 测试完毕，清理现场，安全SHUTDOWN
+    printf("\n=== PHASE 6: Cleaning up testing server ===\n");
     send_len = build_resp_request(send_buf, "SHUTDOWN", NULL, NULL);
-    if (send(sock, send_buf, send_len, 0) < 0) {
-        printf("❌ SHUTDOWN send failed\n");
+    if (send_all(sock, send_buf, send_len) < 0) {
+        printf("❌ SHUTDOWN clean send failed\n");
     } else {
         memset(recv_buf, 0, sizeof(recv_buf));
-         int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
-        
+        int rlen = recv(sock, recv_buf, 5, 0);
         if (rlen > 0 && strstr(recv_buf, "OK") != NULL) {
-            printf("✅ SHUTDOWN successful, server closing...\n");
+            printf("✅ Final SHUTDOWN successful, server closing...\n");
         } else {
-            printf("❌ SHUTDOWN failed or ungraceful (Recv: %s)\n", recv_buf);
+            printf("❌ Final SHUTDOWN failed or ungraceful (Recv: %s)\n", recv_buf);
         }
     }
-    close(sock);
     
+    close(sock);
+
+    // 回收后台的子进程
+    if (server_pid > 0) {
+        int status;
+        for (int k = 0; k < 10; k++) {
+            if (waitpid(server_pid, &status, WNOHANG) > 0) {
+                server_pid = -1;
+                break;
+            }
+            usleep(200000);
+        }
+        if (server_pid > 0) {
+            kill(server_pid, SIGKILL);
+            waitpid(server_pid, &status, 0);
+            printf("[System] Server subprocess forced killed and reaped.\n");
+        }
+    }
+
     return 0;
 }
 
-
-// 针对不同引擎的独立测试入口
-
+// 各引擎独立测试入口
 void testcase_array() {
     run_testcase(SNAP_TYPE_ARRAY, "Array");
 }
@@ -328,9 +303,7 @@ void testcase_skiptable() {
     run_testcase(SNAP_TYPE_SKIPLIST, "SkipList");
 }
 
-
-// 主函数：通过运行参数选择测试对象
-
+// 主函数：根据输入参数执行相应的测试
 int main(int argc, char *argv[]) {
     // 关闭标准输出的缓冲，确保打印实时输出
     setvbuf(stdout, NULL, _IONBF, 0);

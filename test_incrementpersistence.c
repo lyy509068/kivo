@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <sys/wait.h>
+#include <sys/time.h>
 #include <time.h>
 
 #define SERVER_IP "127.0.0.1"
@@ -59,8 +60,7 @@ int run_aof_testcase(int engine_type) {
     printf("🚀 STARTING AOF PERSISTENCE TEST FOR ENGINE [%d]\n", engine_type);
     printf("==================================================\n");
 
-
-    // 提示用户确保服务端已启动
+    // 连接服务器
     sock = connect_server();
     if (sock < 0) {
         printf("❌ [FATAL] Cannot connect to server. Please start the server manually first!\n");
@@ -75,8 +75,24 @@ int run_aof_testcase(int engine_type) {
         len = build_resp_cmd(send_buf, set_cmd, key, val);
         send(sock, send_buf, len, 0);
         
-        // 接收服务端回复 (+OK\r\n)
-        recv(sock, recv_buf, sizeof(recv_buf), 0);//收到回复什么都不做
+        // 接收服务端回复
+        memset(recv_buf, 0, sizeof(recv_buf));
+        int total_recv = 0;
+        while (total_recv < 5) {
+            int r = recv(sock, recv_buf + total_recv, 5 - total_recv, 0);
+            if (r <= 0) {
+                printf("\n❌ [FATAL] Server disconnected or recv failed during PHASE 1!\n");
+                close(sock);
+                return -1;
+            }
+            total_recv += r;
+        }
+        // 验证回复是否正确
+        if (strcmp(recv_buf, "+OK\r\n") != 0) {
+            printf("\n❌ [FATAL] Reply mismatch! Expected [+OK\\r\\n], Got [%s]\n", recv_buf);
+            close(sock);
+            return -1;
+        }
         
         if (i % 20000 == 0) printf("  -> Inserted %d records...\n", i);
     }
@@ -84,20 +100,15 @@ int run_aof_testcase(int engine_type) {
 
     // 关闭服务器 
     printf("[PHASE 2] Sending SHUTDOWN to simulate server crash...\n");
-    
     len = build_resp_cmd(send_buf, "SHUTDOWN", NULL, NULL);
     send(sock, send_buf, len, 0);
-
     char shutdown_recv_buf[128] = {0};
     int rlen = recv(sock, shutdown_recv_buf, sizeof(shutdown_recv_buf) - 1, 0);
-    
     if (rlen > 0 && strcmp(shutdown_recv_buf, "+OK\r\n") == 0) {
         printf("  🎉 [Success] Server acknowledged SHUTDOWN perfectly!\n");
     } else {
         printf("  ❌ [Failure] Server did not reply +OK\\r\\n (Recv: %s)\n", shutdown_recv_buf);
     }
-
-    // 4. 彻底结束，安全关闭客户端套接字
     close(sock);
 
     // 重启服务器
@@ -108,8 +119,7 @@ int run_aof_testcase(int engine_type) {
         exit(1); // 如果 execl 失败则退出
     }
     
-    // 给服务器3秒钟的时间启动并重放 AOF 文件中的 10w 条日志
-    sleep(3); 
+    sleep(3); // 给服务器3秒钟的时间启动并恢复日志
 
     // 重新连接服务器
     printf("[PHASE 4] Reconnecting to verify AOF data...\n");
@@ -118,6 +128,18 @@ int run_aof_testcase(int engine_type) {
         printf("❌ [FATAL] Failed to reconnect!\n");
         return -1;
     }
+
+
+    // 设置 20ms 超时，把新连接管道里可能存在的任何残留数据全部抽干
+    struct timeval tv = {0, 20000}; 
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+    char trash_buf[512];
+    while (recv(sock, trash_buf, sizeof(trash_buf), 0) > 0);
+    // 恢复正常阻塞模式
+    struct timeval tv_block = {0, 0};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv_block, sizeof(tv_block));
+
+
     //get校验
     printf("[PHASE 5] Verifying %d records using command [%s]...\n", TOTAL_RECORDS, get_cmd);
     for (int i = 0; i < TOTAL_RECORDS; i++) {
@@ -140,7 +162,7 @@ int run_aof_testcase(int engine_type) {
     }
     printf("✅ [PHASE 5] ALL 100,000 RECORDS VERIFIED! AOF DATA IS 100%% CONSISTENT.\n");
 
-    // 销毁日志，确保从零开始
+    // 销毁日志
     printf("[PHASE 6] Purging old AOF file: %s...\n", AOF_FILE);
     remove(AOF_FILE);
 

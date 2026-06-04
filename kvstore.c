@@ -1,8 +1,8 @@
 
 
 #define _XOPEN_SOURCE 600
-#include "kvstore.h"
 #include <pthread.h>
+#include "kvstore.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,19 +88,18 @@ extern mem_pool_t *skip_node_pool;
 void *kvs_malloc(size_t size) {
     if (size == 0) return NULL;
 
-#if ENABLE_ARRAY
+    // 命中数组节点
     if (size == sizeof(kvs_array_item_t) && array_item_pool) {
         void *ptr = mem_pool_alloc(array_item_pool);
         if (ptr) {
             mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-            header->owner = array_item_pool; // 显式双向绑定，确保 kvs_free 安全
+            header->owner = array_item_pool; 
             header->size = size;
         }
         return ptr;
     }
-#endif
-
-#if ENABLE_RBTREE
+    
+    // 命中红黑树节点
     if (size == sizeof(rbtree_node_binary_t) && rbtree_node_pool) {
         void *ptr = mem_pool_alloc(rbtree_node_pool);
         if (ptr) {
@@ -110,9 +109,8 @@ void *kvs_malloc(size_t size) {
         }
         return ptr;
     }
-#endif
-
-#if ENABLE_HASH
+    
+    // 命中哈希节点
     if (size == sizeof(hashnode_t) && hash_node_pool) {
         void *ptr = mem_pool_alloc(hash_node_pool);
         if (ptr) {
@@ -122,9 +120,8 @@ void *kvs_malloc(size_t size) {
         }
         return ptr;
     }
-#endif
-
-#if ENABLE_SKIPLIST
+    
+    // 命中跳表节点 (注意：仅当跳表节点大小固定时才能稳定触发)
     if (size == sizeof(skipnode_binary_t) && skip_node_pool) {
         void *ptr = mem_pool_alloc(skip_node_pool);
         if (ptr) {
@@ -134,19 +131,18 @@ void *kvs_malloc(size_t size) {
         }
         return ptr;
     }
-#endif
 
-    // 如果不在内存池中，走标准 malloc，但“必须”加上 Header！
     size_t chunk_size = sizeof(mem_header_t) + size;
     void *chunk = malloc(chunk_size);
     if (!chunk) return NULL;
     
     mem_header_t *header = (mem_header_t *)chunk;
-    header->owner = NULL; // NULL 代表它是系统 malloc 分配的
+    header->owner = NULL; // 明确标明这块内存不是由内存池管理的
     header->size = size;
     
     return (void *)((char *)chunk + sizeof(mem_header_t));
 }
+
 void kvs_free(void *ptr) {
     if (!ptr) return;
     
@@ -301,7 +297,6 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
 }
 #endif 
 
-extern void dest_kvengine(void);
 
 typedef struct {
     const char *cmd_name;
@@ -319,7 +314,7 @@ enum {
     // SkipList
     CMD_SSET, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
 
-    CMD_PING, CMD_SHUTDOWN, CMD_SAVE,
+    CMD_PING, CMD_SHUTDOWN, CMD_SAVE, CMD_REPL_SYNC,
 
     CMD_UNKNOWN
 };
@@ -329,7 +324,7 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
     {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXISTS",   7, CMD_REXISTS},
     {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXISTS",   7, CMD_HEXISTS},
     {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXISTS",   7, CMD_SEXISTS},
-    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"SAVE",     4, CMD_SAVE},     {"UNKNOWN",  7, CMD_UNKNOWN}
+    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"SAVE",     4, CMD_SAVE},     {"REPL_SYNC", 9,CMD_REPL_SYNC}, {"UNKNOWN",  7, CMD_UNKNOWN}
 };
 
 
@@ -406,7 +401,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SET", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("SET", key, key_len, value, value_len);
                 #endif
             }
@@ -439,7 +434,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("DEL", key, key_len, NULL, 0, default_expire); 
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("DEL", key, key_len, NULL, 0);
                 #endif
             } else { reply->status = KVS_RESP_NO_EXISTS; }
@@ -454,7 +449,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("MOD", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("MOD", key, key_len, value, value_len);
                 #endif 
             }
@@ -480,7 +475,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RSET", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("RSET", key, key_len, value, value_len);
                 #endif
             }
@@ -512,7 +507,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("RDEL", key, key_len, NULL, 0);
                 #endif
             } else { reply->status = KVS_RESP_NO_EXISTS; }
@@ -527,7 +522,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RMOD", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("RMOD", key, key_len, value, value_len);
                 #endif 
             }
@@ -553,7 +548,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HSET", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("HSET", key, key_len, value, value_len);
                 #endif
             }
@@ -584,7 +579,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("HDEL", key, key_len, NULL, 0);
                 #endif
             } else { reply->status = KVS_RESP_NO_EXISTS; }
@@ -599,7 +594,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HMOD", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("HMOD", key, key_len, value, value_len);
                 #endif 
             }
@@ -628,7 +623,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SSET", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("SSET", key, key_len, value, value_len);
                 #endif
             }
@@ -668,7 +663,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("SDEL", key, key_len, NULL, 0);
                 #endif
             } else { reply->status = KVS_RESP_NO_EXISTS; }
@@ -686,7 +681,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SMOD", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("SMOD", key, key_len, value, value_len);
                 #endif
             }
@@ -741,6 +736,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             break;
         }
+        case CMD_REPL_SYNC:
+            reply->status = KVS_RESP_SYNC_LOG; 
+        break;
         
         case CMD_SHUTDOWN:
             reply->status = KVS_RESP_SHUTDOWN;//回复状态码
