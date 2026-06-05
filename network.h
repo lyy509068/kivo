@@ -10,6 +10,11 @@ typedef void (*RCALLBACK)(int fd);
 
 typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val);
 
+typedef enum {
+    CONN_CLIENT = 0, // 普通客户端
+    CONN_MASTER = 1  // 主端
+} conn_role_t;
+
 struct conn {
     int fd;
     
@@ -29,6 +34,8 @@ struct conn {
     long long expect_file_size; // 从端期望接收的文件总大小
     long long already_recv_size;// 从端当前已经接收了多少字节
     int is_receiving_file;      // 状态机标志位：1表示正在接收文件，0表示正常命令模式
+
+    conn_role_t role; // 当前连接的身份
 
     RCALLBACK send_callback;
     RCALLBACK read_callback;

@@ -91,15 +91,6 @@ int init_kvengine(void) {
         kvs_persistence_recover(); 
     #endif
 
-    // 建立主从同步连接
-    #if ENABLE_REPLICATION_SLAVE
-        const char *slave_ip = "192.168.92.128";
-        unsigned short slave_port = 2000;
-        repl_connect_to_master(slave_ip, slave_port); 
-        //接下来发送获取日志的命令
-        //调用网络层 网络层进协议层 协议层不进入业务层（还需要修改协议层） 直接打包好命令 回到网络层 让网络层发送命令   在这里完成
-    #endif 
-
     #if ENABLE_TTL
         if (expire_thread_init() != 0) {
             return -1;

@@ -290,4 +290,3 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
         return -1; 
     }
 }
-

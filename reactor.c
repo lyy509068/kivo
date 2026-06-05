@@ -15,6 +15,7 @@
 #include "network.h"
 #include "kvstore.h"
 #include "resp.h"
+#include "replication.h"
 
 volatile int server_should_exit;
 
@@ -86,12 +87,32 @@ int reactor_send_file(int client_fd, const char *filepath) {
         conn_list[client_fd].wcapacity += 4096;
     }
     
+    printf("\n[Network Send-Dump] >>>>>>> MASTER OUTBOUND PACKET >>>>>>>\n");
+    printf("[Network Send-Dump] Target Fd     : %d\n", client_fd);
+    printf("[Network Send-Dump] Raw Header Str: %s", size_header); // size_header 自身带 \r\n
+    
+    // 打印协议头的十六进制（Hex），防止不可见字符（如 \r\n）误导
+    printf("[Network Send-Dump] Raw Header Hex: ");
+    for (int i = 0; i < header_len; i++) {
+        printf("%02X ", (unsigned char)size_header[i]);
+    }
+    printf("\n");
+
     memcpy(conn_list[client_fd].wbuffer + conn_list[client_fd].wlength, size_header, header_len);
     conn_list[client_fd].wlength += header_len;
 
+    printf("[Network Send-Dump] WBuffer Head  : ");
+    int dump_len = conn_list[client_fd].wlength < 20 ? conn_list[client_fd].wlength : 20;
+    for (int i = 0; i < dump_len; i++) {
+        printf("%02X ", (unsigned char)conn_list[client_fd].wbuffer[i]);
+    }
+    printf(" | Text Preview: %.*s\n", dump_len, conn_list[client_fd].wbuffer);
+    printf("[Network Send-Dump] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\n\n");
+    fflush(stdout);
+
     set_event(client_fd, EPOLLOUT, 0);
     printf("[Network] Master starting FILE_STREAM mode. File size: %lld bytes.\n", (long long)st.st_size);
-    
+
     return 0;
 }
 
@@ -180,7 +201,7 @@ void recv_cb(int fd) {
     
     //printf("======= Exit recv_cb for fd: %d =======\n", fd);
 }
-#else
+ 
 void recv_cb(int fd) {
     struct conn *c = &conn_list[fd];
 
@@ -345,7 +366,382 @@ void recv_cb(int fd) {
         set_event(fd, EPOLLOUT, 0); 
     }
 }
+#endif 
+#if 0
+void recv_cb(int fd) {
+    struct conn *c = &conn_list[fd];
+
+    // 模式 A：纯二进制裸流落盘模式
+    if (c->is_receiving_file) {
+        //printf("\n\033[1;33m[Mode-A Radar]\033[0m Fd %d intercepted by Mode-A (File Streaming). Progress: %lld/%lld\n", fd, c->already_recv_size, c->expect_file_size);
+        //fflush(stdout);
+
+        char net_buf[8192];
+        int count = recv(fd, net_buf, sizeof(net_buf), MSG_DONTWAIT);
+        
+        if (count < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                printf("\033[1;33m[Mode-A Radar]\033[0m recv returned EAGAIN. Waiting for more file blocks...\n");
+                fflush(stdout);
+                return;
+            }
+            perror("recv error during file streaming");
+            close_and_free_connection(fd);
+            return;
+        }
+        if (count == 0) {
+            printf("\033[1;31m[Mode-A Radar] 🚨 Master disconnected unexpectedly during file transfer.\033[0m\n");
+            close_and_free_connection(fd);
+            return;
+        }
+
+        //printf("\033[1;33m[Mode-A Radar]\033[0m Fetched %d raw bytes from network, writing to disk...\n", count);
+        // 持续落盘并记账
+        write(c->local_file_fd, net_buf, count);
+        c->already_recv_size += count;
+
+        // 检查文件是否完整收齐
+        if (c->already_recv_size >= c->expect_file_size) {
+            printf("\033[1;32m[Mode-A Radar] 🎉 SUCCESS! Slave received full AOF file (%lld/%lld bytes). Switching back to Command Mode.\033[0m\n", c->already_recv_size, c->expect_file_size);
+            close(c->local_file_fd);
+            c->local_file_fd = -1;
+            c->is_receiving_file = 0; // 传输彻底结束，解脱模式A，返回正常命令模式
+            
+            // 恢复内存数据
+            kvs_persistence_recover();
+            printf("\033[1;32m[Mode-A Radar] Slave memory database successfully reloaded from new AOF.\033[0m\n\n");
+        }
+        return; // 文件模式下，绝对不向下走常规协议层
+    }
+
+    // 模式 B：正常的 RESP 命令缓冲区模式
+    //printf("\n\033[1;36m[Mode-B Radar]\033[0m Fd %d entered Mode-B (Command/Handshake Mode). Initial rlength: %d\n", fd, c->rlength);
+    //fflush(stdout);
+
+    while (1) {
+        if (c->rcapacity - c->rlength < 4096) {
+            int new_capacity = c->rcapacity * 2;
+            if (new_capacity < 4096) new_capacity = 4096;
+            char *new_buf = (char *)kvs_realloc(c->rbuffer, new_capacity);
+            if (!new_buf) {
+                close_and_free_connection(fd);
+                return;
+            }
+            c->rbuffer = new_buf;
+            c->rcapacity = new_capacity;
+        }
+        
+        int remaining_space = c->rcapacity - c->rlength;
+        int count = recv(fd, c->rbuffer + c->rlength, remaining_space, MSG_DONTWAIT);   
+        
+        if (count > 0) {
+            printf("\033[1;36m[Mode-B Radar]\033[0m Low-level recv fetched %d bytes from kernel.\n", count);
+            c->rlength += count;
+            fflush(stdout);
+        } else if (count < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                printf("\033[1;36m[Mode-B Radar]\033[0m recv returned EAGAIN. Finished pulling all currently available wire bytes.\n");
+                break;
+            }
+            close_and_free_connection(fd);
+            return;
+        } else { // count == 0
+            printf("\033[1;31m[Mode-B Radar] Fd %d connection closed by peer.\033[0m\n", fd);
+            close_and_free_connection(fd);
+            return;
+        }    
+    }
+
+    if (!g_stream_handler) {
+        printf("\033[1;31m[Mode-B Radar] 🚨 Warning: g_stream_handler is NULL! Cannot parse.\033[0m\n");
+        return;
+    }
+
+    int total_parsed_bytes = 0; 
+    //printf("\033[1;36m[Mode-B Radar]\033[0m Entering protocol stream loop. Total data in rbuffer to parse: %d bytes.\n", c->rlength);
+    //fflush(stdout);
+    
+    while (c->rlength > total_parsed_bytes) { 
+        int parsed_bytes = 0;
+        long long expect_file_size = 0; 
+
+        //printf("\033[1;36m[Mode-B Radar]\033[0m -> Feeding protocol handler with leftover length: %d\n", c->rlength - total_parsed_bytes);
+        //fflush(stdout);
+
+        // 调用协议层解析流
+        int status = g_stream_handler(
+            c->rbuffer + total_parsed_bytes, 
+            c->rlength - total_parsed_bytes, 
+            &parsed_bytes,                                                             
+            &c->wbuffer,                    
+            &c->wcapacity,                  
+            &c->wlength,
+            &expect_file_size 
+        );
+
+        //printf("\033[1;35m[Mode-B Radar Parser Debug]\033[0m Fd %d: handler consumed %d bytes, returned status: %d\n", fd, parsed_bytes, status);
+        //fflush(stdout);
+
+        if (status == 1) {
+            printf("\033[1;35m[Mode-B Radar]\033[0m Status 1 caught: Half-pack detected. Breaking out loop to wait next data.\n");
+            fflush(stdout);
+            break; // 半包等待，跳出循环保持现场
+        } 
+        else if (status < 0) {
+            printf("\033[1;31m[Mode-B Radar] 🚨 Protocol error detected on fd: %d. Closing connection.\033[0m\n", fd);
+            close_and_free_connection(fd);
+            return;
+        }
+        
+        // 状态 10：主端行为（收到从端 SYNC，准备发文件）
+        else if (status == 10) {
+            printf("\033[1;32m[Mode-B Radar]\033[0m Status 10 triggered! (Master action). Activating file push...\n");
+            total_parsed_bytes += parsed_bytes;
+            reactor_send_file(fd, PERSISTENCE_FILE);
+            break; 
+        }
+        
+        // 状态 20：从端行为（收到主端脱帽信号，开启接力！）
+        else if (status == 20) {
+            // 1. 推进已解析指针（吃掉协议头）
+            total_parsed_bytes += parsed_bytes;
+            
+            printf("\033[1;32m[Mode-B Radar]\033[0m 🔥🔥🔥 Status 20 triggered! Handshake matched! Expected AOF Size: %lld bytes.\033[0m\n", expect_file_size);
+            printf("\033[1;32m[Mode-B Radar]\033[0m Opening target disk file [%s] to wipe old content.\033[0m\n", PERSISTENCE_FILE);
+
+            // 2. 清盘：打开本地的持久化日志
+            c->local_file_fd = open(PERSISTENCE_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (c->local_file_fd < 0) {
+                perror("🚨 Slave open persistence file failed");
+                close_and_free_connection(fd);
+                return;
+            }
+            c->expect_file_size = expect_file_size;
+            c->already_recv_size = 0;
+            
+            // 🎯 【灵魂一步】：立刻标记为接收文件状态，激活下一轮的模式A
+            c->is_receiving_file = 1; 
+            //printf("\033[1;32m[Mode-B Radar] [BATON PASS] -> c->is_receiving_file is now flipped to 1!\033[0m\n");
+
+            // 3. 消费当前缓冲区残留
+            int leftover = c->rlength - total_parsed_bytes;
+            if (leftover > 0) {
+                //printf("\033[1;32m[Mode-B Radar]\033[0m Sticky payload bytes found behind header: %d bytes. Shoveling directly to disk...\033[0m\n", leftover);
+                write(c->local_file_fd, c->rbuffer + total_parsed_bytes, leftover);
+                c->already_recv_size += leftover; 
+            }
+            
+            // 4. 极端边界检查：如果文件特别小，光靠这一包粘包就收全了
+            if (c->already_recv_size >= c->expect_file_size) {
+                //printf("\033[1;32m[Mode-B Radar] 🎉 Instant complete via sticky package! (%lld/%lld)\033[0m\n", c->already_recv_size, c->expect_file_size);
+                close(c->local_file_fd);
+                c->local_file_fd = -1;
+                c->is_receiving_file = 0; // 瞬间功德圆满，退回常规模式
+                kvs_persistence_recover(); 
+            }            
+            
+            // 5. 传输控制交接成功，清空当前连接的读计数，彻底结束本轮模式B的平移逻辑
+            c->rlength = 0; 
+            total_parsed_bytes = 0; 
+            //printf("\033[1;32m[Mode-B Radar] Handshake fully processed. Handing over pipeline to Mode-A next round.\033[0m\n\n");
+            //fflush(stdout);
+            break; 
+        }
+
+        // 常规客户端命令（status == 0），正常累加指针
+        //printf("\033[1;36m[Mode-B Radar]\033[0m Normal command processed successfully. Moving parse pointer up by %d bytes.\n", parsed_bytes);
+        total_parsed_bytes += parsed_bytes;
+    } 
+
+    // 平移剩下不够一条常规命令的半包数据（只有在非文件接收状态下才需要平移）
+    if (!c->is_receiving_file && total_parsed_bytes > 0) {
+        int remaining_data = c->rlength - total_parsed_bytes;
+        //printf("\033[1;36m[Mode-B Radar]\033[0m Shifting half-pack data residue: moving remaining %d bytes to head of rbuffer.\n\n", remaining_data);
+        if (remaining_data > 0) {
+            memmove(c->rbuffer, c->rbuffer + total_parsed_bytes, remaining_data);
+        }
+        c->rlength = remaining_data;
+        fflush(stdout);
+    }
+}
 #endif
+void recv_cb(int fd) {
+    struct conn *c = &conn_list[fd];
+
+    // 模式 A：纯二进制裸流落盘模式（从端专用）
+    if (c->is_receiving_file) {
+        char net_buf[8192];
+        int count = recv(fd, net_buf, sizeof(net_buf), MSG_DONTWAIT);
+        
+        if (count < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            perror("recv error during file streaming");
+            close_and_free_connection(fd);
+            return;
+        }
+        if (count == 0) {
+            close_and_free_connection(fd);
+            return;
+        }
+
+        // 直接落盘并记账
+        write(c->local_file_fd, net_buf, count);
+        c->already_recv_size += count;
+
+        // 检查文件是否完整收齐
+        if (c->already_recv_size >= c->expect_file_size) {
+            printf("[Network] Slave received full AOF file (%lld bytes). Switching to Command Mode.\n", c->already_recv_size);
+            close(c->local_file_fd);
+            c->local_file_fd = -1;
+            c->is_receiving_file = 0; // 解除文件接收模式
+            
+            // 磁盘数据已完全落盘，现在安全恢复到内存
+            kvs_persistence_recover();
+            printf("[Network] Slave memory database successfully reloaded from new AOF.\n");
+        }
+        return; // 文件模式下，不走后面的协议层
+    }
+
+    // 模式 B：正常的 RESP 命令缓冲区模式
+    while (1) {
+        if (c->rcapacity - c->rlength < 4096) {
+            int new_capacity = c->rcapacity * 2;
+            if (new_capacity < 4096) new_capacity = 4096;
+            char *new_buf = (char *)kvs_realloc(c->rbuffer, new_capacity);
+            if (!new_buf) {
+                close_and_free_connection(fd);
+                return;
+            }
+            c->rbuffer = new_buf;
+            c->rcapacity = new_capacity;
+        }
+        
+        int remaining_space = c->rcapacity - c->rlength;
+        int count = recv(fd, c->rbuffer + c->rlength, remaining_space, MSG_DONTWAIT);   
+        
+        if (count < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            close_and_free_connection(fd);
+            return;
+        }    
+        if (count == 0) {
+            close_and_free_connection(fd);
+            return;
+        }    
+        c->rlength += count;
+    }
+
+    if (c->rlength > 0) {
+        printf("[Net Recv-Data] Fd %d extracted %d bytes buffer from network. Raw context: %s\n", 
+               fd, c->rlength, c->rbuffer);
+        fflush(stdout);
+    }
+
+    if (!g_stream_handler) return;
+
+    int total_parsed_bytes = 0; 
+    
+    while (c->rlength > total_parsed_bytes) { 
+        int parsed_bytes = 0;
+        long long expect_file_size = 0; 
+
+        int status = g_stream_handler(
+            c->rbuffer + total_parsed_bytes, 
+            c->rlength - total_parsed_bytes, 
+            &parsed_bytes,                                                             
+            &c->wbuffer,                    
+            &c->wcapacity,                  
+            &c->wlength,
+            &expect_file_size 
+        );
+
+        printf("[Net Handler Debug] Fd %d parsed_bytes: %d, handler returned status: %d\n", 
+               fd, parsed_bytes, status);
+        fflush(stdout);
+
+        if (status == 1) {
+            break; // 半包等待
+        } 
+        else if (status < 0) {
+            printf("[DEBUG-ERR] Protocol error on fd: %d\n", fd);
+            close_and_free_connection(fd);
+            return;
+        }
+        
+        // 状态 10：主端收到 SYNC，准备发送文件
+        else if (status == 10) {
+            total_parsed_bytes += parsed_bytes;
+            reactor_send_file(fd, PERSISTENCE_FILE);
+            break; 
+        }
+        
+        // 状态 20：从端收到握手头，准备接收文件
+        else if (status == 20) {
+            total_parsed_bytes += parsed_bytes;
+            
+            // 1：在抹平磁盘文件前，必须调用你的引擎接口清空老内存！
+            // ⚠️ 请将下行替换为你 kvstore 真实的清空内存函数，比如 kvs_clear_db()
+            //  kvs_clear_all_memory_data(); 
+
+            // 2. 打开最终的持久化日志（清空磁盘旧日志）
+            c->local_file_fd = open(PERSISTENCE_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (c->local_file_fd < 0) {
+                perror("Slave open persistence file failed");
+                close_and_free_connection(fd);
+                return;
+            }
+            c->expect_file_size = expect_file_size;
+            c->already_recv_size = 0;
+            c->is_receiving_file = 1; 
+            
+            // 3. 粘包处理：把缓冲区里剩下的二进制直接灌入磁盘
+            int leftover = c->rlength - total_parsed_bytes;
+            if (leftover > 0) {
+                write(c->local_file_fd, c->rbuffer + total_parsed_bytes, leftover);
+                c->already_recv_size += leftover; 
+            }
+            
+            // 4. 检查：是不是小文件刚好一步到位收全了
+            if (c->already_recv_size >= c->expect_file_size) {
+                printf("[Network] Slave downloaded file instantly via sticky packet!\n");
+                close(c->local_file_fd);
+                c->local_file_fd = -1;
+                c->is_receiving_file = 0;                 
+                // 收全后安全恢复
+                kvs_persistence_recover(); 
+            }            
+            // 数据已经全部被消费或转移到磁盘，将计数归零，防止走到最后的常规平移引发错乱
+            c->rlength = 0; 
+            total_parsed_bytes = 0; 
+            break; 
+        }
+
+        total_parsed_bytes += parsed_bytes;
+    } 
+
+    // 平移剩下不够一条命令的常规半包（只有非文件接收状态需要执行）
+    if (!c->is_receiving_file && total_parsed_bytes > 0) {
+        int remaining_data = c->rlength - total_parsed_bytes;
+        if (remaining_data > 0) {
+            memmove(c->rbuffer, c->rbuffer + total_parsed_bytes, remaining_data);
+        }
+        c->rlength = remaining_data;
+        
+        // 核心分流逻辑：
+        if (c->role == CONN_CLIENT) {
+            // 普通客户端：检查是否有数据需要回复，如果有，才挂载可写事件
+            if (c->wlength > 0) {
+                set_event(fd, EPOLLOUT, 0); 
+            }
+        } 
+        else if (c->role == CONN_MASTER) {
+            // 这是从端在接收主端发来的同步命令
+            // 执行完毕后，绝对不能向主端回复 +OK 等常规命令响应！
+            // 所以清空写缓冲区，并且坚决不挂载 EPOLLOUT
+            c->wlength = 0; 
+        }
+    }
+}
 
 void send_cb(int fd) {
     //printf("\n[Reactor-Send] ======= Enter send_cb for fd: %d, wlength to send: %d =======\n", fd, conn_list[fd].wlength);
@@ -545,6 +941,17 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     set_event(listen_fd, EPOLLIN, 1);
     
     gettimeofday(&begin, NULL);
+
+    #if ENABLE_REPLICATION_SLAVE
+        const char *slave_ip = "192.168.92.128";
+        unsigned short slave_port = 2000;
+        
+        printf("\n\033[1;32m[Reactor] 🎉 epfd (%d) successfully created! Launching slave connection to master...\033[0m\n", epfd);
+        fflush(stdout);
+
+        // 建立连接、打包并发送 SYNC 命令、最后安全托管到 epfd 中
+        repl_connect_to_master(slave_ip, slave_port); 
+    #endif
     
     server_should_exit=0;
     int shutdown_stage=0;
@@ -558,10 +965,9 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
             int connfd = events[i].data.fd;
             
             if (events[i].events & EPOLLIN) {
-                // 🚀 增加这条暴力打印：看看到底是谁把内核唤醒了
-                printf("[Net Epoll-In] Active Event triggered on fd: %d, has read_cb: %s\n", 
-                       connfd, conn_list[connfd].read_callback ? "YES" : "NO (NULL!)");
-                fflush(stdout);
+                // 看看到底是谁把内核唤醒了
+                //printf("[Net Epoll-In] Active Event triggered on fd: %d, has read_cb: %s\n", connfd, conn_list[connfd].read_callback ? "YES" : "NO (NULL!)");
+                //fflush(stdout);
                 if (conn_list[connfd].read_callback) {
                     conn_list[connfd].read_callback(connfd);
                 } else if (conn_list[connfd].accept_callback) {
@@ -611,17 +1017,14 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     return 0;
 }
 
-// 🚀 追加到 reactor.c 或 network.c 的末尾
+
 // 让外部模块能够把一个已连接的从端 fd 托管给 Reactor
 int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return -1; 
-
     struct conn *c = &conn_list[fd];
-    
-    // 🚀 核心修复：必须把回调函数牢牢绑死，否则 epoll 醒了找不到人执行
-    c->fd = fd;
-    c->read_callback = recv_cb;   // 👈 指向接收状态机
-    c->send_callback = send_cb;   // 👈 指向发送状态机
+    c->fd = fd;// 回调函数绑定
+    c->read_callback = recv_cb;   
+    c->send_callback = send_cb;   
     c->accept_callback = NULL;
 
     c->rbuffer = (char *)kvs_malloc(4096); 
@@ -637,8 +1040,11 @@ int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
     c->is_receiving_file = 0;        
     c->local_file_fd = -1;
 
-    // 注册 Epoll 读事件
-    set_event(fd, EPOLLIN, 0); 
+    int target_events = EPOLLIN;
+    if (wlen > 0) {
+        target_events |= EPOLLOUT; 
+    }
 
+    set_event(fd, EPOLLIN, 1); 
     return 0;
 }

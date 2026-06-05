@@ -87,9 +87,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     }
     printf("Slave: Successfully connected to Master at %s:%d\n", master_ip, master_port);
     
-    // ====================================================================
-    // 🚀 核心新增：既然连接成功，在这里直接完成【协议打包】与【初次发送】
-    // ====================================================================
+    // 连接成功，在这里直接完成【协议打包】与【初次发送】
     // 1) 按照主端解包匹配的 RESP 协议格式打包同步命令
     const char *sync_cmd = "*1\r\n$4\r\nSYNC\r\n"; 
     int cmd_len = strlen(sync_cmd);
@@ -106,9 +104,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         g_repl.wlength -= sent; // 记账
     }
 
-    // ====================================================================
-    // 🛰️ 完美避坑：调用网络层的封装接口，安全完成 Reactor 托孤
-    // ====================================================================
+    // 调用网络层的封装接口，安全完成 Reactor 托孤
     if (reactor_host_slave_connection(g_repl.fd, g_repl.wbuffer, g_repl.wcapacity, g_repl.wlength) < 0) {
         printf("Slave: Failed to host master connection to Reactor\n");
         close(g_repl.fd);
