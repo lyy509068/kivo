@@ -77,8 +77,7 @@ int reactor_send_file(int client_fd, const char *filepath) {
     conn_list[client_fd].file_size = st.st_size;
     conn_list[client_fd].file_ptr = 0;
 
-    // 💡 修改这里：不要发 8 字节二进制，发送标准 RESP Bulk String 格式！
-    // 之前协议层已经往 wbuffer 塞了 "+OK\r\n"，这里紧接着塞 "$<size>\r\n"
+    
     char size_header[128];
     int header_len = sprintf(size_header, "$%lld\r\n", (long long)st.st_size);
 
@@ -92,37 +91,7 @@ int reactor_send_file(int client_fd, const char *filepath) {
 
     set_event(client_fd, EPOLLOUT, 0);
     printf("[Network] Master starting FILE_STREAM mode. File size: %lld bytes.\n", (long long)st.st_size);
-    return 0;
-}
-
-// 🚀 追加到 reactor.c 或 network.c 的末尾
-// 让外部模块能够把一个已连接的从端 fd 托管给 Reactor
-int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
-    // 1. 安全检查，防止越界
-    // ⚠️ 这里的 MAX_CONNS 请替换为你项目里限制全局连接数的宏名（比如 1024 或 65535）
-    if (fd < 0 || fd >= 1024) return -1; 
-
-    struct conn *c = &conn_list[fd];
     
-    // 2. 为读缓冲区开辟内存
-    c->rbuffer = (char *)kvs_malloc(4096); 
-    if (!c->rbuffer) return -1;
-    
-    c->rcapacity = 4096;
-    c->rlength = 0;
-    
-    // 3. 关联外部传进来的主从专用写缓冲区
-    c->wbuffer = wbuf;     
-    c->wcapacity = wcap;
-    c->wlength = wlen;
-    
-    // 4. 初始化文件接收状态
-    c->is_receiving_file = 0;        
-    c->local_file_fd = -1;
-
-    // 5. 注册 Epoll 读事件
-    set_event(fd, EPOLLIN, 0); 
-
     return 0;
 }
 
@@ -215,9 +184,7 @@ void recv_cb(int fd) {
 void recv_cb(int fd) {
     struct conn *c = &conn_list[fd];
 
-    // ====================================================================
-    // 🛰️ 模式 A：纯二进制裸流落盘模式（从端专用）
-    // ====================================================================
+    // 模式 A：纯二进制裸流落盘模式（从端专用）
     if (c->is_receiving_file) {
         char net_buf[8192];
         int count = recv(fd, net_buf, sizeof(net_buf), MSG_DONTWAIT);
@@ -244,16 +211,14 @@ void recv_cb(int fd) {
             c->local_file_fd = -1;
             c->is_receiving_file = 0; // 解除文件接收模式
             
-            // 🚀 磁盘数据已完全落盘，现在安全恢复到内存
+            // 磁盘数据已完全落盘，现在安全恢复到内存
             kvs_persistence_recover();
             printf("[Network] Slave memory database successfully reloaded from new AOF.\n");
         }
         return; // 文件模式下，不走后面的协议层
     }
 
-    // ====================================================================
-    // 🟢 模式 B：正常的 RESP 命令缓冲区模式
-    // ====================================================================
+    // 模式 B：正常的 RESP 命令缓冲区模式
     while (1) {
         if (c->rcapacity - c->rlength < 4096) {
             int new_capacity = c->rcapacity * 2;
@@ -282,6 +247,12 @@ void recv_cb(int fd) {
         c->rlength += count;
     }
 
+    if (c->rlength > 0) {
+        printf("[Net Recv-Data] Fd %d extracted %d bytes buffer from network. Raw context: %s\n", 
+               fd, c->rlength, c->rbuffer);
+        fflush(stdout);
+    }
+
     if (!g_stream_handler) return;
 
     int total_parsed_bytes = 0; 
@@ -300,6 +271,10 @@ void recv_cb(int fd) {
             &expect_file_size 
         );
 
+        printf("[Net Handler Debug] Fd %d parsed_bytes: %d, handler returned status: %d\n", 
+               fd, parsed_bytes, status);
+        fflush(stdout);
+
         if (status == 1) {
             break; // 半包等待
         } 
@@ -309,18 +284,18 @@ void recv_cb(int fd) {
             return;
         }
         
-        // 👑 状态 10：主端收到 SYNC，准备发送文件
+        // 状态 10：主端收到 SYNC，准备发送文件
         else if (status == 10) {
             total_parsed_bytes += parsed_bytes;
             reactor_send_file(fd, PERSISTENCE_FILE);
             break; 
         }
         
-        // 🛰️ 状态 20：从端收到握手头，准备接收文件
+        // 状态 20：从端收到握手头，准备接收文件
         else if (status == 20) {
             total_parsed_bytes += parsed_bytes;
             
-            // 💡 核心修正 1：在抹平磁盘文件前，必须调用你的引擎接口清空老内存！
+            // 1：在抹平磁盘文件前，必须调用你的引擎接口清空老内存！
             // ⚠️ 请将下行替换为你 kvstore 真实的清空内存函数，比如 kvs_clear_db()
             //  kvs_clear_all_memory_data(); 
 
@@ -347,13 +322,11 @@ void recv_cb(int fd) {
                 printf("[Network] Slave downloaded file instantly via sticky packet!\n");
                 close(c->local_file_fd);
                 c->local_file_fd = -1;
-                c->is_receiving_file = 0; 
-                
-                // 💥 收全后安全恢复
+                c->is_receiving_file = 0;                 
+                // 收全后安全恢复
                 kvs_persistence_recover(); 
-            }
-            
-            // 💡 核心修正 2：数据已经全部被消费或转移到磁盘，将计数归零，防止走到最后的常规平移引发错乱
+            }            
+            // 数据已经全部被消费或转移到磁盘，将计数归零，防止走到最后的常规平移引发错乱
             c->rlength = 0; 
             total_parsed_bytes = 0; 
             break; 
@@ -585,6 +558,10 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
             int connfd = events[i].data.fd;
             
             if (events[i].events & EPOLLIN) {
+                // 🚀 增加这条暴力打印：看看到底是谁把内核唤醒了
+                printf("[Net Epoll-In] Active Event triggered on fd: %d, has read_cb: %s\n", 
+                       connfd, conn_list[connfd].read_callback ? "YES" : "NO (NULL!)");
+                fflush(stdout);
                 if (conn_list[connfd].read_callback) {
                     conn_list[connfd].read_callback(connfd);
                 } else if (conn_list[connfd].accept_callback) {
@@ -634,3 +611,34 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     return 0;
 }
 
+// 🚀 追加到 reactor.c 或 network.c 的末尾
+// 让外部模块能够把一个已连接的从端 fd 托管给 Reactor
+int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
+    if (fd < 0 || fd >= CONNECTION_SIZE) return -1; 
+
+    struct conn *c = &conn_list[fd];
+    
+    // 🚀 核心修复：必须把回调函数牢牢绑死，否则 epoll 醒了找不到人执行
+    c->fd = fd;
+    c->read_callback = recv_cb;   // 👈 指向接收状态机
+    c->send_callback = send_cb;   // 👈 指向发送状态机
+    c->accept_callback = NULL;
+
+    c->rbuffer = (char *)kvs_malloc(4096); 
+    if (!c->rbuffer) return -1;
+    
+    c->rcapacity = 4096;
+    c->rlength = 0;
+    
+    c->wbuffer = wbuf;     
+    c->wcapacity = wcap;
+    c->wlength = wlen;
+    
+    c->is_receiving_file = 0;        
+    c->local_file_fd = -1;
+
+    // 注册 Epoll 读事件
+    set_event(fd, EPOLLIN, 0); 
+
+    return 0;
+}

@@ -52,13 +52,13 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         perror("Slave: Create socket failed");
         return -1;
     }
-    // 配置主端（Master）的服务器地址
+    // 配置主端的服务器地址
     struct sockaddr_in master_addr;
     memset(&master_addr, 0, sizeof(master_addr));
     master_addr.sin_family = AF_INET;
     master_addr.sin_port = htons(master_port);
     master_addr.sin_addr.s_addr = inet_addr(master_ip);
-    // 主动向主端发起连接（此时 connect 会阻塞直到成功或超时失败）
+    // 向主端发起连接
     printf("Slave: Trying to connect to Master at %s:%d...\n", master_ip, master_port);
     if (connect(g_repl.fd, (struct sockaddr*)&master_addr, sizeof(master_addr)) < 0) {
         // 如果主端没打开，这里会触发 Connection refused 错误

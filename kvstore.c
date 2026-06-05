@@ -308,15 +308,15 @@ enum {
     // Array
     CMD_SET = 0, CMD_GET, CMD_DEL, CMD_MOD, CMD_EXISTS,
     // RBTree
-    CMD_RSET, CMD_RGET, CMD_RDEL, CMD_RMOD, CMD_REXISTS,
+    CMD_RSET=5, CMD_RGET, CMD_RDEL, CMD_RMOD, CMD_REXISTS,
     // Hash 
-    CMD_HSET, CMD_HGET, CMD_HDEL, CMD_HMOD, CMD_HEXISTS,
+    CMD_HSET=10, CMD_HGET, CMD_HDEL, CMD_HMOD, CMD_HEXISTS,
     // SkipList
-    CMD_SSET, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
+    CMD_SSET=15, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
 
-    CMD_PING, CMD_SHUTDOWN, CMD_SAVE, CMD_REPL_SYNC,
+    CMD_PING=20, CMD_SHUTDOWN, CMD_SAVE, CMD_REPL_SYNC,
 
-    CMD_UNKNOWN
+    CMD_UNKNOWN=24
 };
 
 const kvs_cmd_map_t kvs_cmd_list[] = {
@@ -343,6 +343,15 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     int cmd_len = req->argv_len[0];
     int target_cmd = CMD_UNKNOWN;
 
+    //单独处理日志命令
+    if ((cmd_len == 4 && strncasecmp(cmd_str, "SYNC", 4) == 0) ||
+        (cmd_len == 9 && strncasecmp(cmd_str, "REPL_SYNC", 9) == 0)) {
+        printf("\n[Master REPL [🔥String Interceptor]] Successfully caught SYNC command by raw string!\n");
+        fflush(stdout);
+        reply->status = KVS_RESP_SYNC_LOG; 
+        return 10;
+    }
+
     // 匹配字符串命令类型
     for (int i = 0; i < KVS_CMD_LIST_SIZE; i++) {
         if (cmd_len == kvs_cmd_list[i].cmd_len && 
@@ -360,7 +369,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     char *value = (req->argc > 2) ? req->argv[2] : NULL;
     int value_len = (req->argc > 2) ? req->argv_len[2] : 0;
 
-    #if TEST
+    #if 0
     printf("\n[KVS_DEBUG] ========== New Request Incoming ==========\n");
     printf("[KVS_DEBUG] Raw Command : %.*s (len: %d), Argc: %d\n", cmd_len, cmd_str, cmd_len, req->argc);
     printf("[KVS_DEBUG] Matched Enum: %d \n", target_cmd);
@@ -737,7 +746,11 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             break;
         }
         case CMD_REPL_SYNC:
-            reply->status = KVS_RESP_SYNC_LOG; 
+        //根本就没走到这一步 否则会打印出来这句话
+            printf("[Master REPL] Received 'SYNC' command from slave.\n");
+            fflush(stdout);
+            reply->status = KVS_RESP_SYNC_LOG;
+            return 10;
         break;
         
         case CMD_SHUTDOWN:

@@ -3,7 +3,8 @@
 
 #include "kvstore.h"   
 #include "resp.h"    
-#include "network.h"   
+#include "network.h" 
+#include "replication.h"  
 
 
 #if ENABLE_ARRAY

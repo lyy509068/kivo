@@ -6,7 +6,7 @@ SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c resp.c\
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c expire_thread.c replication.c
 
 TARGET = server
-TESTCASES = client test_fullpersistence test_incrementpersistence test_mempool
+TESTCASES = client test_fullpersistence test_incrementpersistence test_mempool test_master test_slave
 SUBDIR = ./NtyCo/
 
 OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o resp.o\

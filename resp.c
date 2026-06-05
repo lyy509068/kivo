@@ -203,8 +203,8 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
 }
 
 /*
- * 🔄 统一自适应协议层核心入口（同时支持：1.处理客户端命令  2.处理主端同步回复）
- * 💡 移除了宏控制，改为运行期动态自适应，让从端完美支持本地客户端访问！
+ * 🔄 统一自适应协议层核心入口，同时支持：1.处理客户端命令  2.处理主端同步回复
+ * 网络层从这里进入
  */
 int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val) {
     if (in_len <= 0) {
@@ -215,7 +215,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
     // 探测首字节，判定数据流来源
     char first_byte = in_buf[0];
 
-    //收到的是标准 RESP 请求流（来自本地客户端，或者主端后续同步的实时命令）
+    //来自本地客户端或者从端的命令，都是resp协议
     if (first_byte == '*') {
         int processed = 0;
 
@@ -235,7 +235,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                 g_command_handler(&req, &reply); 
             }
 
-            // 如果业务层返回同步日志状态（说明这是主端在处理 SYNC 命令）
+            // 如果业务层返回日志状态
             if (reply.status == KVS_RESP_SYNC_LOG) {
                 resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
                 free_resp_request(&req);
@@ -259,10 +259,10 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
         }
 
         *parsed = processed; 
-        return 0; // 返回 0 代表客户端命令（或增量同步命令）处理正常
+        return 0; // 返回 0 代表客户端命令处理正常
     }
 
-    // 收到的是主端的同步握手回复（格式如：+OK\r\n$102400\r\n）
+    // 收到的是主端的同步的回复（格式如：+OK\r\n$102400\r\n）
     else if (first_byte == '+') {
         if (in_len < 9) return 1; // 半包继续等
 
@@ -278,8 +278,11 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             *out_val = atoll(p_size); // 提取出文件大小
         }
 
+        printf("[Slave REPL] Successfully received Master's SYNC ACK!\n");
+        fflush(stdout);
+
         *parsed = 5 + 1 + (crlf - p_size) + 2;
-        return 20; // 告诉从端网络层：成功脱帽，请切换到裸文件流落盘模式！
+        return 20; // 告诉从端网络层：成功脱帽，准备文件落盘！
     }
 
     // 未知的协议首字节，直接报错拦截
