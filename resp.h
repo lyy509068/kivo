@@ -1,6 +1,7 @@
 #ifndef KVS_PROTOCOL_H
 #define KVS_PROTOCOL_H
 
+#include <stdbool.h>
 #include <stdlib.h>
 
 
@@ -33,6 +34,7 @@ typedef struct {
     kvs_status_t status; // 业务层执行状态码
     void *body;          // 查询到的值 (仅 GET 命令有效，需业务层 malloc，协议层负责 free)
     int body_len;        // 查询到的值的长度
+    bool needs_replication; //是否需要同步给从端
 } resp_reply_t;
 
 //网络设置

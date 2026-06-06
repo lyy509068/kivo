@@ -407,6 +407,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [ARRAY_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SET", key, key_len, value, value_len, default_expire);
                 #endif
@@ -440,6 +441,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [ARRAY_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("DEL", key, key_len, NULL, 0, default_expire); 
                 #endif
@@ -455,6 +457,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [ARRAY_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("MOD", key, key_len, value, value_len, default_expire);
                 #endif
@@ -481,6 +484,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [RBTREE_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RSET", key, key_len, value, value_len, default_expire);
                 #endif
@@ -513,6 +517,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [RBTREE_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
@@ -528,6 +533,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [RBTREE_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("RMOD", key, key_len, value, value_len, default_expire);
                 #endif
@@ -554,6 +560,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [HASH_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HSET", key, key_len, value, value_len, default_expire);
                 #endif
@@ -585,6 +592,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [HASH_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
@@ -600,6 +608,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [HASH_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("HMOD", key, key_len, value, value_len, default_expire);
                 #endif
@@ -629,6 +638,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SSET", key, key_len, value, value_len, default_expire);
                 #endif
@@ -669,6 +679,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
@@ -687,12 +698,13 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
+                reply->needs_replication=true;
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("SMOD", key, key_len, value, value_len);
-                #endif
+                #endif 
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }

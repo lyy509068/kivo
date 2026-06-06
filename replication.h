@@ -9,6 +9,14 @@
 #define ENABLE_REPLICATION_MASTER 1
 #define ENABLE_REPLICATION_SLAVE  0
 
+// 连接与缓冲区状态
+struct repl_conn {
+    int fd;
+    char *wbuffer;
+    int wcapacity;
+    int wlength;
+};
+
 // 建立连接
 int repl_connect_to_master(const char *master_ip, unsigned short master_port);
 // 发送命令

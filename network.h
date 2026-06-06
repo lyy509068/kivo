@@ -42,10 +42,17 @@ struct conn {
     RCALLBACK accept_callback;
 };
 
+
+
+
+extern struct repl_conn g_repl;
+extern int repl_flush();
+
 // 启动函数声明
 int reactor_start(unsigned short port, stream_handler_t handler);
 int proactor_start(unsigned short port, stream_handler_t handler);
 int ntyco_start(unsigned short port, stream_handler_t handler);
 int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+int set_event(int fd, int event, int flag);
 
 #endif

@@ -179,7 +179,7 @@ void kvs_persistence_recover(void) {
     }
     
     fseek(aof_fp, 0, SEEK_END);
-    printf("AOF recovery finished: %d commands replayed (Purged %d expired logs)\n", recovered_count, expired_cleanup_count);
+    //printf("AOF recovery finished: %d commands replayed (Purged %d expired logs)\n", recovered_count, expired_cleanup_count);
 }
 
 

@@ -215,7 +215,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
     // 探测首字节，判定数据流来源
     char first_byte = in_buf[0];
 
-    //来自本地客户端或者从端的命令，都是resp协议
+    //来自本地客户端和主端的命令（不需要回复，问题在这里，还是回复了！！！怎么修改？？？）或者是从端获取日志（发文件回复）的命令，都是resp协议
     if (first_byte == '*') {
         int processed = 0;
 
@@ -226,16 +226,17 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
                 break; // 半包，跳出循环等下一次
             }
-
+            
             resp_request_t req;
             resp_unpack(in_buf + processed, &req);
 
+            // 业务层处理
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
             if (g_command_handler) {
                 g_command_handler(&req, &reply); 
             }
 
-            // 如果业务层返回日志状态
+            // 如果业务层返回值是发送日志
             if (reply.status == KVS_RESP_SYNC_LOG) {
                 resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
                 free_resp_request(&req);
@@ -278,14 +279,13 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             *out_val = atoll(p_size); // 提取出文件大小
         }
 
-        printf("[Slave REPL] Successfully received Master's SYNC ACK!\n");
-        fflush(stdout);
+        //printf("[Slave REPL] Successfully received Master's SYNC ACK!\n");
+        //fflush(stdout);
 
         *parsed = 5 + 1 + (crlf - p_size) + 2;
         return 20; // 告诉从端网络层：成功脱帽，准备文件落盘！
     }
 
-    // 未知的协议首字节，直接报错拦截
     else {
         return -1; 
     }
