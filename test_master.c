@@ -90,6 +90,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (i > start_idx && (i - start_idx) % 10000 == 0) {
+            usleep(20000); 
             printf("  -> Progress: Injected %d records...\n", i - start_idx);
         }
     }

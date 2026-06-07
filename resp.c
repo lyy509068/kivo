@@ -179,10 +179,10 @@ void protocol_set_command_handler(cmd_handler_t handler) {
  * 📦 打包并自动扩容函数：把业务层的回复格式化并追加到网络层的写缓冲区中
  */
 void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *reply) {
-    // 1. 估算这次打包大概需要多少安全空间：当前已用长度 + RESP基础协议头尾(1K足够) + body长度
+    // 估算这次打包大概需要多少安全空间：当前已用长度 + RESP基础协议头尾(1K足够) + body长度
     int needed = *wlen + 1024 + (reply->body_len > 0 ? reply->body_len : 0);
     
-    // 2. 动态扩容：如果空间不够，进行翻倍扩容
+    // 动态扩容：如果空间不够，进行翻倍扩容
     if (needed > *wcap) {
         int new_cap = *wcap * 2;
         if (new_cap < needed) new_cap = needed;
@@ -196,9 +196,6 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
         *wcap = new_cap;
     }
     
-    // 3. 核心对接：调用你原有的 resp_pack 逻辑
-    // 💡 技巧：你的 resp_pack 内部使用的是 send_buf + *send_len 的相对偏移写入
-    // 传入 (*wbuf) 作为基地址，wlen 传入作为当前的偏移量，它会自动往后追加并更新 wlen
     resp_pack(*wbuf, wlen, reply);
 }
 
@@ -215,7 +212,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
     // 探测首字节，判定数据流来源
     char first_byte = in_buf[0];
 
-    //来自本地客户端和主端的命令（不需要回复，问题在这里，还是回复了！！！怎么修改？？？）或者是从端获取日志（发文件回复）的命令，都是resp协议
+    //来自本地客户端和主端的命令（不需要回复，在网络层拦截）或者是从端获取日志（发文件回复）的命令，都是resp协议
     if (first_byte == '*') {
         int processed = 0;
 

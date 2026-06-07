@@ -4,7 +4,7 @@
 #include <sys/time.h> 
 #include "kvstore.h" 
 #if ENABLE_HASH
-#define DEFAULT_HASH_SLOTS 1024 
+#define DEFAULT_HASH_SLOTS 131072 
 
 kvs_hash_t global_hash={0};
 

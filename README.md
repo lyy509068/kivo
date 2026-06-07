@@ -15,7 +15,7 @@ redis-benchmark -p 2000 -c 50 -n 10000 -t set,get
 
 2.全量持久化测试 test_fullpersistence
 一共四种模式 ./test_fullpersistence 1 2 3 4
-客户端：连接服务器->插入10w条数据->SAVE保存快照->对比快照和预期文件是否相同->SHUTDOWN关闭服务器->重新打开服务器->重新连接服务器->获取10w条数据并校验->清除快照文件（不影响下次测试）->SHUTDOWN关闭服务器
+客户端：连接服务器->插入10w条数据->SAVE保存快照->SHUTDOWN关闭服务器->重新打开服务器->重新连接服务器->获取10w条数据并校验->清除快照文件（不影响下次测试）->SHUTDOWN关闭服务器
 
 3.增量持久化测试
 一共四种模式 ./test_incrementpersistence 1 2 3 4
@@ -29,6 +29,15 @@ array不能用大量数据测试，rbtree最快，hash比rbtree慢一点，skipt
 malloc>jemalloc>mempool(为什么内存池反而比不用内存池慢？)
 
 6.主从同步测试
+打开主端服务器./server 2000 插入5w条数据 ./test_master (1 2 3 4) 1
+打开从端服务器,.server 2000 reactor_start启动后，从端服务器主动连接主端服务器，向主端发送获取日志命令
+主端服务器收到获取日志命令后，把日志文件发过去
+从端收到日志文件后，在从端恢复日志
+继续向主端插入5w条数据 ./test_master (1 2 3 4) 2
+从端同步完第二轮的5w条数据后，通过客户端验证 ./test_slave (1 2 3 4)
+
+rbtree和skiplist都能测试成功 10w条数据对array来说太多了不能测试成功 hash不能测试成功，从端的日志只有98810这么多数据，可能是什么原因？？？
+不太稳定，会丢包
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？

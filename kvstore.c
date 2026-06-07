@@ -272,7 +272,7 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
 
     char *buf = (char *)kvs_malloc(total_len);
     if (!buf) {
-        fprintf(stderr, "[AOF Error] Memory pool exhausted for log allocation! Size: %d\n", total_len);
+        //fprintf(stderr, "[AOF Error] Memory pool exhausted for log allocation! Size: %d\n", total_len);
         return;
     }
     int pos = 0;
@@ -324,7 +324,7 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
     {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXISTS",   7, CMD_REXISTS},
     {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXISTS",   7, CMD_HEXISTS},
     {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXISTS",   7, CMD_SEXISTS},
-    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"SAVE",     4, CMD_SAVE},     {"REPL_SYNC", 9,CMD_REPL_SYNC}, {"UNKNOWN",  7, CMD_UNKNOWN}
+    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"SAVE",     4, CMD_SAVE},     {"SYNC",     4, CMD_REPL_SYNC}, {"UNKNOWN",  7, CMD_UNKNOWN}
 };
 
 
@@ -342,15 +342,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     char *cmd_str = req->argv[0];
     int cmd_len = req->argv_len[0];
     int target_cmd = CMD_UNKNOWN;
-
-    //单独处理日志命令
-    if ((cmd_len == 4 && strncasecmp(cmd_str, "SYNC", 4) == 0) ||
-        (cmd_len == 9 && strncasecmp(cmd_str, "REPL_SYNC", 9) == 0)) {
-        printf("\n[Master REPL [🔥String Interceptor]] Successfully caught SYNC command by raw string!\n");
-        fflush(stdout);
-        reply->status = KVS_RESP_SYNC_LOG; 
-        return 10;
-    }
 
     // 匹配字符串命令类型
     for (int i = 0; i < KVS_CMD_LIST_SIZE; i++) {
@@ -393,7 +384,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     kv_data_t *result = NULL;
     unsigned long long default_expire = 0;
     
-    // 计算分段锁索引与默认过期时间 (仅当 key 存在时计算 idx，防止 SHUTDOWN 命令越界)
+    // 计算分段锁索引与默认过期时间
     #if ENABLE_TTL
     int idx = key ? get_segment_index(key, key_len) : 0;
     default_expire = get_current_ms() + DEFAULT_TTL_MS;
@@ -745,7 +736,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (req->argc != 1) {
                 reply->status = KVS_RESP_PARSE_ERROR; 
             } else {
-                // 调用全量快照持久化落数
                 extern int kvs_snapshot_save(void); 
                 int ret = kvs_snapshot_save();
                 
@@ -757,14 +747,13 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             break;
         }
-        case CMD_REPL_SYNC:
-        //根本就没走到这一步 否则会打印出来这句话
-            printf("[Master REPL] Received 'SYNC' command from slave.\n");
+        case CMD_REPL_SYNC:{
+            printf("Received 'SYNC' command from slave.\n");
             fflush(stdout);
             reply->status = KVS_RESP_SYNC_LOG;
             return 10;
-        break;
-        
+            break;
+        }
         case CMD_SHUTDOWN:
             reply->status = KVS_RESP_SHUTDOWN;//回复状态码
             server_should_exit=1;//从网络层跳出的标志
@@ -781,6 +770,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     //printf("[KVS_DEBUG] Final Reply Status Set To: %d \n", reply->status);
     //printf("[KVS_DEBUG] ==========================================\n\n");
 
-    return 0;//调到这里 然后反回协议层
+    return 0;
 }
 

@@ -30,7 +30,7 @@ int init_kvengine(void) {
         return -1;
     }
     #endif
-    //内存池
+    
     #if ENABLE_MEM_POOL
 
     #if ENABLE_ARRAY

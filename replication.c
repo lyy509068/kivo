@@ -38,9 +38,6 @@ static int ensure_wbuffer_capacity(int needed_space) {
     g_repl.wbuffer = new_buf;
     g_repl.wcapacity = new_capacity;
     
-    // 增加一条调试打印，方便观察扩容动作
-    //printf("[Repl-Push] Buffer expanded to %d bytes.\n", new_capacity);
-    
     return 0;
 }
 
@@ -76,7 +73,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         }
     }
     g_repl.wlength = 0;
-    // 设置为非阻塞模式
+    
     int flags = fcntl(g_repl.fd, F_GETFL, 0);
     if (flags >= 0) {
         fcntl(g_repl.fd, F_SETFL, flags | O_NONBLOCK);
@@ -99,44 +96,34 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     }
     // 调用网络层的封装接口，安全完成 Reactor 托孤
     if (reactor_host_slave_connection(g_repl.fd, g_repl.wbuffer, g_repl.wcapacity, g_repl.wlength) < 0) {
-        printf("Slave: Failed to host master connection to Reactor\n");
+        
         close(g_repl.fd);
         g_repl.fd = -1;
         return -1;
     }
-    //printf("Slave: SYNC command sent. Master connection fd %d is now hosted by Reactor.\n", g_repl.fd);
     return 0;
 }
 
 
-#define LOG_CLR_RESET   "\033[0m"
-#define LOG_CLR_GREEN   "\033[1;32m"
-#define LOG_CLR_YELLOW  "\033[1;33m"
-#define LOG_CLR_RED     "\033[1;31m"
-#define LOG_CLR_CYAN    "\033[1;36m"
-
 int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char *value, int value_len) {
     if (g_repl.fd < 0) {
-        fprintf(stderr, LOG_CLR_RED "[Repl-Push] Error: Replication FD is invalid (%d)\n" LOG_CLR_RESET, g_repl.fd);
-        //走到这个分支还会调用repl_flush();吗？？？
+        //printf("[Repl-Push] Error: Replication FD is invalid (%d)\n", g_repl.fd);
         return -1;
     }
     if (!cmd_name) {
-        fprintf(stderr, LOG_CLR_RED "[Repl-Push] Error: cmd_name is NULL\n" LOG_CLR_RESET);
         return -1;
     }
 
     int cmd_name_len = strlen(cmd_name);
-    int total_needed = 64 + cmd_name_len + key_len + value_len; // 计算将要生成的 RESP 字符串的大致长度
+    int total_needed = 64 + cmd_name_len + key_len + value_len; 
 
     if (ensure_wbuffer_capacity(total_needed) != 0) {
-        fprintf(stderr, LOG_CLR_RED "[Repl-Push] Error: Failed to expand wbuffer capacity!\n" LOG_CLR_RESET);
         return -1;
     }
 
     char *p = g_repl.wbuffer + g_repl.wlength;
     int written = 0;
-    char *resp_start_p = p; // 记录本次 RESP 报文的起始位置用于打印
+    //char *resp_start_p = p; 
 
     if (value_len > 0 && value != NULL) {
         written = sprintf(p, "*3\r\n$%d\r\n%s\r\n$%d\r\n", cmd_name_len, cmd_name, key_len);
@@ -168,18 +155,6 @@ int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char
         g_repl.wlength += (written + key_len + 2);
     }
     
-    // 打印打包好的 RESP 协议肉眼可见样式 (替换 \r\n 为 \n 方便可视化)
-    printf("[Repl-Push] Packed RESP Payload:\n");
-    printf("-------------\n");
-    for (char *t = resp_start_p; t < g_repl.wbuffer + g_repl.wlength; t++) {
-        if (*t == '\r') printf("\\r");
-        else if (*t == '\n') printf("\\n\n");
-        else putchar(*t);
-    }
-    printf("-------------\n");
-    printf("[Repl-Push] Total bytes in wbuffer now: %d\n", g_repl.wlength);
-
-    // 扔给 Reactor 驱动发送
     repl_flush(); 
 
     return 0;
@@ -188,16 +163,13 @@ int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char
 int repl_flush() {
     if (g_repl.fd < 0) return 0;
     if (g_repl.wlength == 0) {
-        printf("[Repl-Flush] wlength is 0, nothing to flush.\n");
+        fprintf(stderr, "[Repl-Push] Error: Replication FD is invalid (%d)\n", g_repl.fd);
         return 0;
     }
 
-    printf("[Repl-Flush] Attempting non-blocking send() for %d bytes...\n", g_repl.wlength);
-    //根据前面的代码g_repl.fd, g_repl.wlength是没有问题的 否则更早就报错了 
     int ret = send(g_repl.fd, g_repl.wbuffer, g_repl.wlength, MSG_DONTWAIT);
     
     if (ret > 0) {
-        printf(LOG_CLR_GREEN "[Repl-Flush] Kernel accepted: %d / %d bytes.\n" LOG_CLR_RESET, ret, g_repl.wlength);
         
         if (ret < g_repl.wlength) {
             // 没发完，平移残包
@@ -206,25 +178,18 @@ int repl_flush() {
             g_repl.wlength = remaining;
             
             // 托管给写事件
-            printf(LOG_CLR_YELLOW "[Repl-Flush] Partial send occurred. Remaining: %d bytes. Offloading to EPOLLOUT.\n" LOG_CLR_RESET, remaining);
             set_event(g_repl.fd, EPOLLOUT, 0);
         } else {
             // 全部发完
-            printf(LOG_CLR_GREEN "[Repl-Flush] Success! All replication data flushed completely.\n" LOG_CLR_RESET);
             g_repl.wlength = 0;
-            
-            // 切回读事件监听
-            printf("[Repl-Flush] Switching event mode back to EPOLLIN.\n");
             set_event(g_repl.fd, 0, 0);
             
             // 按需缩容
             if (g_repl.wcapacity > REPL_INIT_BUFFER_SIZE * 4) {
-                printf("[Repl-Flush] Buffer capacity (%d) is too large. Shrinking to baseline.\n", g_repl.wcapacity);
                 char *shrunk_buf = (char *)kvs_realloc(g_repl.wbuffer, REPL_INIT_BUFFER_SIZE);
                 if (shrunk_buf) {
                     g_repl.wbuffer = shrunk_buf;
                     g_repl.wcapacity = REPL_INIT_BUFFER_SIZE;
-                    printf("[Repl-Flush] Shrink done. New capacity: %d\n", g_repl.wcapacity);
                 }
             }
         }
@@ -232,14 +197,9 @@ int repl_flush() {
     } 
     else if (ret < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // 内核缓冲区满了
-            printf(LOG_CLR_YELLOW "[Repl-Flush] EAGAIN hit! TCP Send Window is FULL. Registered EPOLLOUT for later retry.\n" LOG_CLR_RESET);
             set_event(g_repl.fd, EPOLLOUT, 0);
             return 0;
         }
-        // 发生严重网络错误  问题出在这里！！！！！！
-        fprintf(stderr, LOG_CLR_RED "[Repl-Flush] Fatal Error: send() failed with errno %d (%s). Disconnecting slave.\n" LOG_CLR_RESET, 
-                errno, strerror(errno));
         repl_close();
         return -1;
     }

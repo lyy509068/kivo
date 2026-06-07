@@ -14,7 +14,7 @@
 
 //超时删除
 #define LOCK_SEGMENTS 32
-extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];//identifier "pthread_rwlock_t" is undefined
+extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
 #define ENABLE_TTL 0
 #if ENABLE_TTL
 
