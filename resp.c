@@ -65,7 +65,7 @@ static void resp_unpack(const char *buf, resp_request_t *req) {
     p = crlf + 2;
     
     for (int i = 0; i < req->argc; i++) {
-        crlf = find_crlf(p, 100);
+        crlf = find_crlf(p, 128);
         int arg_len = atoi(p + 1);
         p = crlf + 2;
         
@@ -77,6 +77,7 @@ static void resp_unpack(const char *buf, resp_request_t *req) {
         p += arg_len + 2;
     }
 }
+
 
 /*
  * 🗑️ 释放解包时分配的内存

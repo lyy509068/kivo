@@ -28,7 +28,7 @@ void expire_thread_destroy(void);
 
 
 //内存池
-#define ENABLE_MEM_POOL 1 
+#define ENABLE_MEM_POOL 0 
 #if ENABLE_MEM_POOL
 extern mem_pool_t *array_item_pool;
 extern mem_pool_t *rbtree_node_pool;
@@ -41,7 +41,7 @@ void *kvs_realloc(void *ptr, size_t new_size);
 void kvs_free(void *ptr);
 
 //增量持久化
-#define ENABLE_PERSISTENCE        1        
+#define ENABLE_PERSISTENCE        0        
 #define PERSISTENCE_FILE    "kvstore.aof"  
 #if ENABLE_PERSISTENCE
 int kvs_persistence_init(void);
@@ -51,7 +51,7 @@ void kvs_persistence_close(void);
 #endif
 
 //全量持久化
-#define ENABLE_SNAPSHOT           0       
+#define ENABLE_SNAPSHOT           1       
 #define SNAPSHOT_FILE     "kvstore.snap"  
 #if ENABLE_SNAPSHOT
 int kvs_snapshot_save(void);

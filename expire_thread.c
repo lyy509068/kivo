@@ -22,7 +22,7 @@ extern kvs_skip_t    global_skip;
 #endif
 
 #if ENABLE_PERSISTENCE
-extern void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len);
+extern void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len, int64_t expire_time);
 #endif
 
 // 全局控制变量
@@ -51,9 +51,9 @@ void* kvs_array_expire_worker(void* arg) {
             if (global_array.table[i].expire_time > 0 && now > global_array.table[i].expire_time) {
 
                 #if ENABLE_PERSISTENCE
-                log_binary_command("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
+                log_binary_command("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0, 0);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
                 #endif
                 kv_data_destroy(&global_array.table[i].key);
@@ -107,9 +107,9 @@ void* kvs_hash_expire_worker(void* arg) {
                     }
 
                     #if ENABLE_PERSISTENCE
-                    log_binary_command("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
+                    log_binary_command("HDEL", curr->key.data, (int)curr->key.len, NULL, 0, 0);
                     #endif
-                    #if ENABLE_REPLICATION
+                    #if ENABLE_REPLICATION_MASTER
                     repl_push_cmd("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
                     #endif
                     kv_data_destroy(&curr->key);
@@ -175,9 +175,9 @@ void* kvs_rbtree_expire_worker(void* arg) {
                 pthread_rwlock_wrlock(&seg_locks[1]);
 
                 #if ENABLE_PERSISTENCE
-                log_binary_command("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
+                log_binary_command("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 #endif
                 kvs_rbtree_del(&global_rbtree, &expired_batch[i]);
@@ -218,9 +218,9 @@ void* kvs_skiplist_expire_worker(void* arg) {
                 pthread_rwlock_wrlock(&seg_locks[2]);
 
                 #if ENABLE_PERSISTENCE
-                log_binary_command("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
+                log_binary_command("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
                 #endif
-                #if ENABLE_REPLICATION
+                #if ENABLE_REPLICATION_MASTER
                 repl_push_cmd("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 #endif
                 kvs_skip_del(&global_skip, &expired_batch[i]);

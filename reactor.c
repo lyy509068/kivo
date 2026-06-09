@@ -19,9 +19,6 @@
 
 volatile int server_should_exit;
 
-#define MAX_PACKET_SIZE 10 * 1024 * 1024
-#define CONNECTION_SIZE 1024
-
 static stream_handler_t g_stream_handler = NULL;
 
 
@@ -30,7 +27,7 @@ static struct conn conn_list[CONNECTION_SIZE] = {0};
 static struct timeval begin;
 
 
-int set_event(int fd, int event, int flag) {
+int reactor_set_event(int fd, int event, int flag) {
     struct epoll_event ev;
     
     if (flag) {
@@ -95,7 +92,7 @@ int reactor_send_file(int client_fd, const char *filepath) {
     memcpy(conn_list[client_fd].wbuffer + conn_list[client_fd].wlength, size_header, header_len);
     conn_list[client_fd].wlength += header_len;
 
-    set_event(client_fd, EPOLLOUT, 0);
+    reactor_set_event(client_fd, EPOLLOUT, 0);
     return 0;
 }
 
@@ -257,7 +254,7 @@ void recv_cb(int fd) {
         if (c->role == CONN_CLIENT) {
             // 普通客户端：检查是否有数据需要回复，如果有，才挂载可写事件
             if (c->wlength > 0) {
-                set_event(fd, EPOLLOUT, 0); 
+                reactor_set_event(fd, EPOLLOUT, 0); 
             }
         } 
         else if (c->role == CONN_MASTER) {
@@ -346,7 +343,7 @@ void send_cb(int fd) {
                 repl_flush(); 
             } else {
                 // 如果没有积压，切回监听从端的输入
-                set_event(fd, EPOLLIN, 0);
+                reactor_set_event(fd, EPOLLIN, 0);
             }
         }
         return;
@@ -376,7 +373,7 @@ void send_cb(int fd) {
     }
 
     // 普通客户端如果顺利走到这里，说明它的 wlength 已经清零，切回读事件
-    set_event(fd, EPOLLIN, 0); 
+    reactor_set_event(fd, EPOLLIN, 0); 
 }
 
 
@@ -421,7 +418,7 @@ void accept_cb(int fd) {
         return;
     }
     
-    set_event(clientfd, EPOLLIN, 1);
+    reactor_set_event(clientfd, EPOLLIN, 1);
     
     if ((clientfd % 1000) == 0) {
         struct timeval current;
@@ -430,7 +427,7 @@ void accept_cb(int fd) {
     }
 }
 
-int init_listen_socket(unsigned short port) {
+static int init_listen_socket(unsigned short port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) return -1;
     int opt = 1;
@@ -476,7 +473,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     conn_list[listen_fd].rbuffer = NULL;
     conn_list[listen_fd].wbuffer = NULL;
     
-    set_event(listen_fd, EPOLLIN, 1);
+    reactor_set_event(listen_fd, EPOLLIN, 1);
     
     gettimeofday(&begin, NULL);
 
@@ -569,7 +566,7 @@ int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
         target_events |= EPOLLOUT; 
     }
 
-    set_event(fd, EPOLLIN, 1); 
+    reactor_set_event(fd, EPOLLIN, 1); 
     return 0;
 }
 

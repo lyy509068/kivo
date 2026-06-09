@@ -37,12 +37,7 @@ typedef struct {
     bool needs_replication; //是否需要同步给从端
 } resp_reply_t;
 
-//网络设置
-#define NETWORK_REACTOR      0
-#define NETWORK_PROACTOR     1
-#define NETWORK_NTYCO        2
-#define NETWORK_SELECT      NETWORK_REACTOR
-#define KVS_MAX_TOKENS      128
+
 typedef int (*cmd_handler_t)(const resp_request_t *req, resp_reply_t *reply);//协议层用来调用业务层
 typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val);//网络层用来调用协议层
 //网络传输函数

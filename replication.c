@@ -94,7 +94,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         g_repl.wlength -= sent; 
     }
     // 调用网络层的封装接口，安全完成 Reactor 托孤
-    if (reactor_host_slave_connection(g_repl.fd, g_repl.wbuffer, g_repl.wcapacity, g_repl.wlength) < 0) {
+    if (net_host_slave_connection(g_repl.fd, g_repl.wbuffer, g_repl.wcapacity, g_repl.wlength) < 0) {
         
         close(g_repl.fd);
         g_repl.fd = -1;
@@ -177,11 +177,11 @@ int repl_flush() {
             g_repl.wlength = remaining;
             
             // 托管给写事件
-            set_event(g_repl.fd, EPOLLOUT, 0);
+            net_set_event(g_repl.fd, EPOLLOUT, 0);
         } else {
             // 全部发完
             g_repl.wlength = 0;
-            set_event(g_repl.fd, 0, 0);
+            net_set_event(g_repl.fd, 0, 0);
             
             // 按需缩容
             if (g_repl.wcapacity > REPL_INIT_BUFFER_SIZE * 4) {
@@ -196,7 +196,7 @@ int repl_flush() {
     } 
     else if (ret < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            set_event(g_repl.fd, EPOLLOUT, 0);
+            net_set_event(g_repl.fd, EPOLLOUT, 0);
             return 0;
         }
         repl_close();
