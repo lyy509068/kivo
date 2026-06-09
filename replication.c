@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +100,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         g_repl.fd = -1;
         return -1;
     }
+
     return 0;
 }
 
@@ -123,7 +123,6 @@ int repl_push_cmd(const char *cmd_name, const char *key, int key_len, const char
 
     char *p = g_repl.wbuffer + g_repl.wlength;
     int written = 0;
-    //char *resp_start_p = p; 
 
     if (value_len > 0 && value != NULL) {
         written = sprintf(p, "*3\r\n$%d\r\n%s\r\n$%d\r\n", cmd_name_len, cmd_name, key_len);
@@ -218,5 +217,3 @@ void repl_close() {
     g_repl.wcapacity = 0;
     g_repl.wlength = 0;
 } 
-
-

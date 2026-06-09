@@ -32,11 +32,19 @@ static struct timeval begin;
 
 int set_event(int fd, int event, int flag) {
     struct epoll_event ev;
-    ev.events = event;
-    ev.data.fd = fd;
+    
     if (flag) {
+        ev.events = event;
+        ev.data.fd = fd;
         epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
     } else {
+        // 如果是主端连接，或者为了稳妥起见，挂载写事件时绝不能抹杀读事件
+        if (conn_list[fd].role == CONN_MASTER || (event & EPOLLOUT)) {
+            ev.events = event | EPOLLIN; // 读写共存
+        } else {
+            ev.events = event;
+        }
+        ev.data.fd = fd;
         epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &ev);
     }
     return 0;
@@ -473,7 +481,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     gettimeofday(&begin, NULL);
 
     #if ENABLE_REPLICATION_SLAVE
-        const char *slave_ip = "192.168.92.128";
+        const char *slave_ip = "192.168.92.129";
         unsigned short slave_port = 2000;
         repl_connect_to_master(slave_ip, slave_port); 
     #endif
@@ -541,6 +549,8 @@ int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
     c->send_callback = send_cb;   
     c->accept_callback = NULL;
 
+    c->role = CONN_MASTER;
+
     c->rbuffer = (char *)kvs_malloc(4096); 
     if (!c->rbuffer) return -1;
     
@@ -562,3 +572,4 @@ int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
     set_event(fd, EPOLLIN, 1); 
     return 0;
 }
+
