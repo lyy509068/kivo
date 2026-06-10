@@ -1,33 +1,24 @@
-[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 500000 | Time: 35692 ms | QPS: 14008 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 1] TotalOps: 100000 | Time: 40520 ms | QPS: 2467 | VmSize+: +0 kB | VmRSS+: +0 kB
 
-[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 500000 | Time: 45326 ms | QPS: 11031 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 100000 | Time: 6259 ms | QPS: 15976 | VmSize+: +6468 kB | VmRSS+: +6704 kB
 
-[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 500000 | Time: 79121 ms | QPS: 6319 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 100000 | Time: 6125 ms | QPS: 16326 | VmSize+: +5676 kB | VmRSS+: +7056 kB
 
-[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 500000 | Time: 36360 ms | QPS: 13751 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 100000 | Time: 7463 ms | QPS: 13399 | VmSize+: +7260 kB | VmRSS+: +7384 kB
 
-[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 500000 | Time: 43189 ms | QPS: 11577 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Jemalloc | Engine: 1] TotalOps: 100000 | Time: 37761 ms | QPS: 2648 | VmSize+: +6144 kB | VmRSS+: +3332 kB
 
-[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 500000 | Time: 75734 ms | QPS: 6602 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 100000 | Time: 6296 ms | QPS: 15883 | VmSize+: +6144 kB | VmRSS+: +7004 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 500000 | Time: 35834 ms | QPS: 13953 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 100000 | Time: 6136 ms | QPS: 16297 | VmSize+: +6144 kB | VmRSS+: +6508 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 500000 | Time: 45660 ms | QPS: 10950 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 100000 | Time: 7219 ms | QPS: 13852 | VmSize+: +6144 kB | VmRSS+: +6252 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 500000 | Time: 94942 ms | QPS: 5266 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Custom_Mempool | Engine: 1] TotalOps: 100000 | Time: 36044 ms | QPS: 2774 | VmSize+: +4224 kB | VmRSS+: +4776 kB
 
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 100000 | Time: 6188 ms | QPS: 16160 | VmSize+: +8448 kB | VmRSS+: +8740 kB
 
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 100000 | Time: 6184 ms | QPS: 16170 | VmSize+: +7128 kB | VmRSS+: +7760 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 500000 | Time: 36877 ms | QPS: 13558 | VmSize+: +0 kB | VmRSS+: +0 kB
-
-[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 500000 | Time: 48492 ms | QPS: 10310 | VmSize+: +0 kB | VmRSS+: +0 kB
-
-[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 500000 | Time: 87054 ms | QPS: 5743 | VmSize+: +0 kB | VmRSS+: +0 kB
-
-打开日志测试10000条数据
-[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 10000 | Time: 1015 ms | QPS: 9852 | VmSize+: +0 kB | VmRSS+: +0 kB
-
-[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 10000 | Time: 1108 ms | QPS: 9025 | VmSize+: +0 kB | VmRSS+: +0 kB
-
-[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 10000 | Time: 1070 ms | QPS: 9345 | VmSize+: +0 kB | VmRSS+: +0 kB
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 100000 | Time: 7900 ms | QPS: 12658 | VmSize+: +9108 kB | VmRSS+: +9504 kB
 

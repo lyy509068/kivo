@@ -75,7 +75,7 @@ void kvs_persistence_recover(void) {
         if (fread(&cmd_len, sizeof(int), 1, aof_fp) != 1) break;
         
         // 命令长度明显不合理安全退出
-        if (cmd_len <= 0 || cmd_len >= 32) {
+        if (cmd_len <= 0) {
             printf("[AOF Warning] Corrupted cmd_len detected: %d. Stopping recovery.\n", cmd_len);
             break;
         }

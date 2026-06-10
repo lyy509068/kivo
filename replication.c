@@ -73,10 +73,13 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     }
     g_repl.wlength = 0;
     
-    int flags = fcntl(g_repl.fd, F_GETFL, 0);
-    if (flags >= 0) {
-        fcntl(g_repl.fd, F_SETFL, flags | O_NONBLOCK);
-    }
+    #if (NETWORK_SELECT != NETWORK_NTYCO)
+        int flags = fcntl(g_repl.fd, F_GETFL, 0);
+        if (flags >= 0) {
+            fcntl(g_repl.fd, F_SETFL, flags | O_NONBLOCK);
+        }
+    #endif
+
     printf("Slave: Successfully connected to Master at %s:%d\n", master_ip, master_port);
     
     // 打包resp命令
@@ -165,8 +168,12 @@ int repl_flush() {
         fprintf(stderr, "[Repl-Push] Error: Replication FD is invalid (%d)\n", g_repl.fd);
         return 0;
     }
-
-    int ret = send(g_repl.fd, g_repl.wbuffer, g_repl.wlength, MSG_DONTWAIT);
+    #if (NETWORK_SELECT == NETWORK_NTYCO)
+        // 协程下用普通的阻塞式发送，NtyCo 底层会自动帮我们调度切出，绝对不会卡死主线程
+        int ret = send(g_repl.fd, g_repl.wbuffer, g_repl.wlength, 0); 
+    #else
+        int ret = send(g_repl.fd, g_repl.wbuffer, g_repl.wlength, MSG_DONTWAIT);
+    #endif
     
     if (ret > 0) {
         

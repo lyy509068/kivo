@@ -98,7 +98,7 @@ int reactor_send_file(int client_fd, const char *filepath) {
 
 void recv_cb(int fd) {
     struct conn *c = &conn_list[fd];
-
+    #if ENABLE_REPLICATION_SLAVE
     // 模式 A：从端专用，二进制文件落盘
     if (c->is_receiving_file) {
         char net_buf[8192];
@@ -129,7 +129,7 @@ void recv_cb(int fd) {
         }
         return; // 文件模式下，不走协议层
     }
-
+    #endif
     // 模式 B：普通RESP命令，服务器接收客户端命令，主端接收从端日志命令，从端接收主端同步命令
 
     int total_new_bytes = 0; 
@@ -195,14 +195,15 @@ void recv_cb(int fd) {
             close_and_free_connection(fd);
             return;
         }
-        
+        #if ENABLE_REPLICATION_MASTER
         // 状态 10：主端收到 SYNC，准备发送文件
         else if (status == 10) {
             total_parsed_bytes += parsed_bytes;
             reactor_send_file(fd, PERSISTENCE_FILE);
             break; 
         }
-        
+        #endif 
+        #if ENABLE_REPLICATION_SLAVE
         // 状态 20：从端收到握手头，准备接收文件
         else if (status == 20) {
             total_parsed_bytes += parsed_bytes;
@@ -238,7 +239,7 @@ void recv_cb(int fd) {
             total_parsed_bytes = 0; 
             break; 
         }
-
+        #endif 
         total_parsed_bytes += parsed_bytes;
     } 
 

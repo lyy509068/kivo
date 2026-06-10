@@ -158,7 +158,7 @@ void on_recv_completed(int fd, int res) {
 
     // res 是内核已经帮我们读到的字节数
     int count = res;
-    
+    #if ENABLE_REPLICATION_SLAVE
     // 模式 A：从端专用，二进制文件落盘
     if (c->is_receiving_file) {
         // 直接将已接收到缓冲区的数据落盘
@@ -179,7 +179,7 @@ void on_recv_completed(int fd, int res) {
         submit_recv(fd);
         return; 
     }
-
+    #endif 
     // 模式 B：普通 RESP 命令
     c->rlength += count;
 
@@ -209,6 +209,7 @@ void on_recv_completed(int fd, int res) {
             close_and_free_connection(fd);
             return;
         }
+        #if ENABLE_REPLICATION_MASTER
         else if (status == 10) {
             // 【修复点 3】这里匹配上全量同步指令后，移出数据残包并提前 return 退出，彻底切断下游的二次发送风险
             total_parsed_bytes += parsed_bytes;
@@ -221,6 +222,8 @@ void on_recv_completed(int fd, int res) {
             c->rlength = leftover;
             return; 
         }
+        #endif 
+        #if ENABLE_REPLICATION_SLAVE
         else if (status == 20) {
             total_parsed_bytes += parsed_bytes;
 
@@ -250,6 +253,7 @@ void on_recv_completed(int fd, int res) {
             total_parsed_bytes = 0; 
             break; 
         }
+        #endif 
         total_parsed_bytes += parsed_bytes;
     } 
 

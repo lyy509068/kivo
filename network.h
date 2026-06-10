@@ -8,7 +8,7 @@
 #define NETWORK_REACTOR      0
 #define NETWORK_PROACTOR     1
 #define NETWORK_NTYCO        2
-#define NETWORK_SELECT      NETWORK_REACTOR
+#define NETWORK_SELECT      NETWORK_NTYCO
 
 #define INIT_BUFFER_SIZE 4096
 #define MAX_PACKET_SIZE 10 * 1024 * 1024
@@ -94,6 +94,7 @@ void proactor_notify_tx_ready(int fd);
 int proactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
 
 int ntyco_start(unsigned short port, stream_handler_t handler);
+int ntyco_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
 
 
 #if (NETWORK_SELECT == NETWORK_PROACTOR)
@@ -106,7 +107,10 @@ int ntyco_start(unsigned short port, stream_handler_t handler);
     #define net_host_slave_connection  reactor_host_slave_connection
     #define net_set_event(fd, ev, is_add) reactor_set_event(fd, ev, is_add)
 
-#elif (NETWORK_SELECT == NETWORK_NTYCO)
+#elif (NETWORK_SELECT == NETWORK_NTYCO) 
+
+    #define net_host_slave_connection     ntyco_host_slave_connection
+    #define net_set_event(fd, ev, is_add) ((void)0)
 
 #endif
 
