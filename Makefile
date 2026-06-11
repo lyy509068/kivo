@@ -6,7 +6,7 @@ SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c proactor.
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c expire_thread.c replication.c
 
 TARGET = server
-TESTCASES = client test_fullpersistence test_incrementpersistence test_mempool test_master test_slave test_TTL
+TESTCASES = test_fullpersistence test_incrementpersistence test_mempool test_master test_slave test_TTL
 SUBDIR = ./NtyCo/
 
 OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o\
@@ -14,7 +14,6 @@ OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.
 
 .PHONY: all clean ECHO $(SUBDIR)
 
-# all 依赖所有的测试客户端
 all: $(SUBDIR) $(TARGET) $(TESTCASES)
 
 $(SUBDIR): ECHO

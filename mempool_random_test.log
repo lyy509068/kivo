@@ -1,24 +1,79 @@
-[Mixed Strategy: Glibc_Malloc | Engine: 1] TotalOps: 100000 | Time: 40520 ms | QPS: 2467 | VmSize+: +0 kB | VmRSS+: +0 kB
 
-[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 100000 | Time: 6259 ms | QPS: 15976 | VmSize+: +6468 kB | VmRSS+: +6704 kB
+Reactor
 
-[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 100000 | Time: 6125 ms | QPS: 16326 | VmSize+: +5676 kB | VmRSS+: +7056 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 1] TotalOps: 100000 | Time: 36400 ms | QPS: 2747 | VmSize+: +2772 kB | VmRSS+: +3332 kB
 
-[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 100000 | Time: 7463 ms | QPS: 13399 | VmSize+: +7260 kB | VmRSS+: +7384 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 100000 | Time: 6314 ms | QPS: 15837 | VmSize+: +6468 kB | VmRSS+: +6876 kB
 
-[Mixed Strategy: Jemalloc | Engine: 1] TotalOps: 100000 | Time: 37761 ms | QPS: 2648 | VmSize+: +6144 kB | VmRSS+: +3332 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 100000 | Time: 6203 ms | QPS: 16121 | VmSize+: +5676 kB | VmRSS+: +7008 kB
 
-[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 100000 | Time: 6296 ms | QPS: 15883 | VmSize+: +6144 kB | VmRSS+: +7004 kB
+[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 100000 | Time: 7388 ms | QPS: 13535 | VmSize+: +7260 kB | VmRSS+: +7484 kB
 
-[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 100000 | Time: 6136 ms | QPS: 16297 | VmSize+: +6144 kB | VmRSS+: +6508 kB
+[Mixed Strategy: Jemalloc | Engine: 1] TotalOps: 100000 | Time: 35884 ms | QPS: 2786 | VmSize+: +6144 kB | VmRSS+: +3332 kB
 
-[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 100000 | Time: 7219 ms | QPS: 13852 | VmSize+: +6144 kB | VmRSS+: +6252 kB
+[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 100000 | Time: 6322 ms | QPS: 15817 | VmSize+: +6144 kB | VmRSS+: +7064 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 1] TotalOps: 100000 | Time: 36044 ms | QPS: 2774 | VmSize+: +4224 kB | VmRSS+: +4776 kB
+[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 100000 | Time: 6212 ms | QPS: 16097 | VmSize+: +6144 kB | VmRSS+: +6476 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 100000 | Time: 6188 ms | QPS: 16160 | VmSize+: +8448 kB | VmRSS+: +8740 kB
+[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 100000 | Time: 7298 ms | QPS: 13702 | VmSize+: +6144 kB | VmRSS+: +6192 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 100000 | Time: 6184 ms | QPS: 16170 | VmSize+: +7128 kB | VmRSS+: +7760 kB
+[Mixed Strategy: Custom_Mempool | Engine: 1] TotalOps: 100000 | Time: 40662 ms | QPS: 2459 | VmSize+: +4356 kB | VmRSS+: +4780 kB
 
-[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 100000 | Time: 7900 ms | QPS: 12658 | VmSize+: +9108 kB | VmRSS+: +9504 kB
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 100000 | Time: 6352 ms | QPS: 15743 | VmSize+: +8316 kB | VmRSS+: +8488 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 100000 | Time: 6245 ms | QPS: 16012 | VmSize+: +7128 kB | VmRSS+: +7676 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 100000 | Time: 7678 ms | QPS: 13024 | VmSize+: +9108 kB | VmRSS+: +9524 kB
+
+Ntyco
+
+[Mixed Strategy: Glibc_Malloc | Engine: 1] TotalOps: 100000 | Time: 34953 ms | QPS: 2860 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 100000 | Time: 6173 ms | QPS: 16199 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 100000 | Time: 6087 ms | QPS: 16428 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 100000 | Time: 7284 ms | QPS: 13728 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 1] TotalOps: 100000 | Time: 35386 ms | QPS: 2825 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 100000 | Time: 6278 ms | QPS: 15928 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 100000 | Time: 6080 ms | QPS: 16447 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 100000 | Time: 7462 ms | QPS: 13401 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 1] TotalOps: 100000 | Time: 34903 ms | QPS: 2865 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 100000 | Time: 6190 ms | QPS: 16155 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 100000 | Time: 6114 ms | QPS: 16355 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 100000 | Time: 7320 ms | QPS: 13661 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+Proactor
+
+[Mixed Strategy: Glibc_Malloc | Engine: 1] TotalOps: 100000 | Time: 35066 ms | QPS: 2851 | VmSize+: +2772 kB | VmRSS+: +3272 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 100000 | Time: 6268 ms | QPS: 15954 | VmSize+: +6468 kB | VmRSS+: +6824 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 100000 | Time: 6162 ms | QPS: 16228 | VmSize+: +5676 kB | VmRSS+: +7056 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 100000 | Time: 7245 ms | QPS: 13802 | VmSize+: +7260 kB | VmRSS+: +7328 kB
+
+[Mixed Strategy: Jemalloc | Engine: 1] TotalOps: 100000 | Time: 35332 ms | QPS: 2830 | VmSize+: +6144 kB | VmRSS+: +3332 kB
+
+[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 100000 | Time: 6322 ms | QPS: 15817 | VmSize+: +6144 kB | VmRSS+: +7064 kB
+
+[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 100000 | Time: 6116 ms | QPS: 16350 | VmSize+: +6144 kB | VmRSS+: +6520 kB
+
+[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 100000 | Time: 7177 ms | QPS: 13933 | VmSize+: +6144 kB | VmRSS+: +6192 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 1] TotalOps: 100000 | Time: 43417 ms | QPS: 2303 | VmSize+: +4224 kB | VmRSS+: +4828 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 100000 | Time: 6269 ms | QPS: 15951 | VmSize+: +8316 kB | VmRSS+: +8876 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 100000 | Time: 6124 ms | QPS: 16329 | VmSize+: +7260 kB | VmRSS+: +7680 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 100000 | Time: 7866 ms | QPS: 12712 | VmSize+: +9108 kB | VmRSS+: +9524 kB
 
