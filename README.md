@@ -9,7 +9,6 @@
         特殊字符 
         redis-cli -p 2000 -x SET io_multiplexing_article < 本地文件2.txt
         redis-cli -p 2000 --raw GET io_multiplexing_article | head -n 20
-        cat test_cmd.txt | redis-cli -p 2000 --pipe
         批量命令 
         redis-cli -p 2000 < test_cmd.txt 
         
@@ -30,8 +29,8 @@ redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 SSET key:__rand_int__ value:__ra
 redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 SGET key:__rand_int__ value:__rand_int__
 
 # 测试结果
-  数据结构	    命令	  QPS (请求/秒)	 平均延迟
-Array (基础)	SET	    14,450 ops/sec	~2-3ms
+  数据结构	命令	  QPS (请求/秒)	 平均延迟
+Array (基础)	SET	14,450 ops/sec	~2-3ms
 RBTREE (红黑树)	RSET	29,850 ops/sec	~1-2ms
 HASH (哈希表)	HSET	25,316 ops/sec	~1-2ms
 SKIPLIST (跳表)	SSET	29,411 ops/sec	~1-2ms
@@ -40,9 +39,23 @@ SKIPLIST (跳表)	SSET	29,411 ops/sec	~1-2ms
 一共四种模式 ./test_fullpersistence (1 2 3 4)
 客户端：连接服务器->插入10w条数据->SAVE保存快照->SHUTDOWN关闭服务器->重新打开服务器->重新连接服务器->获取10w条数据并校验->清除快照文件（不影响下次测试）->SHUTDOWN关闭服务器
 
+注意：array改最大限制之后可以插入10w条数据，但是第二次连接服务器的时候连不上！
+测试时必须关掉主从同步功能！
+ntyco不能通过客户端关闭和连接服务器！
+
+每条日志：4字节引擎标志+8字节过期时间+4字节key长度+10字节key（可变）+4字节value长度+10字节value（可变）
+
+
+
 # 增量持久化测试
 一共四种模式 ./test_incrementpersistence (1 2 3 4)
 客户端：连接服务器->插入10w条数据->SHUTDOWN关闭服务器->重新打开服务器->重新连接服务器->获取10w条数据并校验->清除日志文件（不影响下次测试）->SHUTDOWN关闭服务器
+每条日志：4字节命令长度+4字节命令+8字节过期时间+4字节key长度+10字节key（可变）+4字节value长度+10字节value（可变）
+
+注意：array改最大限制之后可以插入10w条数据，但是第二次连接服务器的时候连不上！
+测试时必须关掉主从同步功能！
+ntyco不能通过客户端关闭和连接服务器！
+
 
 # 超时功能测试
 ./test_TTL (1 2 3 4)

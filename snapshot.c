@@ -13,48 +13,41 @@
 #define SNAP_TYPE_HASH     3
 #define SNAP_TYPE_SKIPLIST 4
 
+
+
 static int64_t get_current_ms_snapshot(void) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-// 记录array的键值对，写进快照
 #if ENABLE_ARRAY
 static void snapshot_write_array_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_ARRAY;
     
-    extern kvs_array_t global_array;
-    int64_t expire_time = 0;
-    //线性查找当前键值对的过期时间
-    for(int i=0; i<global_array.idx; i++) {
-        if(kv_data_compare(&global_array.table[i].key, key) == 0) {
-            expire_time = global_array.table[i].expire_time;
-            break;
-        }
-    }
+    // ✨ 放弃 for 循环！利用内存偏移直接反推当前 array_item 的首地址来拿 expire_time
+    kvs_array_item_t *item = (kvs_array_item_t *)((char *)key - offsetof(kvs_array_item_t, key));
+    int64_t expire_time = item->expire_time;
 
-    fwrite(&type, sizeof(int), 1, fp);// 写入存储结构类型
-    fwrite(&expire_time, sizeof(int64_t), 1, fp); // 写入8字节过期时间
+    fwrite(&type, sizeof(int), 1, fp);
+    fwrite(&expire_time, sizeof(int64_t), 1, fp); 
     fwrite(&key->len, sizeof(int), 1, fp);
     fwrite(key->data, 1, key->len, fp);
     fwrite(&value->len, sizeof(int), 1, fp);
     fwrite(value->data, 1, value->len, fp);
 }
 #endif 
+
 #if ENABLE_RBTREE
 static void snapshot_write_rbtree_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_RBTREE;
     
-    // 通过 key 的指针，反推回输入节点的首地址
+    // 精准反推，无循环
     rbtree_node_binary_t *node = (rbtree_node_binary_t *)((char *)key - offsetof(rbtree_node_binary_t, key));
-    
-    // 获取真实节点的过期时间
     int64_t expire_time = node->expire_time; 
 
-    // 顺序写入快照二进制文件
     fwrite(&type, sizeof(int), 1, fp);
     fwrite(&expire_time, sizeof(int64_t), 1, fp); 
     fwrite(&key->len, sizeof(int), 1, fp);
@@ -63,37 +56,14 @@ static void snapshot_write_rbtree_cb(kv_data_t *key, kv_data_t *value, void *arg
     fwrite(value->data, 1, value->len, fp);
 }
 #endif 
+
 #if ENABLE_HASH
 static void snapshot_write_hash_cb(kv_data_t *key, kv_data_t *value, void *arg) {
     FILE *fp = (FILE*)arg;
     int type = SNAP_TYPE_HASH;
     
-    int64_t expire_time = 0;
-    extern kvs_hash_t global_hash;
-    unsigned long slot = kv_data_hash_func(key, global_hash.max_slots);
-    hashnode_t *node = global_hash.buckets[slot];
-    while (node) {
-        if (kv_data_compare(&node->key, key) == 0) {
-            expire_time = node->expire_time;
-            break;
-        }
-        node = node->next;
-    }
-
-    fwrite(&type, sizeof(int), 1, fp);
-    fwrite(&expire_time, sizeof(int64_t), 1, fp); 
-    fwrite(&key->len, sizeof(int), 1, fp);
-    fwrite(key->data, 1, key->len, fp);
-    fwrite(&value->len, sizeof(int), 1, fp);
-    fwrite(value->data, 1, value->len, fp);
-}
-#endif 
-#if ENABLE_SKIPLIST
-static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) {
-    FILE *fp = (FILE*)arg;
-    int type = SNAP_TYPE_SKIPLIST; 
-
-    skipnode_binary_t *node = (skipnode_binary_t *)((char *)key - offsetof(skipnode_binary_t, key));
+    // ✨ 放弃 while 循环！既然 key 是 hashnode_t 内部的成员，直接反推拿到当前节点！
+    hashnode_t *node = (hashnode_t *)((char *)key - offsetof(hashnode_t, key));
     int64_t expire_time = node->expire_time;
 
     fwrite(&type, sizeof(int), 1, fp);
@@ -104,31 +74,71 @@ static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) 
     fwrite(value->data, 1, value->len, fp);
 }
 #endif 
+
+#if ENABLE_SKIPLIST
+static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) {
+    FILE *fp = (FILE*)arg;
+    int type = SNAP_TYPE_SKIPLIST; 
+
+    // 精准反推，无循环
+    skipnode_binary_t *node = (skipnode_binary_t *)((char *)key - offsetof(skipnode_binary_t, key));
+    int64_t expire_time = node->expire_time;
+
+    fwrite(&type, sizeof(int), 1, fp);
+    fwrite(&expire_time, sizeof(int64_t), 1, fp); 
+    fwrite(&key->len, sizeof(int), 1, fp);
+    fwrite(key->data, 1, key->len, fp);
+    fwrite(&value->len, sizeof(int), 1, fp);
+    fwrite(value->data, 1, value->len, fp);
+}
+#endif
 // 保存二进制快照：把存储结构的节点写进快照
 int kvs_snapshot_save(void) {
     FILE *fp = fopen("kvstore.snap", "wb");
     if (!fp) return -1;
-    
+
     #if ENABLE_ARRAY
-        extern kvs_array_t global_array;
-        kvs_array_foreach(&global_array, snapshot_write_array_cb, fp);
+    extern kvs_array_t global_array;
     #endif
-    
     #if ENABLE_RBTREE
-        extern kvs_rbtree_t global_rbtree;
-        kvs_rbtree_foreach(&global_rbtree, snapshot_write_rbtree_cb, fp);
+    extern kvs_rbtree_t global_rbtree;
     #endif
-    
     #if ENABLE_HASH
-        extern kvs_hash_t global_hash;
-        kvs_hash_foreach(&global_hash, snapshot_write_hash_cb, fp);
+    extern kvs_hash_t global_hash;
     #endif
-    
     #if ENABLE_SKIPLIST
-        extern kvs_skip_t global_skip;
-        kvs_skip_foreach(&global_skip, snapshot_write_skip_cb, fp);
+    extern kvs_skip_t global_skip;
     #endif
-    
+
+    // 1. 只有 Array 真的有数据时，才允许调用 Array 的遍历和写入
+    #if ENABLE_ARRAY
+    if (global_array.total > 0 && global_array.table != NULL) {
+        kvs_array_foreach(&global_array, snapshot_write_array_cb, fp);
+    }
+    #endif
+
+    // 2. 只有红黑树真的有节点时，才允许进入
+    #if ENABLE_RBTREE
+    // 假设你的 rbtree 结构体里有 count 属性
+    if (global_rbtree.nil != NULL && global_rbtree.root != global_rbtree.nil) {
+        kvs_rbtree_foreach(&global_rbtree, snapshot_write_rbtree_cb, fp);
+    }
+    #endif
+
+    // 3. 只有 Hash 真的有数据时，才调用 Hash 写入
+    #if ENABLE_HASH
+    if (global_hash.count > 0) {
+        kvs_hash_foreach(&global_hash, snapshot_write_hash_cb, fp);
+    }
+    #endif
+
+    // 4. 只有跳表真的有数据时，才调用跳表写入
+    #if ENABLE_SKIPLIST
+    if (global_skip.count > 0 && global_skip.header->forward[0] != NULL) {
+        kvs_skip_foreach(&global_skip, snapshot_write_skip_cb, fp);
+    }
+    #endif
+
     fclose(fp);
     return 0;
 }

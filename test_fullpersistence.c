@@ -10,7 +10,7 @@
 #include <signal.h>
 
 #define SERVER_PORT 2000
-#define TOTAL_RECORDS 1000    
+#define TOTAL_RECORDS 100000   
 #define SNAPSHOT_FILE "kvstore.snap"
 
 #define SNAP_TYPE_ARRAY    1
@@ -92,7 +92,7 @@ int run_testcase(int engine_type, const char *engine_name) {
     }
 
     // 判定插入命令
-    const char *cmd = "SET";
+    const char *cmd;
     switch (engine_type) {
         case SNAP_TYPE_ARRAY:    cmd = "SET";  break;
         case SNAP_TYPE_RBTREE:   cmd = "RSET"; break;
@@ -196,7 +196,7 @@ int run_testcase(int engine_type, const char *engine_name) {
     }
 
     // 判定查询命令
-    const char *get_cmd = "GET"; 
+    const char *get_cmd; 
     switch (engine_type) {
         case SNAP_TYPE_ARRAY:    get_cmd = "GET";  break;
         case SNAP_TYPE_RBTREE:   get_cmd = "RGET"; break;
@@ -248,7 +248,7 @@ int run_testcase(int engine_type, const char *engine_name) {
 
     // 通过全部强校验，判定最终 PASS
     printf("\n🏆🏆🏆 [FINAL RESULT: PASS] All %d %s items persistent, safe, and fully matched! 🏆🏆🏆\n", TOTAL_RECORDS, engine_name);
-
+    //remove(SNAPSHOT_FILE);
     // 7. 测试完毕，清理现场，安全SHUTDOWN
     printf("\n=== PHASE 6: Cleaning up testing server ===\n");
     send_len = build_resp_request(send_buf, "SHUTDOWN", NULL, NULL);

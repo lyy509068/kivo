@@ -10,7 +10,7 @@
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 2000
-#define TOTAL_RECORDS 1000
+#define TOTAL_RECORDS 100000
 #define AOF_FILE "kvstore.aof" 
 
 // 引擎对应的命令前缀
@@ -164,7 +164,7 @@ int run_aof_testcase(int engine_type) {
 
     // 销毁日志
     printf("[PHASE 6] Purging old AOF file: %s...\n", AOF_FILE);
-    remove(AOF_FILE);
+    //remove(AOF_FILE);
 
     // 测试结束，清理服务器进程
     printf("[PHASE 7] Shutting down testing server...\n");

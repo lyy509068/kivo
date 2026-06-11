@@ -110,10 +110,6 @@ void dest_kvengine(void) {
         repl_close();            
     #endif
 
-    #if ENABLE_SNAPSHOT
-        kvs_snapshot_save();            // 最后做一次强制全量快照落盘
-    #endif
-
     #if ENABLE_PERSISTENCE
         kvs_persistence_close();        // 关闭并刷盘 AOF 日志文件流
     #endif
