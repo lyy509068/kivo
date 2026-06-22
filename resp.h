@@ -3,7 +3,10 @@
 
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include "network.h"
 
+struct conn;
 
 // 状态码枚举
 typedef enum {
@@ -27,6 +30,7 @@ typedef struct {
     int argc;           // 命令的参数总数 (例如: SET key val，argc = 3)
     char **argv;        // 参数字符串数组 (argv[0]="SET", argv[1]="key")
     int *argv_len;      // 参数长度数组 (为了保证二进制安全，防止value里包含\0)
+    uint32_t socket_tcp_seq;
 } resp_request_t;
 
 // 响应结构体 (业务层执行完，传回给协议层)
@@ -39,7 +43,7 @@ typedef struct {
 
 
 typedef int (*cmd_handler_t)(const resp_request_t *req, resp_reply_t *reply);//协议层用来调用业务层
-typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val);//网络层用来调用协议层
+typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, uint32_t tcp_seq);//网络层用来调用协议层
 //网络传输函数
 extern int reactor_start(unsigned short port, stream_handler_t handler);
 extern int proactor_start(unsigned short port, stream_handler_t handler);
@@ -48,7 +52,7 @@ extern int ntyco_start(unsigned short port, stream_handler_t handler);
 
 void protocol_set_command_handler(cmd_handler_t handler);
 void protocol_process_resp(char *recv_buf, int *recv_len, char *send_buf, int *send_len);
-int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val);
+int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, uint32_t tcp_seq);
 int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply);
 
 

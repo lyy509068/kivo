@@ -94,7 +94,7 @@ static void free_resp_request(resp_request_t *req) {
  * 📦 打包函数：把业务层的回复格式化为 RESP 流
  */
 static void resp_pack(char *send_buf, int *send_len, resp_reply_t *reply) {
-    if (reply->status == KVS_RESP_OK) {
+    if (reply->status == KVS_RESP_OK || reply->status == KVS_RESP_SHUTDOWN || reply->status == KVS_RESP_SYNC_LOG) {
         *send_len += sprintf(send_buf + *send_len, "+OK\r\n");
     } 
     else if (reply->status == KVS_RESP_PONG) {
@@ -204,7 +204,7 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
  * 🔄 统一自适应协议层核心入口，同时支持：1.处理客户端命令  2.处理主端同步回复
  * 网络层从这里进入
  */
-int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, uint32_t tcp_seq) {
+int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val) {
     if (in_len <= 0) {
         *parsed = 0;
         return 0;
@@ -213,7 +213,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
     // 探测首字节，判定数据流来源
     char first_byte = in_buf[0];
 
-    //来自本地客户端和主端的命令或者是从端获取日志的命令，都是resp协议
+    //来自本地客户端和主端的命令（不需要回复，在网络层拦截）或者是从端获取日志（发文件回复）的命令，都是resp协议
     if (first_byte == '*') {
         int processed = 0;
 
@@ -227,7 +227,6 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             
             resp_request_t req;
             resp_unpack(in_buf + processed, &req);
-            req.socket_tcp_seq = tcp_seq; // 动态绑定当前请求的底层内核网络标识
 
             // 业务层处理
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
@@ -235,7 +234,16 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                 g_command_handler(&req, &reply); 
             }
 
-            // 打包回复给客户端
+            // 如果业务层返回值是发送日志
+            if (reply.status == KVS_RESP_SYNC_LOG) {
+                resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
+                free_resp_request(&req);
+                processed += single_cmd_len;
+                *parsed = processed; 
+                return 10; // 告诉网络层：可以开始用 sendfile 发文件了
+            }
+
+            // 打包回复给连上来的客户端
             if (wbuf && wcap && wlen) {
                 resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
             }
@@ -251,7 +259,32 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
 
         *parsed = processed; 
         return 0; // 返回 0 代表客户端命令处理正常
-    } else {
+    }
+
+    // 收到的是主端的同步的回复（格式如：+OK\r\n$102400\r\n）
+    else if (first_byte == '+') {
+        if (in_len < 9) return 1; // 半包继续等
+
+        if (strncmp(in_buf, "+OK\r\n", 5) != 0 || in_buf[5] != '$') {
+            return -1; // 非法协议
+        }
+
+        const char *p_size = in_buf + 6;
+        const char *crlf = find_crlf(p_size, in_len - 6);
+        if (!crlf) return 1; // 数字不全，继续等
+
+        if (out_val) {
+            *out_val = atoll(p_size); // 提取出文件大小
+        }
+
+        //printf("[Slave REPL] Successfully received Master's SYNC ACK!\n");
+        //fflush(stdout);
+
+        *parsed = 5 + 1 + (crlf - p_size) + 2;
+        return 20; // 告诉从端网络层：成功脱帽，准备文件落盘！
+    }
+
+    else {
         return -1; 
     }
 }

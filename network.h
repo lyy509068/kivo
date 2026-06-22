@@ -19,8 +19,7 @@ extern volatile int server_should_exit;// 退出服务器标志
 
 typedef void (*RCALLBACK)(int fd);// 回调函数recv accept send
 
-typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val);// 操作协议层的句柄
-
+typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, uint32_t tcp_seq);// 操作协议层的句柄
 // 连接身份标志
 typedef enum {
     CONN_CLIENT = 0, // 普通客户端
@@ -62,6 +61,8 @@ struct conn {
 
     conn_role_t role; // 当前连接的身份
 
+    struct rdma_ring_ctx *rdma_ctx;
+
     //Reactor 核心回调 (Proactor 模式下闲置)
     RCALLBACK send_callback;
     RCALLBACK read_callback;
@@ -85,27 +86,30 @@ extern struct repl_conn g_repl;
 extern int repl_flush();
 
 // 函数声明
+#if (NETWORK_SELECT == NETWORK_REACTOR)
 int reactor_start(unsigned short port, stream_handler_t handler);
 int reactor_set_event(int fd, int event, int flag);
 int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
-
+#elif (NETWORK_SELECT == NETWORK_PROACTOR)
 int proactor_start(unsigned short port, stream_handler_t handler);
 void proactor_notify_tx_ready(int fd);
 int proactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
-
+#elif (NETWORK_SELECT == NETWORK_NTYCO)
 int ntyco_start(unsigned short port, stream_handler_t handler);
 int ntyco_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+#endif
 
 
-#if (NETWORK_SELECT == NETWORK_PROACTOR)
 
-    #define net_host_slave_connection  proactor_host_slave_connection
-    #define net_set_event(fd, ev, is_add) proactor_notify_tx_ready(fd)
-
-#elif (NETWORK_SELECT == NETWORK_REACTOR)
+#if (NETWORK_SELECT == NETWORK_REACTOR)
 
     #define net_host_slave_connection  reactor_host_slave_connection
     #define net_set_event(fd, ev, is_add) reactor_set_event(fd, ev, is_add)
+
+#elif (NETWORK_SELECT == NETWORK_PROACTOR)
+
+    #define net_host_slave_connection  proactor_host_slave_connection
+    #define net_set_event(fd, ev, is_add) proactor_notify_tx_ready(fd)
 
 #elif (NETWORK_SELECT == NETWORK_NTYCO) 
 

@@ -8,12 +8,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include "mempool.h"
-#include "replication.h"
 #include <arpa/inet.h>
 #include <strings.h> 
 #include "resp.h" 
+#include "repl.h"
+#include "ebpf.h"
+#include "rdma.h"
 
-extern volatile int server_should_exit;
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -316,9 +317,7 @@ enum {
     // SkipList
     CMD_SSET=15, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
 
-    CMD_PING=20, CMD_SHUTDOWN, CMD_SAVE, CMD_REPL_SYNC,
-
-    CMD_UNKNOWN=24
+    CMD_PING=20, CMD_SAVE, CMD_REPL_SYNC, CMD_UNKNOWN
 };
 
 const kvs_cmd_map_t kvs_cmd_list[] = {
@@ -326,7 +325,7 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
     {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXISTS",   7, CMD_REXISTS},
     {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXISTS",   7, CMD_HEXISTS},
     {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXISTS",   7, CMD_SEXISTS},
-    {"PING",     4, CMD_PING},     {"SHUTDOWN", 8, CMD_SHUTDOWN}, {"SAVE",     4, CMD_SAVE},     {"SYNC",     4, CMD_REPL_SYNC}, {"UNKNOWN",  7, CMD_UNKNOWN}
+    {"PING",     4, CMD_PING},     {"SAVE",     4, CMD_SAVE},     {"SYNC",     4, CMD_REPL_SYNC}, {"UNKNOWN",  7, CMD_UNKNOWN}
 };
 
 
@@ -373,8 +372,11 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     int idx = key ? get_segment_index(key, key_len) : 0;
     unsigned long long default_expire = 0;
 
-    #if ENABLE_TTL
+    #if ENABLE_REPLICATION_MASTER
+    repl_set_ebpf_switch(false);
+    #endif
 
+    #if ENABLE_TTL
     if (req->argc >= 5 && req->argv[3] != NULL && req->argv[4] != NULL) {
         if (req->argv_len[3] == 2 && strncasecmp(req->argv[3], "EX", 2) == 0) {
             long long seconds = atoll(req->argv[4]);
@@ -405,8 +407,11 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE
                 log_binary_command("SET", key, key_len, value, value_len, default_expire);
                 #endif
+                //增量同步，开启 eBPF 内核零拷贝通道
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("SET", key, key_len, value, value_len);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);// 协议层在用 recv 拆包解析 RESP 时，需要通过 getsockopt 或 eBPF 映射填入此字段！！！
+                }
                 #endif
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -444,7 +449,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("DEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("DEL", key, key_len, NULL, 0);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[0]); // 💡 释放锁
@@ -462,7 +469,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("MOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("MOD", key, key_len, value, value_len);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif 
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -493,7 +502,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("RSET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("RSET", key, key_len, value, value_len);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -530,7 +541,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("RDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("RDEL", key, key_len, NULL, 0);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[1]); // 💡 释放锁
@@ -548,7 +561,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("RMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("RMOD", key, key_len, value, value_len);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif 
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -581,7 +596,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     log_binary_command("HSET", key, key_len, value, value_len, default_expire);
                     #endif
                     #if ENABLE_REPLICATION_MASTER
-                    repl_push_cmd("HSET", key, key_len, value, value_len);
+                    if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                     #endif
                 }
                 else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -625,7 +642,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     log_binary_command("HDEL", key, key_len, NULL, 0, default_expire); 
                     #endif
                     #if ENABLE_REPLICATION_MASTER
-                    repl_push_cmd("HDEL", key, key_len, NULL, 0);
+                    if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                     #endif
                 } else { reply->status = KVS_RESP_NO_EXISTS; }
                 
@@ -647,7 +666,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     log_binary_command("HMOD", key, key_len, value, value_len, default_expire);
                     #endif
                     #if ENABLE_REPLICATION_MASTER
-                    repl_push_cmd("HMOD", key, key_len, value, value_len);
+                    if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                     #endif 
                 }
                 else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -686,7 +707,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("SSET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("SSET", key, key_len, value, value_len);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -728,7 +751,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("SDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("SDEL", key, key_len, NULL, 0);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[2]); // 💡 释放锁
@@ -748,7 +773,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 log_binary_command("SMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("SMOD", key, key_len, value, value_len);
+                if (req->socket_tcp_seq != 0) {
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
+                }
                 #endif 
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -806,15 +833,13 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         case CMD_REPL_SYNC:{
             printf("Received 'SYNC' command from slave.\n");
             fflush(stdout);
-            reply->status = KVS_RESP_SYNC_LOG;
-            return 10;
+            #if ENABLE_REPLICATION_MASTER
+            repl_sync_log_via_rdma(); 
+            #endif
+
             break;
         }
-        case CMD_SHUTDOWN:
-            reply->status = KVS_RESP_SHUTDOWN;//回复状态码
-            server_should_exit=1;//从网络层跳出的标志
-            break;//调到return 0
-
+        
         case CMD_UNKNOWN:
 
         default:
