@@ -3,8 +3,8 @@
 
 #include <stdbool.h>
 
-#define ENABLE_REPLICATION_MASTER 0
-#define ENABLE_REPLICATION_SLAVE  1
+#define ENABLE_REPLICATION_MASTER 1
+#define ENABLE_REPLICATION_SLAVE  0
 
 // 客户端连接主端专用的全局状态上下文（等价于你的 g_repl）
 struct repl_context {

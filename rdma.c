@@ -43,8 +43,9 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     rctx->qp = ibv_create_qp(rctx->pd, &qp_init_attr);
     if (!rctx->qp) goto err;
 
-    // 分配 16MB 数据缓冲区区
+    // 向内核申请 16MB 内存作为数据缓冲区
     rctx->buffer = mmap(NULL, RING_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // 注册内存，把前面申请的内存锁在物理内存中，并把物理地址映射表提交给 RDMA
     rctx->mr_buf = ibv_reg_mr(rctx->pd, rctx->buffer, RING_BUFFER_SIZE, 
                              IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 

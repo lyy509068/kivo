@@ -12,7 +12,7 @@ BPF_CFLAGS = -target bpf \
              -g -O2 -Wall
 
 SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c resp.c\
-       kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c expire_thread.c \
+       kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c \
        rdma.c ebpf.c repl.c
 
 TARGET = server
@@ -22,7 +22,7 @@ SUBDIR = ./NtyCo/
 
 
 OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o resp.o\
-       kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o expire_thread.o \
+       kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
        rdma.o ebpf.o repl.o
 
 .PHONY: all clean ECHO $(SUBDIR)

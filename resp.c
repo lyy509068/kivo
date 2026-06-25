@@ -4,6 +4,7 @@
 #include "resp.h"
 #include "kvstore.h"      
 #include "network.h"
+#include "repl.h"
 
 /* * 🛠️ 内部辅助函数：在指定长度内安全寻找 \r\n 
  * 避免因为客户端发来恶意数据导致非法内存访问
@@ -54,13 +55,27 @@ static int has_complete_resp_command(const char *buf, int buf_len, int *out_cmd_
 /*
  * ✂️ 解包函数：将缓冲区文本切分成干净的 argv 数组
  */
-static void resp_unpack(const char *buf, resp_request_t *req) {
-    const char *p = buf;
+static void resp_unpack(const char *buf, const char *req_buf, resp_request_t *req, uint32_t base_seq) {
+    const char *p = req_buf;
     const char *crlf = find_crlf(p, 100); 
     
     req->argc = atoi(p + 1);
     req->argv = (char **)kvs_malloc(sizeof(char *) * req->argc);
     req->argv_len = (int *)kvs_malloc(sizeof(int) * req->argc);
+
+    // 主端计算当前命令在 TCP 流中的绝对序列号
+    #if ENABLE_REPLICATION_MASTER
+    if (base_seq != 0) {
+        // 当前命令在整个接收缓冲区中的字节偏移量
+        size_t offset = (size_t)(req_buf - buf);
+        // 当前命令的真实 TCP Seq = 缓冲区基准 Seq + 偏移量
+        req->socket_tcp_seq = base_seq + (uint32_t)offset;
+    } else {
+        req->socket_tcp_seq = 0;
+    }
+    #else
+    req->socket_tcp_seq = 0; 
+    #endif
     
     p = crlf + 2;
     
@@ -132,45 +147,6 @@ static void resp_pack(char *send_buf, int *send_len, resp_reply_t *reply) {
     }
 }
 
-
-/*
- * 🔄 主流程：网络层 recv 完之后直接调用它
- */
-void protocol_process_resp(char *recv_buf, int *recv_len, char *send_buf, int *send_len) {
-    int processed_offset = 0;
-    int single_resp_bytes = 0;
-    
-    // 唯一的循环：只要缓冲区里有完整的命令，就疯狂吃掉并处理
-    while (has_complete_resp_command(recv_buf + processed_offset, *recv_len - processed_offset, &single_resp_bytes)) {
-        
-        resp_request_t req;
-        resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; // 初始化默认回复
-        
-        // 1. 解包
-        resp_unpack(recv_buf + processed_offset, &req);
-        
-        // 2. 调用核心业务层！ (业务层不再需要处理任何网络和粘包问题)
-        if (req.argc > 0) {
-            kvs_execute_command(&req, &reply);
-        }
-        
-        // 3. 打包
-        resp_pack(send_buf, send_len, &reply);
-        
-        // 4. 清理内存
-        free_resp_request(&req);
-        
-        processed_offset += single_resp_bytes;
-    }
-    
-    // 把没处理完的半包数据往前平移，等待 epoll 下一次接收
-    if (processed_offset > 0) {
-        memmove(recv_buf, recv_buf + processed_offset, *recv_len - processed_offset);
-        *recv_len -= processed_offset;
-    }
-}
-
-
 static cmd_handler_t g_command_handler = NULL;
 void protocol_set_command_handler(cmd_handler_t handler) {
     g_command_handler = handler; 
@@ -226,9 +202,8 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             }
             
             resp_request_t req;
-            resp_unpack(in_buf + processed, &req);
-            req.socket_tcp_seq = tcp_seq; // 动态绑定当前请求的底层内核网络标识
-
+            resp_unpack(in_buf, in_buf + processed, &req, tcp_seq);
+    
             // 业务层处理
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
             if (g_command_handler) {

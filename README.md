@@ -36,7 +36,7 @@ HASH (哈希表)	HSET	25,316 ops/sec	~1-2ms
 SKIPLIST (跳表)	SSET	29,411 ops/sec	~1-2ms
 
 # 全量持久化测试 test_fullpersistence
-一共四种模式 ./test_fullpersistence (1 2 3 4)
+一共四种模式 ./test_fullpersistence1 (1 2 3 4)    ./test_fullpersistence2 (1 2 3 4)
 手动打开服务器
 客户端：连接服务器->插入10w条数据->SAVE保存快照->断开连接
 手动关闭服务器再重新打开
@@ -49,10 +49,10 @@ ntyco不能通过客户端关闭和连接服务器！
 每条日志：4字节引擎标志+8字节过期时间+4字节key长度+10字节key（可变）+4字节value长度+10字节value（可变）
 
 # 增量持久化测试
-一共四种模式 ./test_incrementpersistence (1 2 3 4)
-打开服务器
+一共四种模式 ./test_incrementpersistence1 (1 2 3 4)    ./test_incrementpersistence2 (1 2 3 4)
+手动打开服务器
 客户端：连接服务器->插入10w条数据->断开连接
-关闭服务器
+手动关闭服务器再重新打开
 客户端：重新连接服务器->获取10w条数据并校验->清除日志文件（不影响下次测试）->断开连接
 
 每条日志：4字节命令长度+4字节命令+8字节过期时间+4字节key长度+10字节key（可变）+4字节value长度+10字节value（可变）

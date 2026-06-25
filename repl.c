@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -109,24 +111,104 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         return -1;
     }
 
+    return g_repl_ctx.fd;
+}
+
+// RDMA发送日志
+int repl_sync_log_via_rdma(void) {
+    if (!g_repl_ctx_ready || !g_rdma_ctx) {
+        printf("[Repl Error] RDMA context not ready for log sync.\n");
+        return -1;
+    }
+    printf("[Repl] Intercepted SYNC command. Starting RDMA Zero-Copy for Logs...\n");
+
+    // 打开本地持久化 AOF 日志文件
+    int fd = open(PERSISTENCE_FILE, O_RDONLY);
+    if (fd < 0) {
+        perror("[Repl Error] Failed to open persistence file");
+        return -1;
+    }
+    // 获取文件大小，防止越界
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        perror("[Repl Error] fstat persistence file failed");
+        close(fd);
+        return -1;
+    }
+    size_t file_size = st.st_size;
+    if (file_size == 0) {
+        printf("[Repl] Persistence file is empty. Nothing to sync.\n");
+        close(fd);
+        return 0; // 空文件不传输
+    }
+
+    // 环形缓冲区大小上限检查（16MB）
+    if (file_size > RING_BUFFER_SIZE) {
+        fprintf(stderr, "[Repl Error] Log file size (%zu) exceeds RDMA buffer limit (%d)\n", file_size, RING_BUFFER_SIZE);
+        close(fd);
+        return -1;
+    }
+
+    // 将文件内容读取到已经注册过 MR 的 RDMA 本地缓冲区
+    // 必须用已注册内存，网卡硬件才能做 DMA 搬运   这里是从端注册一块内存吗？帮我检查我的代码中哪个地方注册了内存？
+    memset(g_rdma_ctx->buffer, 0, RING_BUFFER_SIZE);
+    ssize_t read_bytes = read(fd, g_rdma_ctx->buffer, file_size);
+    if (read_bytes != (ssize_t)file_size) {
+        perror("[Repl Error] Failed to read full file into RDMA buffer");
+        close(fd);
+        return -1;
+    }
+    close(fd); // 读完立刻释放文件句柄
+
+    // 配置 RDMA Write 传输：直接单向刷入从端数据内存的【起始位置(offset 0)】
+    struct ibv_sge sge = {
+        .addr   = (uint64_t)(uintptr_t)g_rdma_ctx->buffer,
+        .length = (uint32_t)file_size,
+        .lkey   = g_rdma_ctx->mr_buf->lkey
+    };
+
+    struct ibv_send_wr wr = {
+        .wr_id      = 999, // 历史全量同步专属 ID
+        .next       = NULL,
+        .sg_list    = &sge,
+        .num_sge    = 1,
+        .opcode     = IBV_WR_RDMA_WRITE, // 硬件单向隐形写
+        .send_flags = IBV_SEND_SIGNALED,
+        .wr = {
+            .rdma = {
+                // 从零开始覆盖从端的环形缓存区，完成历史数据注入
+                .remote_addr = g_rdma_ctx->remote_meta.buf_va, 
+                .rkey        = g_rdma_ctx->remote_meta.rkey
+            }
+        }
+    };
+
+    // 投递给 HCA 网卡
+    struct ibv_send_wr *bad_wr;
+    if (ibv_post_send(g_rdma_ctx->qp, &wr, &bad_wr)) {
+        perror("[Repl Error] ibv_post_send failed during historical sync");
+        return -1;
+    }
+
+    // 阻塞等待本地网卡通过 PCIe 把数据全部送上物理链路
+    struct ibv_wc wc;
+    while (ibv_poll_cq(g_rdma_ctx->cq, 1, &wc) == 0);
+    if (wc.status != IBV_WC_SUCCESS) {
+        fprintf(stderr, "[Repl Error] RDMA write failed with status: %d\n", wc.status);
+        return -1;
+    }
+
+    printf("[Repl] Successfully synced %zu bytes of historical logs via RDMA Zero-Copy.\n", file_size);
     return 0;
 }
 
-// RDMA发送快照
-int repl_sync_log_via_rdma(void) {
-    if (!g_repl_ctx_ready) return -1;
-    printf("[Repl] Intercepted SYNC command. Starting RDMA Zero-Copy for Logs...\n");
-    return 0; 
-}
-
-// 主端收到 SYNC 后调用，打开 ebpf 闸门
+// 从端专用，打开 ebpf 闸门，准备接收增量命令，我的理解正确吗
 int repl_set_ebpf_switch(bool enable) {
     if (!g_repl_ctx_ready) return -1;
     
     int status = ebpf_set_forward_switch(enable ? 1 : 0);
     if (status == 0) {
-        printf("[Repl] Successfully %s eBPF kernel fast-forwarding.\n", 
-               enable ? "ENABLED" : "DISABLED");
+        printf("[Repl] Successfully %s eBPF kernel fast-forwarding.\n", enable ? "ENABLED" : "DISABLED");
     } else {
         perror("[Repl] Failed to set eBPF switch");
     }

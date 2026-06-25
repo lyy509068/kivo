@@ -260,7 +260,7 @@ void mem_pool_stats(mem_pool_t *pool) {
 #endif
 
 //增量持久化 日志
-#if ENABLE_PERSISTENCE
+#if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
 void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len, int64_t expire_time) {
 
     if (!cmd || !key || key_len <= 0) {
@@ -372,9 +372,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     int idx = key ? get_segment_index(key, key_len) : 0;
     unsigned long long default_expire = 0;
 
-    #if ENABLE_REPLICATION_MASTER
-    repl_set_ebpf_switch(false);
-    #endif
 
     #if ENABLE_TTL
     if (req->argc >= 5 && req->argv[3] != NULL && req->argv[4] != NULL) {
@@ -403,14 +400,14 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [ARRAY_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("SET", key, key_len, value, value_len, default_expire);
                 #endif
                 //增量同步，开启 eBPF 内核零拷贝通道
                 #if ENABLE_REPLICATION_MASTER
                 if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);// 协议层在用 recv 拆包解析 RESP 时，需要通过 getsockopt 或 eBPF 映射填入此字段！！！
+                    ebpf_add_whitelist_packet(req->socket_tcp_seq);// 写入序列号
                 }
                 #endif
             }
@@ -444,8 +441,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [ARRAY_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("DEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -464,8 +461,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [ARRAY_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("MOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -497,8 +494,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [RBTREE_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("RSET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -536,8 +533,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [RBTREE_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("RDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -556,8 +553,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             //printf("[KVS_DEBUG] [RBTREE_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("RMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -591,8 +588,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 ret = kvs_hash_set(&global_hash, &kv_key, &kv_value, default_expire);
                 if (ret == 0) {
                     reply->status = KVS_RESP_OK;
-                    reply->needs_replication=true;
-                    #if ENABLE_PERSISTENCE
+                    
+                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                     log_binary_command("HSET", key, key_len, value, value_len, default_expire);
                     #endif
                     #if ENABLE_REPLICATION_MASTER
@@ -637,8 +634,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 ret = kvs_hash_del(&global_hash, &kv_key);
                 if (ret == 0) {
                     reply->status = KVS_RESP_OK;
-                    reply->needs_replication=true;
-                    #if ENABLE_PERSISTENCE
+                    
+                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                     log_binary_command("HDEL", key, key_len, NULL, 0, default_expire); 
                     #endif
                     #if ENABLE_REPLICATION_MASTER
@@ -661,8 +658,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 ret = kvs_hash_mod(&global_hash, &kv_key, &kv_value, default_expire);
                 if (ret == 0) {
                     reply->status = KVS_RESP_OK;
-                    reply->needs_replication=true;
-                    #if ENABLE_PERSISTENCE
+                    
+                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                     log_binary_command("HMOD", key, key_len, value, value_len, default_expire);
                     #endif
                     #if ENABLE_REPLICATION_MASTER
@@ -702,8 +699,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("SSET", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -746,8 +743,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("SDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -768,8 +765,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
-                reply->needs_replication=true;
-                #if ENABLE_PERSISTENCE
+                
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
                 log_binary_command("SMOD", key, key_len, value, value_len, default_expire);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
@@ -830,7 +827,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             break;
         }
-        case CMD_REPL_SYNC:{
+        case CMD_REPL_SYNC:{//需要增加全局锁吗？发日志的同时 主端不能执行增删改查命令 因为会改变日志
             printf("Received 'SYNC' command from slave.\n");
             fflush(stdout);
             #if ENABLE_REPLICATION_MASTER

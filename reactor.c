@@ -264,7 +264,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
         int master_fd = repl_connect_to_master(master_ip, master_port); 
         if (master_fd >= 0) {
             reactor_host_slave_connection(master_fd, NULL, 0, 0);
-            rdma_init_context(&conn_list[master_fd]);//这个函数的作用？？？
+            rdma_init_context(&conn_list[master_fd]);
         }
 
     #endif

@@ -96,7 +96,7 @@ int init_kvengine(void) {
     #if ENABLE_SNAPSHOT
         kvs_snapshot_load();        
     #endif
-    #if ENABLE_PERSISTENCE
+    #if (ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE)
         kvs_persistence_init();
         kvs_persistence_recover(); 
     #endif
@@ -138,7 +138,7 @@ void dest_kvengine(void) {
         expire_thread_destroy(); 
     #endif
 
-    #if ENABLE_PERSISTENCE
+    #if (ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE)
         kvs_persistence_close();        // 关闭并刷盘 AOF 日志文件流
     #endif
 
