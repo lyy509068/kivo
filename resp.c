@@ -203,8 +203,32 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             
             resp_request_t req;
             resp_unpack(in_buf, in_buf + processed, &req, tcp_seq);
+
+            //======================建立RDMA连接============================
+            // 处理从端发来的 RDMA_CONNECT 握手命令
+            #if ENABLE_REPLICATION_MASTER
+            if (req.argc > 0 && strcmp(req.argv[0], "RDMA_CONNECT") == 0) {
+                handle_master_rdma_connect(&req, wbuf, wcap, wlen);
+                free_resp_request(&req);
+                processed += single_cmd_len;
+                continue; 
+            }
+            #endif 
+            // 处理主端发来的 RDMA_CONNECT_ACK 命令
+            #if ENABLE_REPLICATION_SLAVE
+            if (req.argc > 0 && strcmp(req.argv[0], "RDMA_CONNECT_ACK") == 0) {
+                int status = handle_slave_rdma_connect_ack(&req, fd);
+
+                free_resp_request(&req);
+                processed += single_cmd_len;
+                *parsed = processed; 
+                
+                return status; 
+            }
+            #endif
+            //====================RDMA连接建立成功============================
     
-            // 业务层处理
+            // 进入业务层处理普通命令
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
             if (g_command_handler) {
                 g_command_handler(&req, &reply); 
@@ -225,7 +249,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
         }
 
         *parsed = processed; 
-        return 0; // 返回 0 代表客户端命令处理正常
+        return 0; 
     } else {
         return -1; 
     }

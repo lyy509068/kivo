@@ -30,7 +30,7 @@ int handle_master_traffic(struct sk_msg_md *msg) {
     }
 
     // 如果开关为 1，说明主端业务层已经确认成功，触发内核高速零拷贝转发
-    bpf_msg_redirect_hash(msg, &sock_routing_map, &slave_key, BPF_F_INGRESS);
+    bpf_msg_redirect_map(msg, &sock_routing_map, 0, BPF_F_INGRESS);
     
     return SK_PASS;
 }

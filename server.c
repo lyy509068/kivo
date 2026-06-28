@@ -108,20 +108,26 @@ int init_kvengine(void) {
     #endif
 
     #if (ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE)
-        const char *rdma_dev = NULL;
+        const char *rdma_dev = RDMA_DEV_NAME;
         const char *ebpf_path = NULL;
 
-        #if ENABLE_REPLICATION_SLAVE
-            rdma_dev = RDMA_DEV_NAME; // 从端需要感知 RDMA 网卡来接收全量日志
-        #endif
         #if ENABLE_REPLICATION_MASTER
-            ebpf_path = EBPF_OBJ_PATH; // 主端需要感知 eBPF 路径来加载内核闸门
+            ebpf_path = EBPF_OBJ_PATH; 
         #endif
 
         if (repl_init(rdma_dev, ebpf_path, -1) != 0) {
             printf("[Engine Error] Failed to initialize global replication environment\n");
             return -1;
         }
+
+        #if ENABLE_REPLICATION_SLAVE
+            g_running = 1; 
+            if (pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL) != 0) {
+                printf("[Engine Error] Failed to create pure RDMA slave replication thread\n");
+                return -1;
+            }
+            printf("[Engine] Pure RDMA replication background thread spawned successfully.\n");
+        #endif
     #endif
 
     return 0;
@@ -131,7 +137,14 @@ void dest_kvengine(void) {
 
     #if (ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE)
         printf("[Engine] Destroying replication environment and kernel resources...\n");
-        repl_destroy(); // 调用销毁接口，卸载 eBPF Map、解绑 RDMA 上下文
+        #if ENABLE_REPLICATION_SLAVE
+            g_running = 0; 
+            repl_destroy(); 
+            pthread_join(repl_slave_tid, NULL);
+            printf("[Engine] RDMA slave replication thread exited cleanly.\n");
+        #else
+            repl_destroy(); 
+        #endif
     #endif
 
     #if ENABLE_TTL

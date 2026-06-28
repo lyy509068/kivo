@@ -89,7 +89,7 @@ extern int repl_flush();
 #if (NETWORK_SELECT == NETWORK_REACTOR)
 int reactor_start(unsigned short port, stream_handler_t handler);
 int reactor_set_event(int fd, int event, int flag);
-int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
 #elif (NETWORK_SELECT == NETWORK_PROACTOR)
 int proactor_start(unsigned short port, stream_handler_t handler);
 void proactor_notify_tx_ready(int fd);

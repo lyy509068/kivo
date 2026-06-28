@@ -63,12 +63,12 @@ static void close_and_free_connection(int fd) {
 void recv_cb(int fd) {
     struct conn *c = &conn_list[fd];
     
-    // RDMA 全量接收日志
+    // 等待 RDMA 接收日志完成后，加载日志   如果日志没有接受完 这里什么都不做 接收完日志还能进入这里吗？？？
     #if ENABLE_REPLICATION_SLAVE
     if (c->is_receiving_file) {
         if (rdma_check_transfer_complete(c) == 0) { 
             c->is_receiving_file = 0; // 退出全量模式                       
-            kvs_persistence_recover();// 加载日志
+            kvs_persistence_recover();
             printf("[Reactor] Slave memory database successfully reloaded via RDMA bypass channel.\n");
             
             // 挂载监听，接收主端 eBPF 转发过来的增量写命令或者客户端命令
@@ -78,7 +78,7 @@ void recv_cb(int fd) {
     }
     #endif
 
-    // 普通 RESP 命令：增量写命令或者客户端命令
+    // 收到 RESP 命令
     int total_new_bytes = 0; 
     while (1) {
         if (c->rcapacity - c->rlength < 4096) {
@@ -151,7 +151,7 @@ void recv_cb(int fd) {
         else if (status == 20) {
             total_parsed_bytes += parsed_bytes;
             c->expect_file_size = expect_file_size;
-            c->is_receiving_file = 1; // 锁住该 fd 的传统接收，让位给底层的 RDMA 网卡进行零拷贝写入
+            c->is_receiving_file = 1; // 下次进入加载日志模式
             
             c->rlength = 0; 
             total_parsed_bytes = 0; 
@@ -260,11 +260,11 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     #if ENABLE_REPLICATION_SLAVE
         const char *master_ip = "192.168.92.128";
         unsigned short master_port = 2000;
-        
+        //连接主端
         int master_fd = repl_connect_to_master(master_ip, master_port); 
-        if (master_fd >= 0) {
-            reactor_host_slave_connection(master_fd, NULL, 0, 0);
-            rdma_init_context(&conn_list[master_fd]);
+        
+        if (master_fd < 0) {
+            fprintf(stderr, "[Repl Error] Slave failed to establish replication link.\n");
         }
 
     #endif
@@ -293,8 +293,9 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
 }
 
 // 托管长连接对象，确保从端的正常运行
-int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
-    if (fd < 0 || fd >= CONNECTION_SIZE) return -1; 
+struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
+    if (fd < 0 || fd >= CONNECTION_SIZE) return NULL; 
+
     struct conn *c = &conn_list[fd];
     c->fd = fd;
     c->read_callback = recv_cb;   
@@ -304,7 +305,7 @@ int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
     c->role = CONN_MASTER; 
 
     c->rbuffer = (char *)kvs_malloc(4096); 
-    if (!c->rbuffer) return -1;
+    if (!c->rbuffer) return NULL;
     c->rcapacity = 4096;
     c->rlength = 0;
     
@@ -316,5 +317,5 @@ int reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
     c->local_file_fd = -1;
 
     reactor_set_event(fd, EPOLLIN, 1); 
-    return 0;
+    return c;
 }
