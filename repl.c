@@ -284,7 +284,7 @@ void slave_rdma_handshake_read_cb(int fd) {
             repl_start_slave_engine();
 
             c->rlength = 0;                      
-            c->is_receiving_file = 1;            
+                   
             c->read_callback = recv_cb;          
             
             reactor_set_event(fd, EPOLLIN, 0);

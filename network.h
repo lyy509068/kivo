@@ -58,7 +58,6 @@ struct conn {
     int local_file_fd;          // 从端落盘用的文件描述符
     long long expect_file_size; // 文件总大小
     long long already_recv_size;// 当前已经接收了多少字节
-    int is_receiving_file;      // 1表示正在接收文件，0表示正常命令模式
 
     conn_role_t role; // 当前连接的身份，默认为CONN_CLIENT
     int ebpf_mounted; // 默认为0，未挂载

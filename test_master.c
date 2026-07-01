@@ -5,7 +5,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-#define SERVER_IP "127.0.0.1"
+#define SERVER_IP "192.168.92.128"
 #define MASTER_PORT 2000
 #define BATCH_SIZE 50000
 

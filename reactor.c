@@ -62,30 +62,6 @@ void close_and_free_connection(int fd) {
 
 void recv_cb(int fd) {
     struct conn *c = &conn_list[fd];
-    
-    // 等待 RDMA 接收日志完成后，加载日志，回复"SYCN_DOWN"
-    #if ENABLE_REPLICATION_SLAVE
-    if (c->is_receiving_file) {
-        if (rdma_check_transfer_complete(c) == 0) { 
-            c->is_receiving_file = 0; // 退出全量模式                       
-            kvs_persistence_recover();
-            printf("[Reactor] Slave memory database successfully reloaded via RDMA bypass channel.\n");
-            
-            const char *sync_done = "*2\r\n$9\r\nSYNC_DONE\r\n$1\r\n1\r\n";
-            int len = strlen(sync_done);
-            int sent = send(fd, sync_done, len, 0);
-            if (sent == len) {
-                printf("[Reactor] SYNC_DONE sent to master via TCP.\n");
-            } else {
-                printf("[Reactor Error] Failed to send SYNC_DONE!\n");
-            }
-
-            // 挂载监听，接收主端 eBPF 转发过来的增量写命令或者客户端命令
-            reactor_set_event(fd, EPOLLIN, 0);
-        }
-        return; 
-    }
-    #endif
 
     // 收到 RESP 命令
     int total_new_bytes = 0; 
@@ -139,24 +115,11 @@ void recv_cb(int fd) {
             if (c->role == CONN_MASTER) c->wlength = 0;
             close_and_free_connection(fd); return;
         }
-        
-        #if ENABLE_REPLICATION_SLAVE
-        // 从端收到同步回应，激活从端 RDMA 硬件接收锁
-        else if (status == 20) {
-            total_parsed_bytes += parsed_bytes;
-            c->expect_file_size = expect_file_size;
-            c->is_receiving_file = 1; // 下次进入加载日志模式
-            
-            c->rlength = 0; 
-            total_parsed_bytes = 0; 
-            break; 
-        }
-        #endif 
 
         total_parsed_bytes += parsed_bytes;
     } 
 
-    if (!c->is_receiving_file && total_parsed_bytes > 0) {
+    if ( total_parsed_bytes > 0) {
         int remaining_data = c->rlength - total_parsed_bytes;
         if (remaining_data > 0) {
             memmove(c->rbuffer, c->rbuffer + total_parsed_bytes, remaining_data);
@@ -212,7 +175,6 @@ void accept_cb(int fd) {
     conn_list[clientfd].wbuffer = (char*)kvs_malloc(INIT_BUFFER_SIZE);
     conn_list[clientfd].rlength = 0;
     conn_list[clientfd].wlength = 0;
-    conn_list[clientfd].is_receiving_file = 0;
     
     if (!conn_list[clientfd].rbuffer || !conn_list[clientfd].wbuffer) {
         close_and_free_connection(clientfd); return;
@@ -307,8 +269,7 @@ struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wle
     c->wbuffer = wbuf;     
     c->wcapacity = wcap;
     c->wlength = wlen;
-    
-    c->is_receiving_file = 0;        
+            
     c->local_file_fd = -1;
 
     reactor_set_event(fd, EPOLLIN, 1); 
