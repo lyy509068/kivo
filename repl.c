@@ -24,7 +24,6 @@
 
 volatile int g_running = 1; 
 static pthread_t repl_slave_tid; 
-static int g_slave_fd = -1;
 static bool g_repl_ctx_ready = false;
 static struct repl_context g_repl_ctx = { .fd = -1, .wbuffer = NULL, .wcapacity = 0, .wlength = 0 };
 
@@ -37,9 +36,8 @@ extern struct conn conn_list[];
  * @brief  功能：全系统复制引擎的初始化，负责拉起本地 RDMA 硬件上下文以及加载 eBPF 模块。
  * @note   调用层级：系统启动层。在系统 main 函数启动、解析完配置文件后被统一调用。
  */
-int repl_init(const char *rdma_dev, const char *ebpf_obj_path, int slave_fd) {
-    g_slave_fd = slave_fd;
-
+int repl_init(const char *rdma_dev, const char *ebpf_obj_path) {
+    
     const char *final_dev = rdma_dev ? rdma_dev : DEFAULT_RDMA_DEVICE;
     printf("[Repl] Initializing RDMA engine on device: %s\n", final_dev);
 
@@ -57,6 +55,11 @@ int repl_init(const char *rdma_dev, const char *ebpf_obj_path, int slave_fd) {
             g_repl_ctx_ready = false;
             return -1;
         }
+        if (ebpf_register_slave(0) < 0) {
+            printf("[Repl Error] Failed to register master interface to eBPF\n");
+            return -1;
+        }
+        printf("[Repl Master] eBPF TC Interface initialized and hook ready (Switch: OFF).\n");
     }
     #endif
 
@@ -64,47 +67,25 @@ int repl_init(const char *rdma_dev, const char *ebpf_obj_path, int slave_fd) {
     return 0;
 }
 
-/**
- * @brief  功能：动态控制 eBPF 内核快车道转发开关。
- * @note   调用层级：控制面业务层。通常在全量 AOF 同步结束后，由主端根据状态机动态调用开启。
- */
-int repl_set_ebpf_switch(bool enable) {
-    if (!g_repl_ctx_ready) return -1;
-    
-    int status = ebpf_set_forward_switch(enable ? 1 : 0);
-    if (status == 0) {
-        printf("[Repl] Successfully %s eBPF kernel fast-forwarding.\n", enable ? "ENABLED" : "DISABLED");
-    } else {
-        perror("[Repl] Failed to set eBPF switch");
-    }
-    return status;
-}
-
-/**
- * @brief  功能：安全销毁复制引擎。终止后台接收线程，释放 TCP 缓冲区并关闭底层的 RDMA 硬件资源。
- * @note   调用层级：系统退出层。在整个进程准备优雅退出、释放全局资源时调用。
- */
 void repl_destroy(void) {
-    #if ENABLE_REPLICATION_SLAVE
     if (g_running) {
         g_running = 0;
-        
-        if (g_rdma_ctx) {
-            rdma_ring_destroy(g_rdma_ctx);
-            g_rdma_ctx = NULL;
-        }
-        
-        if (repl_slave_tid) {
-            pthread_join(repl_slave_tid, NULL);
-            repl_slave_tid = 0;
-        }
-        printf("[Repl] Slave replication thread destroyed cleanly.\n");
     }
-    #else
+
     if (g_rdma_ctx) {
         rdma_ring_destroy(g_rdma_ctx);
         g_rdma_ctx = NULL;
     }
+
+    #if ENABLE_REPLICATION_SLAVE
+    if (repl_slave_tid) {
+        pthread_join(repl_slave_tid, NULL);
+        repl_slave_tid = 0;
+    }
+    #endif
+
+    #if ENABLE_REPLICATION_MASTER
+    ebpf_cleanup(); 
     #endif
 
     if (g_repl_ctx.wbuffer) {
@@ -222,7 +203,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     }
 
     rdma_init_context(c);
-    conn_list[g_repl_ctx.fd].read_callback = slave_rdma_handshake_read_cb;
+    conn_list[g_repl_ctx.fd].read_callback = slave_rdma_handshake_read_cb;//使用回调函数处理主端发回的 RDMA_CONNECT_ACK 并回发一个 SYNC ，相比专门写一个处理分支，有什么好处？？？
 
     printf("[Repl Slave] Pure RDMA Handshake sent. Network layer callback overrode to interceptor. Waiting for Master metadata...\n");
     return g_repl_ctx.fd;
@@ -262,8 +243,6 @@ void slave_rdma_handshake_read_cb(int fd) {
 
     if (strstr(c->rbuffer, "RDMA_CONNECT_ACK") != NULL) {
         printf("[Protocol Slave] Intercepted RDMA_CONNECT_ACK successfully!\n");
-        resp_request_t req;
-        int parsed_bytes = 0;
         struct ring_meta master_meta;
         char *lines[16];
         int line_idx = 0;
@@ -318,42 +297,6 @@ void slave_rdma_handshake_read_cb(int fd) {
     }
 }
 
-/**
- * @brief  功能：显式处理主端发回的 RDMA_CONNECT_ACK 的备用传统函数。配置本地硬件状态机，并发送 SYNC 同步指令。
- * @note   调用层级：协议分发层。如果系统中未开启拦截器挂载，则由普通网络层解析出命令后派发至此。
- */
-int handle_slave_rdma_connect_ack(resp_request_t *req, int fd) {
-    printf("[Protocol Slave] Intercepted RDMA_CONNECT_ACK. Configuring local hardware...\n");
-    
-    struct ring_meta master_meta;
-    master_meta.rkey = (uint32_t)strtoul(req->argv[1], NULL, 10);
-    master_meta.buf_va = (uint64_t)strtoull(req->argv[2], NULL, 10);
-    master_meta.qpn = (uint32_t)strtoul(req->argv[3], NULL, 10);
-    for (int i = 0; i < 16; i++) {
-        unsigned int b;
-        sscanf(req->argv[4] + i * 2, "%02x", &b);
-        master_meta.gid.raw[i] = (uint8_t)b;
-    }
-
-    if (rdma_ring_configure(g_rdma_ctx, &master_meta) != 0) {
-        fprintf(stderr, "[Protocol Slave Error] Failed to configure Slave QP to RTS!\n");
-        return -1;
-    }
-    printf("[Protocol Slave] RDMA Pipeline is now RTS (Ready to Receive).\n");
-
-    const char *sync_cmd = "*1\r\n$4\r\nSYNC\r\n"; 
-    int sync_len = strlen(sync_cmd);
-    
-    int sent = send(fd, sync_cmd, sync_len, 0);
-    if (sent != sync_len) {
-        perror("[Protocol Slave Error] Failed to send SYNC command via TCP");
-        return -1;
-    }
-    printf("[Protocol Slave] SYNC request pipeline injected into TCP channel successfully.\n");
-
-    repl_start_slave_engine();
-    return 20; 
-}
 
 /**
  * @brief  功能：铺设从端本地初始的 RDMA 接收槽（加锁挂载），并正式拉起专门负责数据同步落盘的后台专属线程。
@@ -401,6 +344,11 @@ void* pure_rdma_repl_slave_thread(void *arg) {
 
             kvs_persistence_recover();
             printf("[Repl Slave] Reload successfully!\n");
+
+            const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
+            send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
+            printf("[Repl Slave] SYNC_DONE report sent to Master. Prepared for real-time increment.\n");
+
         }
     }
     return NULL;
@@ -411,7 +359,7 @@ void* pure_rdma_repl_slave_thread(void *arg) {
  * @brief  功能：主端解包从端发来的第一手 RDMA_CONNECT 控制面指令，打通本地 QP，并将主端自身的 RDMA 凭证封装成 RESP 荡回给从端。
  * @note   调用层级：主端协议分发层。主端 TCP 网络层收到普通的集群连接请求，识别到动词为 `RDMA_CONNECT` 时路由分发至此。
  */
-void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen) {
+void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd) {
     printf("[Protocol Master] Intercepted RDMA_CONNECT. Shaking hands with slave...\n");
     
     struct ring_meta slave_meta;
@@ -453,6 +401,17 @@ void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int
                           strlen(qpn_str), qpn_str,
                           strlen(gid_str), gid_str);
 
+    int total_sent = 0;
+    while (total_sent < ack_len) {
+        int sent = send(fd, ack_cmd + total_sent, ack_len - total_sent, 0);
+        if (sent <= 0) {
+            perror("[Protocol Master Error] Failed to send RDMA_CONNECT_ACK");
+            return;
+        }
+        total_sent += sent;
+    }
+    printf("[Protocol Master] RDMA_CONNECT_ACK sent successfully (%d bytes).\n", total_sent);
+
     if (wbuf && wcap && wlen) {
         int needed = *wlen + ack_len + 1;
         if (needed > *wcap) {
@@ -471,7 +430,7 @@ void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int
  * @note   调用层级：主端协议命令层。主端接收到从端扔过来的 `SYNC` 命令后，立刻引发此函数，启动大吞吐量直连传输。
  */
 int repl_sync_log_via_rdma(void) {
-    if (!g_repl_ctx_ready || !g_rdma_ctx) {
+    if (!g_rdma_ctx) {
         printf("[Repl Error] RDMA context not ready for log sync.\n");
         return -1;
     }
@@ -518,5 +477,6 @@ int repl_sync_log_via_rdma(void) {
     }
 
     printf("[Repl] Successfully pushed %zu bytes to slave and triggered slave hardware event.\n", file_size);
+
     return 0;
 }

@@ -52,7 +52,7 @@ static int64_t get_current_ms_aof(void) {
 // 初始化 AOF 环境
 int kvs_persistence_init(void) {
     // 1. 以读写、追加、创建模式打开文件描述符 fd
-    aof_fd = open(PERSISTENCE_FILE, O_RDWR | O_CREAT, 0644);
+    aof_fd = open(PERSISTENCE_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (aof_fd < 0) {
         printf("Failed to open persistence file via open()\n");
         return -1;
@@ -62,7 +62,11 @@ int kvs_persistence_init(void) {
     struct stat st;
     if (fstat(aof_fd, &st) == 0) {
         aof_file_offset = st.st_size;
+    }else {
+        aof_file_offset = 0;
     }
+
+    is_io_uring_busy=0;
 
     // 2. 初始化双缓冲区
     aof_buf_active.buf = kvs_malloc(AOF_BUF_SIZE);
@@ -158,6 +162,10 @@ void kvs_persistence_write(const void *data, int len) {
     // 这里采取：只要缓冲区有数据且 io_uring 空闲，就立刻推给内核异步去写
     if (!is_io_uring_busy) {
         aof_trigger_flush_nolock();
+    } else {
+        pwrite(aof_fd, aof_buf_active.buf, aof_buf_active.len, aof_file_offset);
+        aof_file_offset += aof_buf_active.len;
+        aof_buf_active.len = 0;
     }
 
     pthread_mutex_unlock(&aof_mutex);
@@ -247,12 +255,18 @@ void kvs_persistence_recover(void) {
             continue; 
         }
 
-        // 封装 kv_data_t 结构体体
-        kv_data_t kv_k = {key, key_len};
-        kv_data_t kv_v = {val, val_len};
+        void *safe_key = kvs_malloc(key_len);
+        memcpy(safe_key, key, key_len);
 
-        // 注意：由于 kv_k/kv_v 指向 mmap 区域，底层存储引擎的 set 操作内部
-        // 必须是深拷贝（即自己 malloc 存储），否则解映射后会变成野指针。
+        void *safe_val = NULL;
+        if (val_len > 0 && val) {
+            safe_val = kvs_malloc(val_len);
+            memcpy(safe_val, val, val_len);
+        }
+
+        kv_data_t kv_k = {safe_key, key_len};
+        kv_data_t kv_v = {safe_val, val_len};
+
         #if ENABLE_ARRAY
         if (strcmp(cmd, "SET") == 0) kvs_array_set(&global_array, &kv_k, &kv_v, expire_time);
         else if (strcmp(cmd, "DEL") == 0) kvs_array_del(&global_array, &kv_k);
@@ -282,6 +296,9 @@ void kvs_persistence_recover(void) {
 
     // 恢复完成，解除映射
     munmap(mmap_addr, file_size);
+
+    aof_file_offset = file_size;
+
     printf("[AOF mmap] Recovery finished: %d commands replayed (Purged %d expired logs)\n", 
            recovered_count, expired_cleanup_count);
 
@@ -292,42 +309,44 @@ void kvs_persistence_recover(void) {
 void kvs_persistence_close(void) {
     pthread_mutex_lock(&aof_mutex);
 
-    // 1. ✨ 先收割并等待当前正在由 io_uring 发送的所有异步写请求
-    while (is_io_uring_busy) {
-        struct io_uring_cqe *cqe;
-        // 阻塞等待直到 io_uring 队列完全清空
-        if (io_uring_wait_cqe(&aof_ring, &cqe) == 0 && cqe != NULL) {
-            io_uring_cqe_seen(&aof_ring, cqe);
-        }
-        is_io_uring_busy = 0;
+    // 1. 如果 active 缓冲区有数据，先触发刷盘
+    if (aof_buf_active.len > 0) {
+        aof_trigger_flush_nolock();
     }
 
-    // 2. ✨ 此时 io_uring 已经彻底清空，aof_file_offset 处于绝对准确的最新文件末尾位置
-    // 此时再将 active 缓冲区里的最后残余数据追加进去
-    if (aof_buf_active.len > 0) {
-        // 为了和 io_uring 保持绝对一致，这里使用 pwrite 指定精确偏移量写入
-        ssize_t written = pwrite(aof_fd, aof_buf_active.buf, aof_buf_active.len, aof_file_offset);
-        if (written > 0) {
-            aof_file_offset += written;
+    // 2. 等待所有 io_uring 请求完成
+    while (is_io_uring_busy) {
+        struct io_uring_cqe *cqe;
+        int ret = io_uring_wait_cqe(&aof_ring, &cqe);
+        if (ret == 0 && cqe != NULL) {
+            if (cqe->res < 0) {
+                printf("[AOF] Async write error during close: %d\n", cqe->res);
+            }
+            io_uring_cqe_seen(&aof_ring, cqe);
+            is_io_uring_busy = 0;
+        } else {
+            break;
         }
+    }
+
+    // 3. 双重保险：同步写入剩余数据
+    if (aof_buf_active.len > 0) {
+        pwrite(aof_fd, aof_buf_active.buf, aof_buf_active.len, aof_file_offset);
         aof_buf_active.len = 0;
     }
 
-    // 3. 强迫内核刷新物理元数据大小
+    // 4. 强制刷新到磁盘
     if (aof_fd >= 0) {
-        fdatasync(aof_fd); 
+        fdatasync(aof_fd);
     }
 
-    // 4. 清理释放资源
+    // 5. 清理
     if (aof_buf_active.buf) kvs_free(aof_buf_active.buf);
     if (aof_buf_flush.buf) kvs_free(aof_buf_flush.buf);
-
     io_uring_queue_exit(&aof_ring);
-
     if (aof_fd >= 0) {
         close(aof_fd);
         aof_fd = -1;
     }
-
     pthread_mutex_unlock(&aof_mutex);
 }

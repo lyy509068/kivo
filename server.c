@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <pthread.h>
 #include "kvstore.h"   
 #include "resp.h"    
 #include "network.h" 
@@ -16,6 +16,9 @@
 #define EBPF_OBJ_PATH "./sync_filter.bpf.o"
 #endif
 
+pthread_t repl_slave_tid;
+
+extern volatile int g_running;
 
 #if ENABLE_ARRAY
 extern kvs_array_t global_array;
@@ -115,7 +118,7 @@ int init_kvengine(void) {
             ebpf_path = EBPF_OBJ_PATH; 
         #endif
 
-        if (repl_init(rdma_dev, ebpf_path, -1) != 0) {
+        if (repl_init(rdma_dev, ebpf_path) != 0) {
             printf("[Engine Error] Failed to initialize global replication environment\n");
             return -1;
         }

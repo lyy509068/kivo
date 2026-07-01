@@ -5,6 +5,7 @@
 #include "kvstore.h"      
 #include "network.h"
 #include "repl.h"
+#include "rdma.h"
 
 /* * 🛠️ 内部辅助函数：在指定长度内安全寻找 \r\n 
  * 避免因为客户端发来恶意数据导致非法内存访问
@@ -55,27 +56,13 @@ static int has_complete_resp_command(const char *buf, int buf_len, int *out_cmd_
 /*
  * ✂️ 解包函数：将缓冲区文本切分成干净的 argv 数组
  */
-static void resp_unpack(const char *buf, const char *req_buf, resp_request_t *req, uint32_t base_seq) {
+static void resp_unpack(const char *buf, const char *req_buf, resp_request_t *req) {
     const char *p = req_buf;
     const char *crlf = find_crlf(p, 100); 
     
     req->argc = atoi(p + 1);
     req->argv = (char **)kvs_malloc(sizeof(char *) * req->argc);
     req->argv_len = (int *)kvs_malloc(sizeof(int) * req->argc);
-
-    // 主端计算当前命令在 TCP 流中的绝对序列号
-    #if ENABLE_REPLICATION_MASTER
-    if (base_seq != 0) {
-        // 当前命令在整个接收缓冲区中的字节偏移量
-        size_t offset = (size_t)(req_buf - buf);
-        // 当前命令的真实 TCP Seq = 缓冲区基准 Seq + 偏移量
-        req->socket_tcp_seq = base_seq + (uint32_t)offset;
-    } else {
-        req->socket_tcp_seq = 0;
-    }
-    #else
-    req->socket_tcp_seq = 0; 
-    #endif
     
     p = crlf + 2;
     
@@ -180,7 +167,7 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
  * 🔄 统一自适应协议层核心入口，同时支持：1.处理客户端命令  2.处理主端同步回复
  * 网络层从这里进入
  */
-int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, uint32_t tcp_seq) {
+int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd) {
     if (in_len <= 0) {
         *parsed = 0;
         return 0;
@@ -202,31 +189,22 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             }
             
             resp_request_t req;
-            resp_unpack(in_buf, in_buf + processed, &req, tcp_seq);
+            resp_unpack(in_buf, in_buf + processed, &req);
 
-            //======================建立RDMA连接============================
-            // 处理从端发来的 RDMA_CONNECT 握手命令
             #if ENABLE_REPLICATION_MASTER
-            if (req.argc > 0 && strcmp(req.argv[0], "RDMA_CONNECT") == 0) {
-                handle_master_rdma_connect(&req, wbuf, wcap, wlen);
-                free_resp_request(&req);
-                processed += single_cmd_len;
-                continue; 
-            }
-            #endif 
-            // 处理主端发来的 RDMA_CONNECT_ACK 命令
-            #if ENABLE_REPLICATION_SLAVE
-            if (req.argc > 0 && strcmp(req.argv[0], "RDMA_CONNECT_ACK") == 0) {
-                int status = handle_slave_rdma_connect_ack(&req, fd);
-
-                free_resp_request(&req);
-                processed += single_cmd_len;
-                *parsed = processed; 
-                
-                return status; 
+            extern struct conn conn_list[]; 
+            struct conn *c = &conn_list[fd];
+            if (req.argc > 0) {
+                // 处理从端发来的 RDMA_CONNECT 握手命令
+                if (strcmp(req.argv[0], "RDMA_CONNECT") == 0) {
+                    c->role = CONN_SLAVE;
+                    handle_master_rdma_connect(&req, wbuf, wcap, wlen, fd);
+                    free_resp_request(&req);
+                    processed += single_cmd_len;
+                    continue; 
+                }
             }
             #endif
-            //====================RDMA连接建立成功============================
     
             // 进入业务层处理普通命令
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
@@ -254,3 +232,4 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
         return -1; 
     }
 }
+

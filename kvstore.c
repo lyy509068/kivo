@@ -318,7 +318,7 @@ enum {
     // SkipList
     CMD_SSET=15, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
 
-    CMD_PING=20, CMD_SAVE, CMD_REPL_SYNC, CMD_UNKNOWN
+    CMD_PING=20, CMD_SAVE, CMD_REPL_SYNC,  CMD_REPL_SYNC_DONE, CMD_UNKNOWN
 };
 
 const kvs_cmd_map_t kvs_cmd_list[] = {
@@ -326,7 +326,7 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
     {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXISTS",   7, CMD_REXISTS},
     {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXISTS",   7, CMD_HEXISTS},
     {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXISTS",   7, CMD_SEXISTS},
-    {"PING",     4, CMD_PING},     {"SAVE",     4, CMD_SAVE},     {"SYNC",     4, CMD_REPL_SYNC}, {"UNKNOWN",  7, CMD_UNKNOWN}
+    {"PING",     4, CMD_PING},     {"SAVE",     4, CMD_SAVE},     {"SYNC",     4, CMD_REPL_SYNC}, {"SYNC_DONE",9,CMD_REPL_SYNC_DONE}, {"UNKNOWN",  7, CMD_UNKNOWN}
 };
 
 
@@ -405,12 +405,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("SET", key, key_len, value, value_len, default_expire);
                 #endif
-                //增量同步，开启 eBPF 内核零拷贝通道
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);// 写入序列号
-                }
-                #endif
+                
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
@@ -446,11 +441,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("DEL", key, key_len, NULL, 0, default_expire); 
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif
+                
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[0]); // 💡 释放锁
             break;
@@ -466,11 +457,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("MOD", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif 
+                
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
@@ -499,11 +486,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("RSET", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif
+                
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
@@ -538,11 +521,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("RDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif
+                
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[1]); // 💡 释放锁
             break;
@@ -558,11 +537,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("RMOD", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif 
+                
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
@@ -593,11 +568,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                     log_binary_command("HSET", key, key_len, value, value_len, default_expire);
                     #endif
-                    #if ENABLE_REPLICATION_MASTER
-                    if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                    #endif
+                    
                 }
                 else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
                 else { reply->status = KVS_RESP_ERROR; }
@@ -639,11 +610,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                     log_binary_command("HDEL", key, key_len, NULL, 0, default_expire); 
                     #endif
-                    #if ENABLE_REPLICATION_MASTER
-                    if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                    #endif
+                    
                 } else { reply->status = KVS_RESP_NO_EXISTS; }
                 
                 pthread_rwlock_unlock(&seg_locks[idx]); 
@@ -663,11 +630,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                     log_binary_command("HMOD", key, key_len, value, value_len, default_expire);
                     #endif
-                    #if ENABLE_REPLICATION_MASTER
-                    if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                    #endif 
+                    
                 }
                 else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
                 else { reply->status = KVS_RESP_ERROR; }
@@ -704,11 +667,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("SSET", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif
+                
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
@@ -748,11 +707,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("SDEL", key, key_len, NULL, 0, default_expire); 
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif
+                
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[2]); // 💡 释放锁
             break;
@@ -770,11 +725,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
                 log_binary_command("SMOD", key, key_len, value, value_len, default_expire);
                 #endif
-                #if ENABLE_REPLICATION_MASTER
-                if (req->socket_tcp_seq != 0) {
-                    ebpf_add_whitelist_packet(req->socket_tcp_seq);
-                }
-                #endif 
+                
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
@@ -837,7 +788,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 printf("[Repl Master] RDMA link is already RTS. Triggering Zero-Copy log sync directly...\n");
                 fflush(stdout);
         
-                // 通过单边 RDMA Write 将全量日志源源不断地写向从端内存
                 if (repl_sync_log_via_rdma() != 0) {
                     printf("[Repl Error] Zero-Copy log sync via RDMA failed!\n");
                     fflush(stdout);
@@ -851,6 +801,20 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             #endif
 
+            //reply->status = KVS_RESP_OK;
+            break;
+        }
+        case CMD_REPL_SYNC_DONE: {
+            printf("[Master] Received SYNC_DONE from slave. Full sync completed!\n");
+    
+            // 全量同步完成，打开 TC 克隆开关
+            #if ENABLE_REPLICATION_MASTER
+            if (ebpf_set_forward_switch(1) == 0) {
+                printf("[Master] eBPF TC clone switch ENABLED.\n");
+            }
+            #endif
+    
+            //reply->status = KVS_RESP_OK;
             break;
         }
         

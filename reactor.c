@@ -30,7 +30,7 @@
 
 static stream_handler_t g_stream_handler = NULL;
 static int epfd = 0;
-static struct conn conn_list[CONNECTION_SIZE] = {0};
+struct conn conn_list[CONNECTION_SIZE] = {0};
 static struct timeval begin;
 
 int reactor_set_event(int fd, int event, int flag) {
@@ -51,7 +51,7 @@ int reactor_set_event(int fd, int event, int flag) {
     return 0;
 }
 
-static void close_and_free_connection(int fd) {
+void close_and_free_connection(int fd) {
     close(fd);
     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
     if (conn_list[fd].rbuffer) kvs_free(conn_list[fd].rbuffer);
@@ -63,7 +63,7 @@ static void close_and_free_connection(int fd) {
 void recv_cb(int fd) {
     struct conn *c = &conn_list[fd];
     
-    // 等待 RDMA 接收日志完成后，加载日志   如果日志没有接受完 这里什么都不做 接收完日志还能进入这里吗？？？
+    // 等待 RDMA 接收日志完成后，加载日志，回复"SYCN_DOWN"
     #if ENABLE_REPLICATION_SLAVE
     if (c->is_receiving_file) {
         if (rdma_check_transfer_complete(c) == 0) { 
@@ -71,6 +71,15 @@ void recv_cb(int fd) {
             kvs_persistence_recover();
             printf("[Reactor] Slave memory database successfully reloaded via RDMA bypass channel.\n");
             
+            const char *sync_done = "*2\r\n$9\r\nSYNC_DONE\r\n$1\r\n1\r\n";
+            int len = strlen(sync_done);
+            int sent = send(fd, sync_done, len, 0);
+            if (sent == len) {
+                printf("[Reactor] SYNC_DONE sent to master via TCP.\n");
+            } else {
+                printf("[Reactor Error] Failed to send SYNC_DONE!\n");
+            }
+
             // 挂载监听，接收主端 eBPF 转发过来的增量写命令或者客户端命令
             reactor_set_event(fd, EPOLLIN, 0);
         }
@@ -105,21 +114,6 @@ void recv_cb(int fd) {
     if (total_new_bytes == 0 && c->rlength == 0) return;
     if (!g_stream_handler) return;
 
-    //提取序列号
-    uint32_t current_tcp_seq = 0;
-
-    int rqueue = 0;
-    if (ioctl(fd, SIOCOUTQ, &rqueue) == 0) { 
-        current_tcp_seq = (uint32_t)rqueue; 
-    }
-
-    if (current_tcp_seq == 0) {
-        struct tcp_info my_info; 
-        socklen_t my_info_len = sizeof(my_info);        
-        if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &my_info, &my_info_len) == 0) {
-            current_tcp_seq = my_info.tcpi_unacked - total_new_bytes;
-        }
-    }
 
     int total_parsed_bytes = 0; 
     while (c->rlength > total_parsed_bytes) { 
@@ -135,7 +129,7 @@ void recv_cb(int fd) {
             is_master ? NULL : &c->wcapacity,
             is_master ? NULL : &c->wlength, 
             &expect_file_size,
-            current_tcp_seq 
+            fd 
         );
 
         if (status == 1) {
@@ -158,6 +152,7 @@ void recv_cb(int fd) {
             break; 
         }
         #endif 
+
         total_parsed_bytes += parsed_bytes;
     } 
 
@@ -264,7 +259,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
         int master_fd = repl_connect_to_master(master_ip, master_port); 
         
         if (master_fd < 0) {
-            fprintf(stderr, "[Repl Error] Slave failed to establish replication link.\n");
+            fprintf(stderr, "[Reactor Error] Slave failed to establish replication link.\n");
         }
 
     #endif

@@ -15,18 +15,12 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     if (!dev_list) return NULL;
 
     struct rdma_ring_ctx *rctx = calloc(1, sizeof(struct rdma_ring_ctx));
-    if (!rctx) goto err;
+    if (!rctx) {
+        ibv_free_device_list(dev_list);
+        return NULL;
+    }
 
-    rctx->channel = ibv_create_comp_channel(rctx->ctx);
-    if (!rctx->channel) goto err;
-
-    rctx->pd = ibv_alloc_pd(rctx->ctx);
-
-    rctx->cq = ibv_create_cq(rctx->ctx, 500, NULL, rctx->channel, 0); 
-    if (!rctx->cq) goto err;
-
-    ibv_req_notify_cq(rctx->cq, 0);
-
+    // 匹配指定的网卡名
     struct ibv_device *ib_dev = dev_list[0]; 
     if (dev_name) {
         for (int i = 0; dev_list[i]; i++) {
@@ -37,13 +31,27 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
         }
     }
 
+    // 打开硬件设备，拿到上下文 rctx->ctx
     rctx->ctx = ibv_open_device(ib_dev);
-    ibv_free_device_list(dev_list);
+    ibv_free_device_list(dev_list); // 拿到 ctx 后，设备列表就可以释放了
     if (!rctx->ctx) goto err;
 
-    rctx->pd = ibv_alloc_pd(rctx->ctx);
-    rctx->cq = ibv_create_cq(rctx->ctx, 500, NULL, NULL, 0); // 环形队列高频通信，CQ设大一点
+    // 用拿到的 rctx->ctx 创建完成事件通道 Channel
+    rctx->channel = ibv_create_comp_channel(rctx->ctx);
+    if (!rctx->channel) goto err;
 
+    // 创建保护域 PD
+    rctx->pd = ibv_alloc_pd(rctx->ctx);
+    if (!rctx->pd) goto err;
+
+    // 创建完成队列 CQ，并正确绑定 channel
+    rctx->cq = ibv_create_cq(rctx->ctx, 500, NULL, rctx->channel, 0); 
+    if (!rctx->cq) goto err;
+
+    // 开启 CQ 的事件通知
+    if (ibv_req_notify_cq(rctx->cq, 0) != 0) goto err;
+
+    // 配置并创建队列对 QP
     struct ibv_qp_init_attr qp_init_attr = {
         .send_cq = rctx->cq,
         .recv_cq = rctx->cq,
@@ -53,20 +61,23 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     rctx->qp = ibv_create_qp(rctx->pd, &qp_init_attr);
     if (!rctx->qp) goto err;
 
-    // 向内核申请 16MB 内存作为数据缓冲区
+    // 申请大块内存并注册为缓冲区 MR
     rctx->buffer = mmap(NULL, RING_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    // 注册内存，把前面申请的内存锁在物理内存中，并把物理地址映射表提交给 RDMA
+    if (rctx->buffer == MAP_FAILED) goto err;
+    
     rctx->mr_buf = ibv_reg_mr(rctx->pd, rctx->buffer, RING_BUFFER_SIZE, 
                              IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
-    // 分配并注册用于控制 Head/Tail 的元数据内存
+    // 申请并注册元数据（Head/Tail）MR
     rctx->local_meta = mmap(NULL, sizeof(struct ring_meta), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (rctx->local_meta == MAP_FAILED) goto err;
+    
     rctx->mr_meta = ibv_reg_mr(rctx->pd, rctx->local_meta, sizeof(struct ring_meta),
                               IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
     if (!rctx->mr_buf || !rctx->mr_meta) goto err;
 
-    // 填充本地暴露给对端的元数据参数
+    // 填充并初始化本地要交换的元数据
     rctx->local_meta->head = 0;
     rctx->local_meta->tail = 0;
     rctx->local_meta->buf_va = (uint64_t)(uintptr_t)rctx->buffer;
@@ -165,7 +176,7 @@ void rdma_ring_destroy(struct rdma_ring_ctx *rctx) {
     if (rctx->buffer) munmap(rctx->buffer, RING_BUFFER_SIZE);
     if (rctx->local_meta) munmap(rctx->local_meta, sizeof(struct ring_meta));
     if (rctx->cq) ibv_destroy_cq(rctx->cq);
-    if (rctx->channel) ibv_comp_channel_destroy(rctx->channel);
+    if (rctx->channel) ibv_destroy_comp_channel(rctx->channel);
     if (rctx->pd) ibv_dealloc_pd(rctx->pd);
     if (rctx->ctx) ibv_close_device(rctx->ctx);
     free(rctx);

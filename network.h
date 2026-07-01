@@ -19,11 +19,12 @@ extern volatile int server_should_exit;// 退出服务器标志
 
 typedef void (*RCALLBACK)(int fd);// 回调函数recv accept send
 
-typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, uint32_t tcp_seq);// 操作协议层的句柄
+typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd);// 操作协议层的句柄
 // 连接身份标志
 typedef enum {
     CONN_CLIENT = 0, // 普通客户端
-    CONN_MASTER = 1  // 主端
+    CONN_MASTER = 1, // 主端
+    CONN_SLAVE  = 2  //从端
 } conn_role_t;
 
 // io_uring 异步操作上下文定义
@@ -59,7 +60,8 @@ struct conn {
     long long already_recv_size;// 当前已经接收了多少字节
     int is_receiving_file;      // 1表示正在接收文件，0表示正常命令模式
 
-    conn_role_t role; // 当前连接的身份
+    conn_role_t role; // 当前连接的身份，默认为CONN_CLIENT
+    int ebpf_mounted; // 默认为0，未挂载
 
     struct rdma_ring_ctx *rdma_ctx;
 
@@ -90,6 +92,7 @@ extern int repl_flush();
 int reactor_start(unsigned short port, stream_handler_t handler);
 int reactor_set_event(int fd, int event, int flag);
 struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+void close_and_free_connection(int fd);
 #elif (NETWORK_SELECT == NETWORK_PROACTOR)
 int proactor_start(unsigned short port, stream_handler_t handler);
 void proactor_notify_tx_ready(int fd);

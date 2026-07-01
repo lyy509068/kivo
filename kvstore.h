@@ -42,7 +42,7 @@ void *kvs_realloc(void *ptr, size_t new_size);
 void kvs_free(void *ptr);
 
 //增量持久化
-#define ENABLE_PERSISTENCE        0       
+#define ENABLE_PERSISTENCE        1       
 #define PERSISTENCE_FILE    "kvstore.aof"  
 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
 int kvs_persistence_init(void);
