@@ -9,7 +9,7 @@
 #include "ebpf.h"
 
 #ifndef RDMA_DEV_NAME
-#define RDMA_DEV_NAME "mlx5_0"
+#define RDMA_DEV_NAME "rxe0"
 #endif
 
 #ifndef EBPF_OBJ_PATH

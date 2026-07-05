@@ -6,13 +6,40 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <arpa/inet.h>   
+#include <infiniband/verbs.h>
 #include "network.h"
 #include "rdma.h"
 
+// 内部辅助函数：动态获取指定网卡上的 RoCEv2 IPv4 GID 索引，彻底消灭 Hardcode 22 错误
+static int rdma_get_local_rocev2_gid_index(struct ibv_context *ctx, int port_num) {
+    union ibv_gid tg;
+    // 优先寻找符合 RoCEv2 IPv4 特征的 GID 槽位 (::ffff:x.x.x.x)
+    for (int i = 0; i < 16; i++) {
+        if (ibv_query_gid(ctx, port_num, i, &tg) != 0) break;
+        if (tg.global.interface_id == 0 && tg.global.subnet_prefix == 0) continue;
+
+        if (tg.raw[10] == 0xff && tg.raw[11] == 0xff) {
+            return i; // 精准匹配到 RoCEv2 IPv4 索引
+        }
+    }
+    // 次级备选：寻找任何一个非空的有效的本地 GID
+    for (int i = 0; i < 16; i++) {
+        if (ibv_query_gid(ctx, port_num, i, &tg) == 0) {
+            if (tg.global.interface_id != 0 || tg.global.subnet_prefix != 0) {
+                return i;
+            }
+        }
+    }
+    return 0; // 保底
+}
 
 struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     struct ibv_device **dev_list = ibv_get_device_list(NULL);
-    if (!dev_list) return NULL;
+    if (!dev_list) {
+        fprintf(stderr, "[RDMA Init Error] No RDMA devices found on this system.\n");
+        return NULL;
+    }
 
     struct rdma_ring_ctx *rctx = calloc(1, sizeof(struct rdma_ring_ctx));
     if (!rctx) {
@@ -20,8 +47,8 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
         return NULL;
     }
 
-    // 匹配指定的网卡名
-    struct ibv_device *ib_dev = dev_list[0]; 
+    // 精准匹配指定的网卡名，若指定了却找不到则直接熔断
+    struct ibv_device *ib_dev = NULL; 
     if (dev_name) {
         for (int i = 0; dev_list[i]; i++) {
             if (strcmp(ibv_get_device_name(dev_list[i]), dev_name) == 0) {
@@ -29,29 +56,33 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
                 break;
             }
         }
+        if (!ib_dev) {
+            fprintf(stderr, "[RDMA Init Error] Specified device '%s' not found!\n", dev_name);
+            ibv_free_device_list(dev_list);
+            free(rctx);
+            return NULL;
+        }
+    } else {
+        ib_dev = dev_list[0]; 
     }
 
-    // 打开硬件设备，拿到上下文 rctx->ctx
+    printf("[RDMA] Successfully attached to hardware device: %s\n", ibv_get_device_name(ib_dev));
+
     rctx->ctx = ibv_open_device(ib_dev);
-    ibv_free_device_list(dev_list); // 拿到 ctx 后，设备列表就可以释放了
+    ibv_free_device_list(dev_list); 
     if (!rctx->ctx) goto err;
 
-    // 用拿到的 rctx->ctx 创建完成事件通道 Channel
     rctx->channel = ibv_create_comp_channel(rctx->ctx);
     if (!rctx->channel) goto err;
 
-    // 创建保护域 PD
     rctx->pd = ibv_alloc_pd(rctx->ctx);
     if (!rctx->pd) goto err;
 
-    // 创建完成队列 CQ，并正确绑定 channel
     rctx->cq = ibv_create_cq(rctx->ctx, 500, NULL, rctx->channel, 0); 
     if (!rctx->cq) goto err;
 
-    // 开启 CQ 的事件通知
     if (ibv_req_notify_cq(rctx->cq, 0) != 0) goto err;
 
-    // 配置并创建队列对 QP
     struct ibv_qp_init_attr qp_init_attr = {
         .send_cq = rctx->cq,
         .recv_cq = rctx->cq,
@@ -61,15 +92,14 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     rctx->qp = ibv_create_qp(rctx->pd, &qp_init_attr);
     if (!rctx->qp) goto err;
 
-    // 申请大块内存并注册为缓冲区 MR
-    rctx->buffer = mmap(NULL, RING_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    // 使用 MAP_SHARED 规避 fork 场景下的内存解绑隐患
+    rctx->buffer = mmap(NULL, RING_BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (rctx->buffer == MAP_FAILED) goto err;
     
     rctx->mr_buf = ibv_reg_mr(rctx->pd, rctx->buffer, RING_BUFFER_SIZE, 
                              IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
-    // 申请并注册元数据（Head/Tail）MR
-    rctx->local_meta = mmap(NULL, sizeof(struct ring_meta), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    rctx->local_meta = mmap(NULL, sizeof(struct ring_meta), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (rctx->local_meta == MAP_FAILED) goto err;
     
     rctx->mr_meta = ibv_reg_mr(rctx->pd, rctx->local_meta, sizeof(struct ring_meta),
@@ -77,7 +107,6 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
 
     if (!rctx->mr_buf || !rctx->mr_meta) goto err;
 
-    // 填充并初始化本地要交换的元数据
     rctx->local_meta->head = 0;
     rctx->local_meta->tail = 0;
     rctx->local_meta->buf_va = (uint64_t)(uintptr_t)rctx->buffer;
@@ -93,15 +122,18 @@ err:
 
 int rdma_check_transfer_complete(struct conn *c) {
     if (c->rdma_ctx && c->rdma_ctx->local_meta->tail >= c->expect_file_size) {
-        return 0; // 全量大文件已安全落盘
+        return 0; 
     }
-    return 1; // 仍在传输中
+    return 1;
 }
 
 int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote) {
     struct ibv_qp_attr attr;
     int flags;
-    int ret; // 接收内核错误码
+    int ret;
+
+    // 动态识别当前硬件的传输层协议类型
+    enum ibv_transport_type transport = rctx->ctx->device->transport_type;
 
     // ------------------ 1. INIT 阶段 ------------------
     memset(&attr, 0, sizeof(attr));
@@ -112,56 +144,71 @@ int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote) {
     
     ret = ibv_modify_qp(rctx->qp, &attr, flags);
     if (ret != 0) {
-        fprintf(stderr, "[RDMA Kernel Error] QP transition to INIT failed: %s (error_code: %d)\n", 
-                strerror(ret), ret);
+        fprintf(stderr, "[RDMA Kernel Error] QP to INIT failed: %s (code: %d)\n", strerror(ret), ret);
         return -1;
     }
 
     // ------------------ 2. RTR (Ready to Receive) 阶段 ------------------
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTR;
-    attr.path_mtu = IBV_MTU_1024;
-    attr.dest_qp_num = remote->qpn;
-    attr.rq_psn = 0;
-    attr.max_dest_rd_atomic = 1;
-    attr.min_rnr_timer = 12;
 
-    attr.ah_attr.is_global = 1;           // 开启全局路由历史 (RoCE 必备)
-    attr.ah_attr.dlid = 0;                // RoCE 环境下 LID 必须强制为 0
-    attr.ah_attr.sl = 0;
-    attr.ah_attr.src_path_bits = 0;
-    attr.ah_attr.port_num = 1;
-    
-    attr.ah_attr.grh.dgid = remote->gid;  // 绑定刚刚跨网络传过来的远端从机 GID
-    attr.ah_attr.grh.flow_label = 0;
-    attr.ah_attr.grh.hop_limit = 64;
-    attr.ah_attr.grh.sgid_index = 1;      // 本地 GID 索引。注：如果测试依然报 22，可以尝试改为 1 或 2 (对应 RoCE v2)
+    if (transport == IBV_TRANSPORT_IWARP) {
+        // iWARP 协议极其轻量，RTR 状态变更只需要声明状态本身
+        flags = IBV_QP_STATE;
+    } else {
+        // RoCE / InfiniBand 专有链路配置
+        int target_local_gid_index = rdma_get_local_rocev2_gid_index(rctx->ctx, 1);
+        
+        attr.path_mtu = IBV_MTU_1024;
+        attr.dest_qp_num = remote->qpn;
+        attr.rq_psn = 0;
+        attr.max_dest_rd_atomic = 1;
+        attr.min_rnr_timer = 12;
 
-    flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
+        attr.ah_attr.is_global = 1;           
+        attr.ah_attr.dlid = 0;                
+        attr.ah_attr.sl = 0;
+        attr.ah_attr.src_path_bits = 0;
+        attr.ah_attr.port_num = 1;
+        
+        attr.ah_attr.grh.dgid = remote->gid;  
+        attr.ah_attr.grh.flow_label = 0;
+        attr.ah_attr.grh.hop_limit = 64;
+        attr.ah_attr.grh.sgid_index = target_local_gid_index; 
+
+        flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | 
+                IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER;
+    }
     
     ret = ibv_modify_qp(rctx->qp, &attr, flags);
     if (ret != 0) {
-        fprintf(stderr, "[RDMA Kernel Error] QP transition to RTR failed: %s (error_code: %d)\n", 
-                strerror(ret), ret);
-        fprintf(stderr, "[RDMA Hint] If error is 'Invalid argument'(22), check if your environment is RoCE (Ethernet). RoCE requires dlid=0 and is_global=1.\n");
-        return -2; // 返回 -2 代表死在 RTR
+        fprintf(stderr, "[RDMA Kernel Error] QP to RTR failed: %s (code: %d)\n", strerror(ret), ret);
+        return -2;
     }
 
     // ------------------ 3. RTS (Ready to Send) 阶段 ------------------
     memset(&attr, 0, sizeof(attr));
     attr.qp_state = IBV_QPS_RTS;
-    attr.sq_psn = 0;
-    attr.timeout = 14;
-    attr.retry_cnt = 7;
-    attr.rnr_retry = 7;
-    attr.max_rd_atomic = 1;
-    flags = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_MAX_QP_RD_ATOMIC;
+
+    if (transport == IBV_TRANSPORT_IWARP) {
+        // iWARP RTS 剪除硬重试和硬件超时掩码，避免内核抛出 22 错误
+        attr.max_rd_atomic = 1;
+        flags = IBV_QP_STATE | IBV_QP_MAX_QP_RD_ATOMIC;
+    } else {
+        // RoCE / InfiniBand 专有硬件流控与重传配置
+        attr.sq_psn = 0;
+        attr.timeout = 14;
+        attr.retry_cnt = 7;
+        attr.rnr_retry = 7;
+        attr.max_rd_atomic = 1;
+        flags = IBV_QP_STATE | IBV_QP_SQ_PSN | IBV_QP_TIMEOUT | 
+                IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY | IBV_QP_MAX_QP_RD_ATOMIC;
+    }
     
     ret = ibv_modify_qp(rctx->qp, &attr, flags);
     if (ret != 0) {
-        fprintf(stderr, "[RDMA Kernel Error] QP transition to RTS failed: %s (error_code: %d)\n", 
-                strerror(ret), ret);
-        return -3; // 返回 -3 代表死在 RTS
+        fprintf(stderr, "[RDMA Kernel Error] QP to RTS failed: %s (code: %d)\n", strerror(ret), ret);
+        return -3;
     }
 
     memcpy(&rctx->remote_meta, remote, sizeof(struct ring_meta));
@@ -185,105 +232,85 @@ void rdma_ring_destroy(struct rdma_ring_ctx *rctx) {
 extern struct rdma_ring_ctx *g_rdma_ctx; 
 
 int rdma_init_context(struct conn *c) {
-    if (!c) {
-        printf("[RDMA Error] Cannot init context for NULL connection\n");
-        return -1;
-    }
-
-    if (!g_rdma_ctx) {
-        printf("[RDMA Warning] Global RDMA hardware context is not initialized yet\n");
-        return -1;
-    }
-
-    // 将硬件上下文和网络连接绑定
-    // 这样在后面的 rdma_check_transfer_complete 里才能通过 c->rdma_ctx 读到 tail 指针
+    if (!c || !g_rdma_ctx) return -1;
     c->rdma_ctx = g_rdma_ctx; 
-
-    printf("[RDMA] Successfully bound RDMA ring buffer to connection (fd: %d)\n", c->fd);
     return 0;
 }
 
 int rdma_master_write_log_imm(struct rdma_ring_ctx *rctx, uint32_t log_size) {
     if (!rctx || log_size == 0) return -1;
 
-    // 1. 配置本地数据源地址（SGE）
     struct ibv_sge sge = {
-        .addr   = (uint64_t)(uintptr_t)rctx->buffer, // 本地要发送的日志缓存
+        .addr   = (uint64_t)(uintptr_t)rctx->buffer,
         .length = log_size,
         .lkey   = rctx->mr_buf->lkey
     };
 
-    // 2. 核心配置：构建带立即数的单边写工作请求 (WR)
     struct ibv_send_wr wr = {
-        .wr_id      = 99, // 自定义标识符，用于 CQ 校验
+        .wr_id      = 99, 
         .next       = NULL,
         .sg_list    = &sge,
         .num_sge    = 1,
-        .opcode     = IBV_WR_RDMA_WRITE_WITH_IMM, // ✨ 核心：带立即数的单边写
-        .send_flags = IBV_SEND_SIGNALED,          // 本地发送完也产生完成事件
-        .imm_data   = htonl(log_size),            // ✨ 核心：将长度作为立即数注入包头（转网络字节序）
+        .opcode     = IBV_WR_RDMA_WRITE_WITH_IMM,
+        .send_flags = IBV_SEND_SIGNALED,
+        .imm_data   = htonl(log_size), 
         .wr.rdma = {
-            .remote_addr = rctx->remote_meta.buf_va, // 远端物理内存虚拟首地址
-            .rkey        = rctx->remote_meta.rkey    // 远端访问密钥
+            .remote_addr = rctx->remote_meta.buf_va,
+            .rkey        = rctx->remote_meta.rkey
         }
     };
 
     struct ibv_send_wr *bad_wr = NULL;
-    // 3. 交给网卡硬件硬件发射
     if (ibv_post_send(rctx->qp, &wr, &bad_wr) != 0) {
         perror("[RDMA Master] ibv_post_send failed");
         return -2;
     }
 
-    // 4. 同步等待本地网卡把数据彻底推出去（高吞吐场景下，主端发出即可，此处等待确保安全）
     struct ibv_wc wc;
-    while (ibv_poll_cq(rctx->cq, 1, &wc) == 0);
-
-    if (wc.status != IBV_WC_SUCCESS) {
-        fprintf(stderr, "[RDMA Master] Send CQ expansion error: %s (status: %d)\n", 
-                ibv_wc_status_str(wc.status), wc.status);
-        return -3;
+    int poll_result;
+    while (1) {
+        poll_result = ibv_poll_cq(rctx->cq, 1, &wc);
+        if (poll_result > 0) {
+            if (wc.wr_id == 99) break;
+        } else if (poll_result < 0) {
+            return -3;
+        }
     }
 
-    return 0; // 发送成功
+    if (wc.status != IBV_WC_SUCCESS) {
+        fprintf(stderr, "[RDMA Master Error] Send CQE unsuccessful: %s\n", ibv_wc_status_str(wc.status));
+        return -4;
+    }
+
+    return 0; 
 }
 
 int rdma_slave_post_recv_envelope(struct rdma_ring_ctx *rctx, uint64_t wr_id) {
     struct ibv_recv_wr wr = {
-        .wr_id   = wr_id, // 槽位 ID
+        .wr_id   = wr_id,
         .next    = NULL,
-        .sg_list = NULL,  // 不需要指定接收内存，因为单边写数据直接由主端指定目的地直插内存
+        .sg_list = NULL,  
         .num_sge = 0
     };
     struct ibv_recv_wr *bad_wr = NULL;
-    
-    int ret = ibv_post_recv(rctx->qp, &wr, &bad_wr);
-    if (ret != 0) {
-        fprintf(stderr, "[RDMA Slave] Failed to post recv envelope: %s\n", strerror(ret));
-    }
-    return ret;
+    return ibv_post_recv(rctx->qp, &wr, &bad_wr);
 }
 
 int rdma_slave_block_and_get_imm(struct rdma_ring_ctx *rctx, uint32_t *out_log_size) {
     struct ibv_cq *cq;
     void *cq_context;
 
-    // 1. 【Kernel Bypass 的精髓】阻塞等待完成通道里的硬中断事件（不占用 CPU）
     if (ibv_get_cq_event(rctx->channel, &cq, &cq_context) != 0) {
         return -1;
     }
 
-    // 2. 确认收到事件确认（RDMA 规范要求）
     ibv_ack_cq_events(cq, 1);
+    ibv_req_notify_cq(cq, 0); 
 
-    // 3. 【类似于 Epoll 的每次苏醒重置】重新向网卡申请下一次传输完成通知
-    ibv_req_notify_cq(cq, 0);
-
-    // 4. 从完成队列 (CQ) 中把完成包拉出来
     struct ibv_wc wc;
     int num_completions = ibv_poll_cq(cq, 1, &wc);
     if (num_completions <= 0) {
-        return 0; // 空事件或抖动
+        return 0; 
     }
 
     if (wc.status != IBV_WC_SUCCESS) {
@@ -291,17 +318,12 @@ int rdma_slave_block_and_get_imm(struct rdma_ring_ctx *rctx, uint32_t *out_log_s
         return -2;
     }
 
-    // 5. 判定是否为对端推过来的双边立即数通知
-    if (wc.opcode & IBV_WC_RECV) {
-        // ✨ 从传输层 Header 中直接剥离主端写进来的立即数，转换为主机字节序
+    // 采用精准的 verbs 枚举匹配
+    if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
         *out_log_size = ntohl(wc.imm_data); 
-        
-        // 6. 拿走一个立即数，意味着消耗了一个接收槽，必须当场再给网卡补齐一个！
         rdma_slave_post_recv_envelope(rctx, wc.wr_id);
-        
-        return 1; // 成功收到日志信号
+        return 1; 
     }
 
     return 0;
 }
-

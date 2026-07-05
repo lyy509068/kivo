@@ -233,3 +233,36 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
     }
 }
 
+int protocol_process_udp_silent(const char *in_buf, int in_len) {
+    if (in_len <= 0) return -1;
+
+    const char *resp_start = NULL;
+    
+    for (int i = 0; i < in_len - 3; i++) {
+        if (in_buf[i] == '*') {
+            int j = i + 1;
+            while (j < in_len && in_buf[j] >= '0' && in_buf[j] <= '9') j++;
+            if (j > i + 1 && j < in_len - 1 && in_buf[j] == '\r' && in_buf[j+1] == '\n') {
+                resp_start = &in_buf[i];
+                break;
+            }
+        }
+    }
+    
+    if (!resp_start) return -1;
+
+    resp_request_t req;
+    memset(&req, 0, sizeof(resp_request_t));
+    resp_unpack(resp_start, resp_start, &req);
+
+    if (req.argc > 0 && req.argv && req.argv[0]) {
+        resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
+        if (g_command_handler) {
+            g_command_handler(&req, &reply); 
+        }
+        if (reply.body) kvs_free(reply.body);
+    }
+
+    free_resp_request(&req); 
+    return 0;
+}

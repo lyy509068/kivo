@@ -801,20 +801,19 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             #endif
 
-            //reply->status = KVS_RESP_OK;
             break;
         }
         case CMD_REPL_SYNC_DONE: {
             printf("[Master] Received SYNC_DONE from slave. Full sync completed!\n");
-    
-            // 全量同步完成，打开 TC 克隆开关
+
             #if ENABLE_REPLICATION_MASTER
-            if (ebpf_set_forward_switch(1) == 0) {
-                printf("[Master] eBPF TC clone switch ENABLED.\n");
+            if (ebpf_register_slave() == 0) {
+                if (ebpf_set_forward_switch(1) == 0) {
+                    printf("[Master] eBPF TC clone switch ENABLED.\n");
+                }
             }
             #endif
-    
-            //reply->status = KVS_RESP_OK;
+
             break;
         }
         

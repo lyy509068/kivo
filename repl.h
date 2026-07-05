@@ -14,31 +14,15 @@ struct repl_context {
     int wlength;
 };
 
-
-
-// 第一部分：通用生命周期与控制管理                      
-
 int repl_init(const char *rdma_dev, const char *ebpf_obj_path);
-
 void repl_destroy(void);
 
-
-// 第二部分：从端（Slave）核心函数         
-
 int repl_connect_to_master(const char *master_ip, unsigned short master_port);
-
 void slave_rdma_handshake_read_cb(int fd);
-
 int repl_start_slave_engine(void);
-
 void* pure_rdma_repl_slave_thread(void *arg);
 
-
-
-// 第三部分：主端（Master）核心函数                   
-
 void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd);
-
 int repl_sync_log_via_rdma(void);
 
-#endif 
+#endif

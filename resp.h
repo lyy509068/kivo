@@ -52,6 +52,7 @@ extern int ntyco_start(unsigned short port, stream_handler_t handler);
 void protocol_set_command_handler(cmd_handler_t handler);
 void protocol_process_resp(char *recv_buf, int *recv_len, char *send_buf, int *send_len);
 int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd);
+int protocol_process_udp_silent(const char *in_buf, int in_len);
 int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply);
 
 
