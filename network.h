@@ -8,14 +8,13 @@
 #define NETWORK_REACTOR      0
 #define NETWORK_PROACTOR     1
 #define NETWORK_NTYCO        2
-#define NETWORK_SELECT      NETWORK_REACTOR
+#define NETWORK_SELECT       0
 
 #define INIT_BUFFER_SIZE 4096
 #define MAX_PACKET_SIZE 10 * 1024 * 1024
 #define CONNECTION_SIZE 1024
 #define QUEUE_DEPTH 1024
 
-extern volatile int server_should_exit;// 退出服务器标志
 
 typedef void (*RCALLBACK)(int fd);// 回调函数recv accept send
 
@@ -80,44 +79,55 @@ struct conn {
     io_ctx_t send_ctx;
 };
 
-
-
-// 同步层
-extern struct repl_conn g_repl;
-extern int repl_flush();
+#if (NETWORK_SELECT == NETWORK_REACTOR)
+extern struct conn reactor_conn_list[];
+#elif (NETWORK_SELECT == NETWORK_PROACTOR)
+extern struct conn proactor_conn_list[];
+#elif (NETWORK_SELECT == NETWORK_NTYCO)
+extern struct conn ntyco_conn_list[];
+#endif
 
 // 函数声明
 #if (NETWORK_SELECT == NETWORK_REACTOR)
 int reactor_start(unsigned short port, stream_handler_t handler);
 int reactor_set_event(int fd, int event, int flag);
 struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
-void close_and_free_connection(int fd);
+void recv_cb(int fd); 
+void reactor_close_and_free_connection(int fd);
 #elif (NETWORK_SELECT == NETWORK_PROACTOR)
 int proactor_start(unsigned short port, stream_handler_t handler);
-void proactor_notify_tx_ready(int fd);
-int proactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+struct conn* proactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+void submit_recv(int fd);
+void proactor_close_and_free_connection(int fd);
 #elif (NETWORK_SELECT == NETWORK_NTYCO)
 int ntyco_start(unsigned short port, stream_handler_t handler);
-int ntyco_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+struct conn* ntyco_host_slave_connection(int fd, char *wbuf, int wcap, int wlen);
+void ntyco_close_and_free_connection(int fd);
 #endif
 
 
 
 #if (NETWORK_SELECT == NETWORK_REACTOR)
 
+    #define conn_list reactor_conn_list
+
     #define net_host_slave_connection  reactor_host_slave_connection
-    #define net_set_event(fd, ev, is_add) reactor_set_event(fd, ev, is_add)
+    #define net_close_and_free_connection reactor_close_and_free_connection
 
 #elif (NETWORK_SELECT == NETWORK_PROACTOR)
 
+    #define conn_list proactor_conn_list
+
     #define net_host_slave_connection  proactor_host_slave_connection
-    #define net_set_event(fd, ev, is_add) proactor_notify_tx_ready(fd)
+    #define net_close_and_free_connection proactor_close_and_free_connection
 
 #elif (NETWORK_SELECT == NETWORK_NTYCO) 
 
+    #define conn_list ntyco_conn_list
+
     #define net_host_slave_connection     ntyco_host_slave_connection
-    #define net_set_event(fd, ev, is_add) ((void)0)
+    #define net_close_and_free_connection ntyco_close_and_free_connection
 
 #endif
 
-#endif
+#endif 

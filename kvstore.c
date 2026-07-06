@@ -396,7 +396,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     #if ENABLE_ARRAY
         case CMD_SET:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; } 
-            pthread_rwlock_wrlock(&seg_locks[0]); // 💡 写入操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[0]); // 写入操作加写锁
             ret = kvs_array_set(&global_array, &kv_key, &kv_value, default_expire);
             //printf("[KVS_DEBUG] [ARRAY_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
@@ -409,12 +409,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
-            pthread_rwlock_unlock(&seg_locks[0]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[0]); // 释放锁
             break;
 
         case CMD_GET:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_rdlock(&seg_locks[0]); // 💡 读取操作加读锁
+            pthread_rwlock_rdlock(&seg_locks[0]); // 读取操作加读锁
             result = kvs_array_get(&global_array, &kv_key);
             //printf("[KVS_DEBUG] [ARRAY_GET] Engine returned result ptr = %p\n", (void*)result); 
             if (result && result->data && result->len > 0) {
@@ -427,12 +427,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     reply->body_len = result->len;
                 } else { reply->status = KVS_RESP_ERROR; }
             } else { reply->status = KVS_RESP_NO_EXISTS; }
-            pthread_rwlock_unlock(&seg_locks[0]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[0]); // 释放锁
             break;
         
         case CMD_DEL:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[0]); // 💡 删除操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[0]); // 删除操作加写锁
             ret = kvs_array_del(&global_array, &kv_key);
             //printf("[KVS_DEBUG] [ARRAY_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
@@ -443,12 +443,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #endif
                 
             } else { reply->status = KVS_RESP_NO_EXISTS; }
-            pthread_rwlock_unlock(&seg_locks[0]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[0]); // 释放锁
             break;
 
         case CMD_MOD:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[0]); // 💡 修改操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[0]); // 修改操作加写锁
             ret = kvs_array_mod(&global_array, &kv_key, &kv_value, default_expire);
             //printf("[KVS_DEBUG] [ARRAY_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
@@ -461,23 +461,23 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
-            pthread_rwlock_unlock(&seg_locks[0]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[0]); // 释放锁
             break;
 
         case CMD_EXISTS:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_rdlock(&seg_locks[0]); // 💡 存在性查询加读锁
+            pthread_rwlock_rdlock(&seg_locks[0]); // 存在性查询加读锁
             ret = kvs_array_exist(&global_array, &kv_key);
             //printf("[KVS_DEBUG] [ARRAY_EXIST] Engine returned ret = %d\n", ret); 
             reply->status = (ret == 0) ? KVS_RESP_EXISTS : KVS_RESP_NO_EXISTS;
-            pthread_rwlock_unlock(&seg_locks[0]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[0]); // 释放锁
             break;
     #endif
     
     #if ENABLE_RBTREE
         case CMD_RSET:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[1]); // 💡 红黑树写操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[1]); // 红黑树写操作加写锁
             ret = kvs_rbtree_set(&global_rbtree, &kv_key, &kv_value, default_expire);
             //printf("[KVS_DEBUG] [RBTREE_SET] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
@@ -490,12 +490,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
-            pthread_rwlock_unlock(&seg_locks[1]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[1]); // 释放锁
             break;
 
         case CMD_RGET:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_rdlock(&seg_locks[1]); // 💡 红黑树读操作加读锁
+            pthread_rwlock_rdlock(&seg_locks[1]); // 红黑树读操作加读锁
             result = kvs_rbtree_get(&global_rbtree, &kv_key);
             //printf("[KVS_DEBUG] [RBTREE_GET] Engine returned result ptr = %p\n", (void*)result); 
             if (result && result->data && result->len > 0) {
@@ -507,12 +507,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     reply->body_len = result->len;
                 } else { reply->status = KVS_RESP_ERROR; }
             } else { reply->status = KVS_RESP_NO_EXISTS; }
-            pthread_rwlock_unlock(&seg_locks[1]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[1]); // 释放锁
             break;
         
         case CMD_RDEL:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[1]); // 💡 红黑树删除操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[1]); // 红黑树删除操作加写锁
             ret = kvs_rbtree_del(&global_rbtree, &kv_key);
             //printf("[KVS_DEBUG] [RBTREE_DEL] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
@@ -523,12 +523,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #endif
                 
             } else { reply->status = KVS_RESP_NO_EXISTS; }
-            pthread_rwlock_unlock(&seg_locks[1]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[1]); // 释放锁
             break;
 
         case CMD_RMOD:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[1]); // 💡 红黑树修改操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[1]); // 红黑树修改操作加写锁
             ret = kvs_rbtree_mod(&global_rbtree, &kv_key, &kv_value, default_expire);
             //printf("[KVS_DEBUG] [RBTREE_MOD] Engine returned ret = %d\n", ret); 
             if (ret == 0) {
@@ -541,16 +541,16 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
-            pthread_rwlock_unlock(&seg_locks[1]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[1]); // 释放锁
             break;
 
         case CMD_REXISTS:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_rdlock(&seg_locks[1]); // 💡 红黑树查询操作加读锁
+            pthread_rwlock_rdlock(&seg_locks[1]); // 红黑树查询操作加读锁
             ret = kvs_rbtree_exist(&global_rbtree, &kv_key);
             //printf("[KVS_DEBUG] [RBTREE_EXIST] Engine returned ret = %d\n", ret); 
             reply->status = (ret == 0) ? KVS_RESP_EXISTS : KVS_RESP_NO_EXISTS;
-            pthread_rwlock_unlock(&seg_locks[1]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[1]); // 释放锁
             break;
     #endif
 
@@ -558,7 +558,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         case CMD_HSET:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             {
-                // 💡 直接使用系统自带算好的 idx 变量作为分段锁索引
+                // 直接使用系统自带算好的 idx 变量作为分段锁索引
                 pthread_rwlock_wrlock(&seg_locks[idx]); 
                 
                 ret = kvs_hash_set(&global_hash, &kv_key, &kv_value, default_expire);
@@ -580,7 +580,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         case CMD_HGET:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             {
-                // 💡 直接使用 idx 变量加读锁
+                // 直接使用 idx 变量加读锁
                 pthread_rwlock_rdlock(&seg_locks[idx]); 
                 
                 result = kvs_hash_get(&global_hash, &kv_key);
@@ -600,7 +600,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         case CMD_HDEL:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             {
-                // 💡 直接使用 idx 变量加写锁
+                // 直接使用 idx 变量加写锁
                 pthread_rwlock_wrlock(&seg_locks[idx]); 
                 
                 ret = kvs_hash_del(&global_hash, &kv_key);
@@ -620,7 +620,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         case CMD_HMOD:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             {
-                // 💡 直接使用 idx 变量加写锁
+                // 直接使用 idx 变量加写锁
                 pthread_rwlock_wrlock(&seg_locks[idx]); 
                 
                 ret = kvs_hash_mod(&global_hash, &kv_key, &kv_value, default_expire);
@@ -642,7 +642,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         case CMD_HEXISTS:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
             {
-                // 💡 直接使用 idx 变量加读锁
+                // 直接使用 idx 变量加读锁
                 pthread_rwlock_rdlock(&seg_locks[idx]); 
                 
                 ret = kvs_hash_exist(&global_hash, &kv_key);
@@ -656,7 +656,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     #if ENABLE_SKIPLIST 
         case CMD_SSET:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[2]); // 💡 跳表写操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[2]); // 跳表写操作加写锁
             ret = kvs_skip_set(&global_skip, &kv_key, &kv_value, default_expire);
              
             //printf("[KVS_DEBUG] [SKIP_SET] Engine returned ret = %d\n", ret); 
@@ -671,17 +671,17 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
-            pthread_rwlock_unlock(&seg_locks[2]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[2]); // 释放锁
             break;
 
         case CMD_SGET:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_rdlock(&seg_locks[2]); // 💡 跳表读操作加读锁
+            pthread_rwlock_rdlock(&seg_locks[2]); // 跳表读操作加读锁
             result = kvs_skip_get(&global_skip, &kv_key);
             
             if (result && result->data && result->len > 0) {
                 reply->status = KVS_RESP_GET_OK;
-                // 💡 在锁释放之前完成内存拷贝，多线程下绝对安全
+                // 在锁释放之前完成内存拷贝，多线程下绝对安全
                 reply->body = kvs_malloc(result->len+1);
                 if (reply->body) {
                     memcpy(reply->body, result->data, result->len);
@@ -691,12 +691,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             } else {
                 reply->status = KVS_RESP_NO_EXISTS;
             }
-            pthread_rwlock_unlock(&seg_locks[2]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[2]); // 释放锁
             break;
 
         case CMD_SDEL:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[2]); // 💡 跳表删除操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[2]); // 跳表删除操作加写锁
             ret = kvs_skip_del(&global_skip, &kv_key);
             
             //printf("[KVS_DEBUG] [SKIP_DEL] Engine returned ret = %d\n", ret); 
@@ -709,12 +709,12 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 #endif
                 
             } else { reply->status = KVS_RESP_NO_EXISTS; }
-            pthread_rwlock_unlock(&seg_locks[2]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[2]); // 释放锁
             break;
 
         case CMD_SMOD:
             if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_wrlock(&seg_locks[2]); // 💡 跳表修改操作加写锁
+            pthread_rwlock_wrlock(&seg_locks[2]); // 跳表修改操作加写锁
             ret = kvs_skip_mod(&global_skip, &kv_key, &kv_value, default_expire);
             
             //printf("[KVS_DEBUG] [SKIP_MOD] Engine returned ret = %d\n", ret); 
@@ -729,17 +729,17 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
             else { reply->status = KVS_RESP_ERROR; }
-            pthread_rwlock_unlock(&seg_locks[2]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[2]); // 释放锁
             break;
 
         case CMD_SEXISTS:
             if (req->argc < 2) { reply->status = KVS_RESP_PARSE_ERROR; break; }
-            pthread_rwlock_rdlock(&seg_locks[2]); // 💡 跳表查询操作加读锁
+            pthread_rwlock_rdlock(&seg_locks[2]); // 跳表查询操作加读锁
             ret = kvs_skip_exist(&global_skip, &kv_key);
             
             //printf("[KVS_DEBUG] [SKIP_EXIST] Engine returned ret = %d\n", ret); 
             reply->status = (ret == 0) ? KVS_RESP_EXISTS : KVS_RESP_NO_EXISTS;
-            pthread_rwlock_unlock(&seg_locks[2]); // 💡 释放锁
+            pthread_rwlock_unlock(&seg_locks[2]); // 释放锁
             break;
     #endif
         case CMD_PING:{

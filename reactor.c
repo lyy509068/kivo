@@ -30,7 +30,9 @@
 
 static stream_handler_t g_stream_handler = NULL;
 static int epfd = 0;
-struct conn conn_list[CONNECTION_SIZE] = {0};
+
+struct conn reactor_conn_list[CONNECTION_SIZE] = {0};
+
 static struct timeval begin;
 
 int reactor_set_event(int fd, int event, int flag) {
@@ -40,7 +42,7 @@ int reactor_set_event(int fd, int event, int flag) {
         ev.data.fd = fd;
         epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
     } else {
-        if (conn_list[fd].role == CONN_MASTER || (event & EPOLLOUT)) {
+        if (reactor_conn_list[fd].role == CONN_MASTER || (event & EPOLLOUT)) {
             ev.events = event | EPOLLIN; 
         } else {
             ev.events = event;
@@ -51,17 +53,17 @@ int reactor_set_event(int fd, int event, int flag) {
     return 0;
 }
 
-void close_and_free_connection(int fd) {
+void reactor_close_and_free_connection(int fd) {
     close(fd);
     epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-    if (conn_list[fd].rbuffer) kvs_free(conn_list[fd].rbuffer);
-    if (conn_list[fd].wbuffer) kvs_free(conn_list[fd].wbuffer);
-    memset(&conn_list[fd], 0, sizeof(struct conn));
+    if (reactor_conn_list[fd].rbuffer) kvs_free(reactor_conn_list[fd].rbuffer);
+    if (reactor_conn_list[fd].wbuffer) kvs_free(reactor_conn_list[fd].wbuffer);
+    memset(&reactor_conn_list[fd], 0, sizeof(struct conn));
 }
 
 
 void recv_cb(int fd) {
-    struct conn *c = &conn_list[fd];
+    struct conn *c = &reactor_conn_list[fd];
 
     // 收到 RESP 命令
     int total_new_bytes = 0; 
@@ -70,7 +72,7 @@ void recv_cb(int fd) {
             int new_capacity = c->rcapacity * 2;
             if (new_capacity < 4096) new_capacity = 4096;
             char *new_buf = (char *)kvs_realloc(c->rbuffer, new_capacity);
-            if (!new_buf) { close_and_free_connection(fd); return; }
+            if (!new_buf) { reactor_close_and_free_connection(fd); return; }
             c->rbuffer = new_buf;
             c->rcapacity = new_capacity;
         }
@@ -80,9 +82,9 @@ void recv_cb(int fd) {
         
         if (count < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-            close_and_free_connection(fd); return;
+            reactor_close_and_free_connection(fd); return;
         }    
-        if (count == 0) { close_and_free_connection(fd); return; }    
+        if (count == 0) { reactor_close_and_free_connection(fd); return; }    
         c->rlength += count;
         total_new_bytes += count; 
     }
@@ -113,7 +115,7 @@ void recv_cb(int fd) {
         } 
         else if (status < 0) {
             if (c->role == CONN_MASTER) c->wlength = 0;
-            close_and_free_connection(fd); return;
+            reactor_close_and_free_connection(fd); return;
         }
 
         total_parsed_bytes += parsed_bytes;
@@ -138,19 +140,19 @@ void recv_cb(int fd) {
 }
 
 void send_cb(int fd) { 
-    if (conn_list[fd].wlength > 0) {
-        int count = send(fd, conn_list[fd].wbuffer, conn_list[fd].wlength, MSG_DONTWAIT);
+    if (reactor_conn_list[fd].wlength > 0) {
+        int count = send(fd, reactor_conn_list[fd].wbuffer, reactor_conn_list[fd].wlength, MSG_DONTWAIT);
         if (count < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return;
-            close_and_free_connection(fd); return;
+            reactor_close_and_free_connection(fd); return;
         }
-        if (count < conn_list[fd].wlength) {
-            int remaining = conn_list[fd].wlength - count;
-            memmove(conn_list[fd].wbuffer, conn_list[fd].wbuffer + count, remaining);
-            conn_list[fd].wlength = remaining;
+        if (count < reactor_conn_list[fd].wlength) {
+            int remaining = reactor_conn_list[fd].wlength - count;
+            memmove(reactor_conn_list[fd].wbuffer, reactor_conn_list[fd].wbuffer + count, remaining);
+            reactor_conn_list[fd].wlength = remaining;
             return; 
         }
-        conn_list[fd].wlength = 0;
+        reactor_conn_list[fd].wlength = 0;
     }
     reactor_set_event(fd, EPOLLIN, 0); 
 }
@@ -163,21 +165,21 @@ void accept_cb(int fd) {
     if (clientfd < 0) return;
     if (clientfd >= CONNECTION_SIZE) { close(clientfd); return; }
 
-    conn_list[clientfd].fd = clientfd;
-    conn_list[clientfd].send_callback = send_cb;
-    conn_list[clientfd].read_callback = recv_cb;
-    conn_list[clientfd].accept_callback = NULL;
-    conn_list[clientfd].role = CONN_CLIENT; 
+    reactor_conn_list[clientfd].fd = clientfd;
+    reactor_conn_list[clientfd].send_callback = send_cb;
+    reactor_conn_list[clientfd].read_callback = recv_cb;
+    reactor_conn_list[clientfd].accept_callback = NULL;
+    reactor_conn_list[clientfd].role = CONN_CLIENT; 
         
-    conn_list[clientfd].rcapacity = INIT_BUFFER_SIZE;
-    conn_list[clientfd].rbuffer = (char*)kvs_malloc(INIT_BUFFER_SIZE);
-    conn_list[clientfd].wcapacity = INIT_BUFFER_SIZE;
-    conn_list[clientfd].wbuffer = (char*)kvs_malloc(INIT_BUFFER_SIZE);
-    conn_list[clientfd].rlength = 0;
-    conn_list[clientfd].wlength = 0;
+    reactor_conn_list[clientfd].rcapacity = INIT_BUFFER_SIZE;
+    reactor_conn_list[clientfd].rbuffer = (char*)kvs_malloc(INIT_BUFFER_SIZE);
+    reactor_conn_list[clientfd].wcapacity = INIT_BUFFER_SIZE;
+    reactor_conn_list[clientfd].wbuffer = (char*)kvs_malloc(INIT_BUFFER_SIZE);
+    reactor_conn_list[clientfd].rlength = 0;
+    reactor_conn_list[clientfd].wlength = 0;
     
-    if (!conn_list[clientfd].rbuffer || !conn_list[clientfd].wbuffer) {
-        close_and_free_connection(clientfd); return;
+    if (!reactor_conn_list[clientfd].rbuffer || !reactor_conn_list[clientfd].wbuffer) {
+        reactor_close_and_free_connection(clientfd); return;
     }
     
     reactor_set_event(clientfd, EPOLLIN, 1);
@@ -208,8 +210,8 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     int listen_fd = init_listen_socket(port);
     if (listen_fd < 0) return -1;
    
-    conn_list[listen_fd].fd = listen_fd;
-    conn_list[listen_fd].accept_callback = accept_cb;
+    reactor_conn_list[listen_fd].fd = listen_fd;
+    reactor_conn_list[listen_fd].accept_callback = accept_cb;
     reactor_set_event(listen_fd, EPOLLIN, 1);
     
     gettimeofday(&begin, NULL);
@@ -233,15 +235,15 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
         for (int i = 0; i < nready; i++) {
             int connfd = events[i].data.fd;
             if (events[i].events & EPOLLIN) {                
-                if (conn_list[connfd].read_callback) {
-                    conn_list[connfd].read_callback(connfd);
-                } else if (conn_list[connfd].accept_callback) {
-                    conn_list[connfd].accept_callback(connfd);
+                if (reactor_conn_list[connfd].read_callback) {
+                    reactor_conn_list[connfd].read_callback(connfd);
+                } else if (reactor_conn_list[connfd].accept_callback) {
+                    reactor_conn_list[connfd].accept_callback(connfd);
                 }
             }
             if (events[i].events & EPOLLOUT) {
-                if (conn_list[connfd].send_callback) {
-                    conn_list[connfd].send_callback(connfd);
+                if (reactor_conn_list[connfd].send_callback) {
+                    reactor_conn_list[connfd].send_callback(connfd);
                 }
             }
         }
@@ -253,7 +255,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
 struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wlen) {
     if (fd < 0 || fd >= CONNECTION_SIZE) return NULL; 
 
-    struct conn *c = &conn_list[fd];
+    struct conn *c = &reactor_conn_list[fd];
     c->fd = fd;
     c->read_callback = recv_cb;   
     c->send_callback = send_cb;   
@@ -261,7 +263,7 @@ struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wle
 
     c->role = CONN_MASTER; 
 
-    c->rbuffer = (char *)kvs_malloc(4096); 
+    c->rbuffer = (char *)kvs_malloc(4096);   
     if (!c->rbuffer) return NULL;
     c->rcapacity = 4096;
     c->rlength = 0;

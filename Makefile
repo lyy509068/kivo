@@ -1,11 +1,11 @@
 CC = gcc
 CLANG = clang
-CFLAGS = -Wall -g -D_GNU_SOURCE -I ./NtyCo/core/
+CFLAGS = -Wall -g -I ./NtyCo/core/
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm -lbpf -lelf -lz
 
 BPF_CFLAGS = -target bpf -D__TARGET_ARCH_x86 -I/usr/include/x86_64-linux-gnu -I/usr/include -g -O2 -Wall
 
-SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c resp.c udp.c\
+SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c proactor.c ntyco.c resp.c udp.c\
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c \
        rdma.c ebpf.c repl.c
 
@@ -14,7 +14,7 @@ TESTCASES = test_fullpersistence1 test_fullpersistence2 test_incrementpersistenc
             test_incrementpersistence2 test_mempool test_master test_slave test_TTL
 SUBDIR = ./NtyCo/
 
-OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o resp.o udp.o\
+OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o udp.o\
        kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
        rdma.o ebpf.o repl.o
 

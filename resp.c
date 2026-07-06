@@ -195,10 +195,9 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             extern struct conn conn_list[]; 
             struct conn *c = &conn_list[fd];
             if (req.argc > 0) {
-                // 处理从端发来的 RDMA_CONNECT 握手命令
                 if (strcmp(req.argv[0], "RDMA_CONNECT") == 0) {
                     c->role = CONN_SLAVE;
-                    handle_master_rdma_connect(&req, wbuf, wcap, wlen, fd);
+                    handle_master_rdma_connect(&req, wbuf, wcap, wlen, fd);//收到 RDMA_CONNECT 握手命令，不经过网络层，直接回复一个RDMA_CONNECT_ACK
                     free_resp_request(&req);
                     processed += single_cmd_len;
                     continue; 

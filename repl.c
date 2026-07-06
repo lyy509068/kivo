@@ -18,6 +18,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 
 #define REPL_INIT_BUFFER_SIZE 4096
 #define DEFAULT_RDMA_DEVICE "rxe0"
@@ -30,8 +31,6 @@ static struct repl_context g_repl_ctx = { .fd = -1, .wbuffer = NULL, .wcapacity 
 
 struct rdma_ring_ctx *g_rdma_ctx = NULL; 
 
-extern void recv_cb(int fd); 
-extern struct conn conn_list[];
 extern int start_replica_udp_server_coroutine(int listen_port);
 
 // 动态嗅探 RoCEv2 IPv4 GID
@@ -51,7 +50,7 @@ static int get_rocev2_ipv4_gid(struct ibv_context *ctx, int port_num, union ibv_
     return -1;
 }
 
-// ✅ 与 repl.h 保持一致的签名
+
 int repl_init(const char *rdma_dev, const char *ebpf_obj_path) {
     const char *final_dev = rdma_dev ? rdma_dev : DEFAULT_RDMA_DEVICE;
     printf("[Repl] Initializing RDMA engine on device: %s\n", final_dev);
@@ -86,78 +85,8 @@ int repl_start_slave_engine(void) {
     }
     g_running = 1;
     if (pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL) != 0) return -1;
-    printf("[Repl Slave] Handshake complete. Pure RDMA background replication engine IS RUNNING.\n");
+    printf("[Repl Slave] Pure RDMA background replication engine IS RUNNING.\n");
     return 0;
-}
-
-void slave_rdma_handshake_read_cb(int fd) {
-    struct conn *c = &conn_list[fd];
-    int total_new_bytes = 0;
-    while (1) {
-        if (c->rcapacity - c->rlength < 1024) {
-            int new_capacity = c->rcapacity * 2;
-            if (new_capacity < 4096) new_capacity = 4096;
-            char *new_buf = (char *)kvs_realloc(c->rbuffer, new_capacity);
-            if (!new_buf) { close_and_free_connection(fd); return; }
-            c->rbuffer = new_buf;
-            c->rcapacity = new_capacity;
-        }
-        int remaining_space = c->rcapacity - c->rlength;
-        int count = recv(fd, c->rbuffer + c->rlength, remaining_space, MSG_DONTWAIT);
-        if (count < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-            close_and_free_connection(fd); return;
-        }
-        if (count == 0) { close_and_free_connection(fd); return; }
-        c->rlength += count;
-        total_new_bytes += count;
-    }
-
-    if (total_new_bytes == 0 && c->rlength == 0) return;
-
-    if (strstr(c->rbuffer, "RDMA_CONNECT_ACK") != NULL) {
-        printf("[Protocol Slave] Intercepted RDMA_CONNECT_ACK successfully!\n");
-        struct ring_meta master_meta;
-        char *lines[16];
-        int line_idx = 0;
-        char *token = strtok(c->rbuffer, "\r\n");
-        while (token && line_idx < 16) {
-            lines[line_idx++] = token;
-            token = strtok(NULL, "\r\n");
-        }
-
-        if (line_idx >= 11) {
-            master_meta.rkey   = (uint32_t)strtoul(lines[4], NULL, 10);
-            master_meta.buf_va = (uint64_t)strtoull(lines[6], NULL, 10); 
-            master_meta.qpn    = (uint32_t)strtoul(lines[8], NULL, 10);
-            
-            char *gid_str = lines[10];
-            for (int i = 0; i < 16; i++) {
-                unsigned int b;
-                sscanf(gid_str + i * 2, "%02x", &b);
-                master_meta.gid.raw[i] = (uint8_t)b;
-            }
-
-            if (rdma_ring_configure(g_rdma_ctx, &master_meta) != 0) {
-                fprintf(stderr, "[Protocol Slave Error] Failed to configure Slave QP to RTS!\n");
-                close_and_free_connection(fd);
-                return;
-            }
-            printf("[Protocol Slave] RDMA Pipeline is now RTS.\n");
-
-            const char *sync_cmd = "*1\r\n$4\r\nSYNC\r\n";
-            send(fd, sync_cmd, strlen(sync_cmd), 0);
-            printf("[Protocol Slave] SYNC request injected into TCP channel. Handshake over.\n");
-
-            repl_start_slave_engine();
-
-            c->rlength = 0;                                  
-            c->read_callback = recv_cb;          
-            reactor_set_event(fd, EPOLLIN, 0);
-        } else {
-            close_and_free_connection(fd);
-        }
-    }
 }
 
 int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
@@ -184,6 +113,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     
     printf("Slave: Successfully connected to Master at %s:%d\n", master_ip, master_port);
     
+    // 发送 RDMA_CONNECT
     uint32_t my_rkey = g_rdma_ctx->mr_buf->rkey;
     uint64_t my_vaddr = (uint64_t)(uintptr_t)g_rdma_ctx->buffer;
     uint32_t my_qpn = g_rdma_ctx->qp->qp_num;
@@ -192,23 +122,18 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     int gid_idx;
     memset(&my_gid, 0, sizeof(my_gid));
     if (get_rocev2_ipv4_gid(g_rdma_ctx->ctx, 1, &my_gid, &gid_idx) == 0) {
-        printf("[Repl] Dynamically resolved RoCEv2 IPv4 GID at index %d\n", gid_idx);
     } else {
-        printf("[Repl Warning] Cannot find RoCEv2 IPv4 GID, fallback to Index 0\n");
         ibv_query_gid(g_rdma_ctx->ctx, 1, 0, &my_gid);
     }
 
     char rkey_str[32], vaddr_str[64], qpn_str[32];
     char gid_str[64] = {0}; 
-
     sprintf(rkey_str, "%u", my_rkey);
     sprintf(vaddr_str, "%lu", my_vaddr);
     sprintf(qpn_str, "%u", my_qpn);
 
     char *p = gid_str;
-    for (int i = 0; i < 16; i++) {
-        p += sprintf(p, "%02x", my_gid.raw[i]);
-    }
+    for (int i = 0; i < 16; i++) p += sprintf(p, "%02x", my_gid.raw[i]);
 
     char sync_cmd[512];
     int cmd_len = sprintf(sync_cmd, "*5\r\n$12\r\nRDMA_CONNECT\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n", 
@@ -228,22 +153,74 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     }
     g_repl_ctx.wlength = 0; 
 
-    int flags = fcntl(g_repl_ctx.fd, F_GETFL, 0);
-    if (flags >= 0) fcntl(g_repl_ctx.fd, F_SETFL, flags | O_NONBLOCK);
+    printf("[Repl Slave] RDMA_CONNECT sent. Waiting for ACK...\n");
 
-    struct conn *c = reactor_host_slave_connection(g_repl_ctx.fd, g_repl_ctx.wbuffer, g_repl_ctx.wcapacity, g_repl_ctx.wlength);
+    // 阻塞接收 ACK
+    char ack_buf[512];
+    int ack_total = 0;
+    while (ack_total < (int)sizeof(ack_buf) - 1) {
+        int n = recv(g_repl_ctx.fd, ack_buf + ack_total, sizeof(ack_buf) - 1 - ack_total, 0);
+        if (n <= 0) break;
+        ack_total += n;
+        ack_buf[ack_total] = '\0';
+        if (strstr(ack_buf, "\r\n")) break;
+    }
+
+    // 解析 ACK，配置 QP
+    if (ack_total > 0 && strstr(ack_buf, "RDMA_CONNECT_ACK")) {
+        printf("[Repl Slave] Received RDMA_CONNECT_ACK (%d bytes)\n", ack_total);
+
+        struct ring_meta master_meta;
+        char *lines[16];
+        int line_idx = 0;
+        char *token = strtok(ack_buf, "\r\n");
+        while (token && line_idx < 16) {
+            lines[line_idx++] = token;
+            token = strtok(NULL, "\r\n");
+        }
+
+        if (line_idx >= 11) {
+            master_meta.rkey   = (uint32_t)strtoul(lines[4], NULL, 10);
+            master_meta.buf_va = (uint64_t)strtoull(lines[6], NULL, 10);
+            master_meta.qpn    = (uint32_t)strtoul(lines[8], NULL, 10);
+
+            char *gid_str = lines[10];
+            for (int i = 0; i < 16; i++) {
+                unsigned int b;
+                sscanf(gid_str + i * 2, "%02x", &b);
+                master_meta.gid.raw[i] = (uint8_t)b;
+            }
+
+            if (rdma_ring_configure(g_rdma_ctx, &master_meta) != 0) {
+                fprintf(stderr, "[Slave Error] Failed to configure QP!\n");
+                close(g_repl_ctx.fd);
+                g_repl_ctx.fd = -1;
+                return -1;
+            }
+
+            // 发送 SYNC
+            const char *sync = "*1\r\n$4\r\nSYNC\r\n";
+            send(g_repl_ctx.fd, sync, strlen(sync), 0);
+            printf("[Repl Slave] SYNC sent. Handshake complete.\n");
+
+            // 启动 RDMA 引擎
+            repl_start_slave_engine();
+        }
+    }
+
+    // 设为非阻塞，托管
+    int flags = fcntl(g_repl_ctx.fd, F_GETFL, 0);
+    fcntl(g_repl_ctx.fd, F_SETFL, flags | O_NONBLOCK);
+
+    struct conn *c = net_host_slave_connection(g_repl_ctx.fd, g_repl_ctx.wbuffer, g_repl_ctx.wcapacity, g_repl_ctx.wlength);
     if (!c) return -1;
 
     rdma_init_context(c);
-    conn_list[g_repl_ctx.fd].read_callback = slave_rdma_handshake_read_cb;
-
-    printf("[Repl Slave] Pure RDMA Handshake sent. Waiting for Master metadata...\n");
     return g_repl_ctx.fd;
 }
 
-// ✅ 与 repl.h 保持一致的签名
 void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd) {
-    printf("[Protocol Master] Intercepted RDMA_CONNECT. Shaking hands with slave...\n");
+    printf("[Repl Master] Recieved RDMA_CONNECT. Shaking hands with slave...\n");
     
     struct ring_meta slave_meta;
     slave_meta.rkey = (uint32_t)strtoul(req->argv[1], NULL, 10);
@@ -256,9 +233,9 @@ void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int
     }
 
     if (rdma_ring_configure(g_rdma_ctx, &slave_meta) != 0) {
-        fprintf(stderr, "[Protocol Master Error] Failed to configure Master QP to RTS!\n");
+        //fprintf(stderr, "[Protocol Master Error] Failed to configure Master QP to RTS!\n");
     } else {
-        printf("[Protocol Master] RDMA Pipeline is now RTS (Ready to Send).\n");
+        //printf("[Protocol Master] RDMA Pipeline is now RTS (Ready to Send).\n");
     }
 
     uint32_t my_rkey = g_rdma_ctx->mr_buf->rkey;
@@ -268,8 +245,9 @@ void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int
     union ibv_gid my_gid;
     int gid_idx;
     memset(&my_gid, 0, sizeof(my_gid));
+
     if (get_rocev2_ipv4_gid(g_rdma_ctx->ctx, 1, &my_gid, &gid_idx) == 0) {
-        printf("[Protocol Master] Dynamically matched RoCEv2 IPv4 GID at Index: %d\n", gid_idx);
+        //printf("[Protocol Master] Dynamically matched RoCEv2 IPv4 GID at Index: %d\n", gid_idx);
     } else {
         ibv_query_gid(g_rdma_ctx->ctx, 1, 0, &my_gid);
     }
@@ -290,11 +268,11 @@ void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int
 
     int total_sent = 0;
     while (total_sent < ack_len) {
-        int sent = send(fd, ack_cmd + total_sent, ack_len - total_sent, 0);
+        int sent = send(fd, ack_cmd + total_sent, ack_len - total_sent, 0);//网络底层改变对这里不影响把？？
         if (sent <= 0) return;
         total_sent += sent;
     }
-    printf("[Protocol Master] RDMA_CONNECT_ACK sent successfully (%d bytes).\n", total_sent);
+    printf("[Repl Master] RDMA_CONNECT_ACK sent successfully (%d bytes).\n", total_sent);
 
     if (wbuf && wcap && wlen) {
         int needed = *wlen + ack_len + 1;
@@ -314,7 +292,6 @@ int repl_sync_log_via_rdma(void) {
         printf("[Repl Error] RDMA context not ready for log sync.\n");
         return -1;
     }
-    printf("[Repl] Intercepted SYNC command. Starting RDMA Zero-Copy with IMM...\n");
 
     int fd = open(PERSISTENCE_FILE, O_RDONLY);
     if (fd < 0) {
@@ -336,18 +313,25 @@ int repl_sync_log_via_rdma(void) {
         return -1;
     }
 
-    memset(g_rdma_ctx->buffer, 0, RING_BUFFER_SIZE);
-    ssize_t read_bytes = read(fd, g_rdma_ctx->buffer, file_size);
-    close(fd); 
-    if (read_bytes != (ssize_t)file_size) return -1;
+    // 用 mmap + memcpy 替代 read，避免 ntyco 协程阻塞
+    void *mapped = mmap(NULL, file_size, PROT_READ, MAP_SHARED, fd, 0);
+    close(fd);
+    if (mapped == MAP_FAILED) {
+        perror("[Repl Error] mmap failed");
+        return -1;
+    }
+
+    memcpy(g_rdma_ctx->buffer, mapped, file_size);
+    munmap(mapped, file_size);
 
     int ret = rdma_master_write_log_imm(g_rdma_ctx, (uint32_t)file_size);
     if (ret != 0) return -1;
 
-    printf("[Repl] Successfully pushed %zu bytes to slave and triggered slave hardware event.\n", file_size);
+    printf("Master : Successfully pushed %zu bytes to slave.\n", file_size);
     return 0;
 }
 
+// 接收全量日志线程
 void* pure_rdma_repl_slave_thread(void *arg) {
     printf("[Repl Slave Thread] Pure RDMA replication engine started.\n");
     
@@ -365,9 +349,9 @@ void* pure_rdma_repl_slave_thread(void *arg) {
             }
 
             kvs_persistence_recover();
-            printf("[Repl Slave] Reload successfully!\n");
+            printf("[Repl Slave] AOF reload successfully!\n");
 
-             start_replica_udp_server_coroutine(3000);
+            start_replica_udp_server_coroutine(3000);
 
             const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
             send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
