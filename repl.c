@@ -389,3 +389,21 @@ void repl_destroy(void) {
         g_repl_ctx.fd = -1;
     }
 }
+
+void repl_push_cmd(const char *cmd, void *key, int key_len, void *value, int value_len) {
+    if (g_repl_ctx.fd < 0) return;
+
+    char buf[512];
+    int len;
+    if (value && value_len > 0) {
+        len = snprintf(buf, sizeof(buf), "*3\r\n$%zu\r\n%s\r\n$%d\r\n%.*s\r\n$%d\r\n%.*s\r\n",
+                       strlen(cmd), cmd,
+                       key_len, key_len, (char*)key,
+                       value_len, value_len, (char*)value);
+    } else {
+        len = snprintf(buf, sizeof(buf), "*2\r\n$%zu\r\n%s\r\n$%d\r\n%.*s\r\n",
+                       strlen(cmd), cmd,
+                       key_len, key_len, (char*)key);
+    }
+    send(g_repl_ctx.fd, buf, len, MSG_DONTWAIT);
+}

@@ -1,0 +1,69 @@
+#include <iostream>
+#include <vector>
+using namespace std;
+
+int main() {//十字斩
+    ios::sync_with_stdio(false);//输入输出加速
+    cin.tie(nullptr);
+
+    int N;
+    cin >> N;//输入矩阵规模
+
+    vector<vector<int>> a(N, vector<int>(N));//矩阵a输入
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++)
+            cin >> a[i][j];
+
+    vector<bool> rowExist(N, true), colExist(N, true);//判断行列是否存在
+    vector<long long> rowSum(N, 0), colSum(N, 0);//作用是什么
+
+    for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++) {
+            rowSum[i] += a[i][j];//计算行和
+            colSum[j] += a[i][j];//计算列和
+        }
+
+    for (int step = 0; step < N; step++) {
+        long long bestScore = -1;//最优分数，最优行 列初始化
+        int bestRow = -1, bestCol = -1;
+
+        // 找最大十字和
+        for (int i = 0; i < N; i++) {
+            if (!rowExist[i]) continue;//行不存在就下一行
+            for (int j = 0; j < N; j++) {
+                if (!colExist[j]) continue;//列不存在就下一列
+                long long score = rowSum[i] + colSum[j] - a[i][j];//计算分数
+                if (score > bestScore) {//更新最优分数
+                    bestScore = score;
+                    bestRow = i;
+                    bestCol = j;
+                }
+            }
+        }
+
+        // 输出当前步骤应该斩击的行号和列号
+        int curRow = 0;
+        for (int i = 0; i < bestRow; i++)
+            if (rowExist[i]) curRow++;
+        curRow++; // 从1开始
+
+        int curCol = 0;
+        for (int j = 0; j < bestCol; j++)
+            if (colExist[j]) curCol++;
+        curCol++;
+
+        cout << curRow << " " << curCol << "\n";//解释这行输出代码
+
+        // 删除该行该列
+        rowExist[bestRow] = false;
+        colExist[bestCol] = false;
+
+        // 更新剩余行和列的和
+        for (int i = 0; i < N; i++) {
+            if (rowExist[i]) rowSum[i] -= a[i][bestCol];
+            if (colExist[i]) colSum[i] -= a[bestRow][i];
+        }
+    }
+
+    return 0;
+}

@@ -77,3 +77,31 @@ Proactor
 
 [Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 100000 | Time: 7866 ms | QPS: 12712 | VmSize+: +9108 kB | VmRSS+: +9524 kB
 
+[Mixed Strategy: Glibc_Malloc | Engine: 1] TotalOps: 1000 | Time: 66 ms | QPS: 15151 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 2] TotalOps: 100000 | Time: 6499 ms | QPS: 15386 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 3] TotalOps: 100000 | Time: 6399 ms | QPS: 15627 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 4] TotalOps: 100000 | Time: 7632 ms | QPS: 13102 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 1] TotalOps: 1000 | Time: 70 ms | QPS: 14285 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 2] TotalOps: 100000 | Time: 6596 ms | QPS: 15160 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 3] TotalOps: 100000 | Time: 6491 ms | QPS: 15405 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Jemalloc | Engine: 4] TotalOps: 100000 | Time: 7813 ms | QPS: 12799 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 1] TotalOps: 1000 | Time: 67 ms | QPS: 14925 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 2] TotalOps: 100000 | Time: 6621 ms | QPS: 15103 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 3] TotalOps: 100000 | Time: 6663 ms | QPS: 15008 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Custom_Mempool | Engine: 4] TotalOps: 100000 | Time: 8088 ms | QPS: 12363 | VmSize+: +0 kB | VmRSS+: +0 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 1 | Batch: 1] TotalOps: 10000 | Time: 1944 ms | QPS: 5144 | VmSize+: +264 kB | VmRSS+: +392 kB
+
+[Mixed Strategy: Glibc_Malloc | Engine: 2 | Batch: 1] TotalOps: 10000 | Time: 1415 ms | QPS: 7067 | VmSize+: +660 kB | VmRSS+: +528 kB
+

@@ -1,0 +1,258 @@
+class Solution {//合并两个数组，倒向双指针法
+public:
+    void merge(vector<int>& nums1, int m, vector<int>& nums2, int n) {
+        int p1 = m - 1;
+        int p2 = n - 1;
+        int p = m + n - 1;
+        
+        while (p2 >= 0) {  // 只要 nums2 还有元素
+            if (p1 >= 0 && nums1[p1] > nums2[p2]) {
+                nums1[p--] = nums1[p1--];
+            } else {
+                nums1[p--] = nums2[p2--];
+            }
+        }
+    }
+};
+class Solution {//移除元素，相向双指针
+public:
+    int removeElement(vector<int>& nums, int val) {
+        int right=nums.size()-1;
+        int left=0;
+        while(left<=right){//题目要去返回元素个数而非下标 所以要多算一个
+            if(nums[left]==val){
+                nums[left]=nums[right];
+                right--;
+            }else{
+                left++;
+            }
+        }
+        return left;
+    }
+};
+class Solution {//删除有序数组的重复项，快慢指针法
+public:
+    int removeDuplicates(vector<int>& nums) {
+        int n=nums.size();
+        int l=0;
+        for(int i=1;i<n;i++){//快指针找到不相同的元素
+            if(nums[i]!=nums[l]){
+                l++;//慢指针遍历插入位置
+                nums[l]=nums[i];
+            }
+        }
+        return l+1;
+    }
+};
+class Solution {//删除数组中的重复项II
+public:
+    int removeDuplicates(vector<int>& nums) {
+        int n=nums.size();
+        if (n <= 2) return n;
+        int l=2;//慢指针遍历插入元素位置
+        for(int i=2;i<n;i++){//快指针找到不相同的元素
+            if(nums[l-2]!=nums[i]){
+                nums[l]=nums[i];
+                l++;
+            }
+        }
+        return l;
+    }
+};
+class Solution {//轮转数组
+public:
+    void rotate(vector<int>& nums, int k) {
+        int n=nums.size();
+        k%=n;//！！！
+        reserve(nums,0,n-1);
+        reserve(nums,0,k-1);
+        reserve(nums,k,n-1);
+    }
+    void reserve(vector<int>& nums,int left,int right){
+        while(left<right){
+            swap(nums[left],nums[right]);
+            left++;
+            right--;
+        }
+    }
+};
+class Solution {//股票II，方法1两种状态动态规划
+public:
+    int maxProfit(vector<int>& prices) {
+        int n=prices.size();
+        vector<vector<int>> dp(n,vector<int>(2));
+        dp[0][0]=0;dp[0][1]=-prices[0];
+        for(int i=1;i<n;i++){
+            dp[i][0]=max(dp[i-1][1]+prices[i],dp[i-1][0]);
+            dp[i][1]=max(dp[i-1][1],dp[i-1][0]-prices[i]);
+        }
+        return dp[n-1][0];
+    }
+};
+等价于找一些互不相交的区间，使这些区间的和最大，方法2
+class Solution {//股票II
+public:
+    int maxProfit(vector<int>& prices) {
+        int n=prices.size();
+        int ans=0;
+        for(int i=1;i<n;i++){
+            int cur=prices[i]-prices[i-1];
+            ans+=cur>0?cur:0;
+        }
+        return ans;
+    }
+};
+class Solution {//H指数
+public:
+    int hIndex(vector<int>& citations) {
+        sort(citations.begin(), citations.end(), greater<int>());  // 降序排序
+        int h = 0;
+        for (int i = 0; i < citations.size(); i++) {
+            if (citations[i] >= i + 1) {
+                h = i + 1;
+            } else {
+                break;
+            }
+        }
+        return h;
+    }
+};
+class RandomizedSet {//O(1)时间插入，删除，获取随机元素
+public:
+    RandomizedSet() {
+        srand((unsigned)time(NULL));//这句话的作用
+    }
+    
+    bool insert(int val) {
+        if(map.count(val)){
+            return false;
+        }
+        int index=nums.size();
+        nums.push_back(val);
+        map[val]=index;
+        return true;
+    }
+    
+    bool remove(int val) {
+        if(!map.count(val)){
+            return false;
+        }
+        int last=nums.size()-1;
+        int index=map[val];
+        nums[index]=nums[last];
+        map[nums[last]]=index;
+        nums.pop_back();
+        map.erase(val);
+        return true;
+    }
+    
+    int getRandom() {
+        int n=nums.size();
+        return nums[rand()%n];
+    }
+private:
+    unordered_map<int,int> map;
+    vector<int> nums;
+};
+class Solution {//加油站
+public:
+    int canCompleteCircuit(vector<int>& gas, vector<int>& cost) {
+        int n = gas.size();
+        int total = 0;      // 总油量差
+        int curr = 0;       // 当前油量
+        int start = 0;      // 起点
+        
+        for (int i = 0; i < n; i++) {
+            int val=gas[i] - cost[i];
+            total +=val;
+            curr += val;
+            
+            if (curr < 0) {     // 无法到达下一站
+                start = i + 1;  // 起点设为下一站
+                curr = 0;       // 重新开始
+            }
+        }
+        
+        return total >= 0 ? start : -1;
+    }
+};
+class Solution {//分糖果，两轮遍历
+public:
+    int candy(vector<int>& ratings) {
+        int n=ratings.size();
+        vector<int> candy(n);
+        candy[0]=1;
+        for(int i=1;i<n;i++){
+            if(ratings[i]>ratings[i-1]){
+                candy[i]=candy[i-1]+1;
+            }else {
+                candy[i]=1;
+            }
+        }
+        int ans=candy[n-1];
+        for(int i=n-2;i>=0;i--){
+            if(ratings[i]>ratings[i+1]&&candy[i]<=candy[i+1]){
+                candy[i]=candy[i+1]+1;
+            }
+            ans+=candy[i];
+        }
+        return ans;
+    }
+};
+class Solution {//罗马数字转整数
+public:
+    unordered_map<char,int> map={
+        {'I',1},
+        {'V',5},
+        {'X',10},
+        {'L',50},
+        {'C',100},
+        {'D',500},
+        {'M',1000}
+    };
+    int romanToInt(string s) {
+        int sum=0;
+        int n=s.size();
+        for(int i=0;i<n;i++){
+            if(i+1<n&&map[s[i]]<map[s[i+1]]){
+                sum-=map[s[i]];
+            }else{
+                sum+=map[s[i]];
+            }
+        }
+        return sum;
+    }
+};
+const pair<int, string> valueSymbols[] = {//罗马数字
+    {1000, "M"},
+    {900,  "CM"},
+    {500,  "D"},
+    {400,  "CD"},
+    {100,  "C"},
+    {90,   "XC"},
+    {50,   "L"},
+    {40,   "XL"},
+    {10,   "X"},
+    {9,    "IX"},
+    {5,    "V"},
+    {4,    "IV"},
+    {1,    "I"},
+};
+class Solution {
+public:
+    string intToRoman(int num) {
+        string roman;
+        for(const auto [value,symbol]:valueSymbols){
+            while(num>=value){
+                num-=value;
+                roman+=symbol;
+            }
+            if(num==0){
+                break;
+            }
+        }
+        return roman;
+    }
+};
+
+

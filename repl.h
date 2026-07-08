@@ -18,11 +18,11 @@ int repl_init(const char *rdma_dev, const char *ebpf_obj_path);
 void repl_destroy(void);
 
 int repl_connect_to_master(const char *master_ip, unsigned short master_port);
-void slave_rdma_handshake_read_cb(int fd);
 int repl_start_slave_engine(void);
 void* pure_rdma_repl_slave_thread(void *arg);
 
 void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd);
 int repl_sync_log_via_rdma(void);
+void repl_push_cmd(const char *cmd, void *key, int key_len, void *value, int value_len);
 
 #endif

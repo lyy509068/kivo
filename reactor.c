@@ -70,7 +70,7 @@ void recv_cb(int fd) {
     while (1) {
         if (c->rcapacity - c->rlength < 4096) {
             int new_capacity = c->rcapacity * 2;
-            if (new_capacity < 4096) new_capacity = 4096;
+            if (new_capacity < 8192) new_capacity = 8192;
             char *new_buf = (char *)kvs_realloc(c->rbuffer, new_capacity);
             if (!new_buf) { reactor_close_and_free_connection(fd); return; }
             c->rbuffer = new_buf;
@@ -131,11 +131,6 @@ void recv_cb(int fd) {
         if (c->role == CONN_CLIENT) {
             if (c->wlength > 0) { reactor_set_event(fd, EPOLLOUT, 0); }
         }
-        #if ENABLE_REPLICATION_SLAVE 
-        else if (c->role == CONN_MASTER) {
-            c->wlength = 0; // 对于主端发来的增量命令，强制截断其写事件
-        }
-        #endif
     }
 }
 

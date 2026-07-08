@@ -33,7 +33,7 @@ extern kvs_hash_t global_hash;
 extern kvs_skip_t global_skip;
 #endif
 
-
+int BEGIN_IN = 0;
 
 
 int init_kvengine(void) {

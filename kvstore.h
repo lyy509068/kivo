@@ -16,9 +16,10 @@
 //超时删除
 #define LOCK_SEGMENTS 32
 extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
-#define ENABLE_TTL 0
+#define ENABLE_TTL 1
 #if ENABLE_TTL
-
+void expire_thread_pause(void);
+void expire_thread_resume(void);
 int kvs_expire_thread_start(void);
 int64_t get_current_ms(void);
 int kvs_init_locks(void);
@@ -42,7 +43,7 @@ void *kvs_realloc(void *ptr, size_t new_size);
 void kvs_free(void *ptr);
 
 //增量持久化
-#define ENABLE_PERSISTENCE        0       
+#define ENABLE_PERSISTENCE        1       
 #define PERSISTENCE_FILE    "kvstore.aof"  
 #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
 int kvs_persistence_init(void);

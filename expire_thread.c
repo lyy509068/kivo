@@ -6,7 +6,31 @@
 #include <sys/time.h>
 #include <pthread.h>
 #include "kvstore.h"
-#include "replication.h"
+#include "repl.h"
+
+#include <pthread.h>
+
+static volatile int expire_paused = 0;
+static pthread_mutex_t expire_pause_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t expire_pause_cond = PTHREAD_COND_INITIALIZER;
+
+//暂停超时删除
+void expire_thread_pause(void) {
+    pthread_mutex_lock(&expire_pause_mutex);
+    expire_paused = 1;
+    pthread_mutex_unlock(&expire_pause_mutex);
+    printf("[Expire] All expire threads paused.\n");
+}
+//恢复超时删除
+void expire_thread_resume(void) {
+    pthread_mutex_lock(&expire_pause_mutex);
+    expire_paused = 0;
+    pthread_cond_broadcast(&expire_pause_cond);
+    pthread_mutex_unlock(&expire_pause_mutex);
+    printf("[Expire] All expire threads resumed.\n");
+}
+
+extern int BEGIN_IN;
 
 #if ENABLE_ARRAY
 extern kvs_array_t   global_array;
@@ -21,7 +45,7 @@ extern kvs_hash_t    global_hash;
 extern kvs_skip_t    global_skip;
 #endif
 
-#if ENABLE_PERSISTENCE
+#if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
 extern void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len, int64_t expire_time);
 #endif
 
@@ -42,6 +66,15 @@ void* kvs_array_expire_worker(void* arg) {
     
     //printf("[Expire Thread] Array cleaner started.\n");
     while (expire_thread_running) {
+
+        pthread_mutex_lock(&expire_pause_mutex);
+        while (expire_paused && expire_thread_running) {
+            pthread_cond_wait(&expire_pause_cond, &expire_pause_mutex);
+        }
+        pthread_mutex_unlock(&expire_pause_mutex);
+        
+        if (!expire_thread_running) break; 
+
         int64_t now = get_current_ms();
         
         // Array通常属于全局单一结构，这里默认使用分段锁的第0号锁保护整个数组
@@ -50,11 +83,13 @@ void* kvs_array_expire_worker(void* arg) {
         for (int i = 0; i < global_array.idx; ) {
             if (global_array.table[i].expire_time > 0 && now > global_array.table[i].expire_time) {
 
-                #if ENABLE_PERSISTENCE
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
                 log_binary_command("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0, 0);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
+                if(BEGIN_IN){
+                    repl_push_cmd("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
+                }
                 #endif
                 kv_data_destroy(&global_array.table[i].key);
                 kv_data_destroy(&global_array.table[i].value);
@@ -84,6 +119,15 @@ void* kvs_hash_expire_worker(void* arg) {
     
     //printf("[Expire Thread] Hash cleaner started.\n");
     while (expire_thread_running) {
+
+        pthread_mutex_lock(&expire_pause_mutex);
+        while (expire_paused && expire_thread_running) {
+            pthread_cond_wait(&expire_pause_cond, &expire_pause_mutex);
+        }
+        pthread_mutex_unlock(&expire_pause_mutex);
+        
+        if (!expire_thread_running) break; 
+        
         int64_t now = get_current_ms();
         
         // 遍历哈希表的所有桶
@@ -106,11 +150,13 @@ void* kvs_hash_expire_worker(void* arg) {
                         prev->next = next;
                     }
 
-                    #if ENABLE_PERSISTENCE
+                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
                     log_binary_command("HDEL", curr->key.data, (int)curr->key.len, NULL, 0, 0);
                     #endif
                     #if ENABLE_REPLICATION_MASTER
-                    repl_push_cmd("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
+                    if(BEGIN_IN){
+                        repl_push_cmd("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
+                    }
                     #endif
                     kv_data_destroy(&curr->key);
                     kv_data_destroy(&curr->value);
@@ -161,6 +207,15 @@ void* kvs_rbtree_expire_worker(void* arg) {
     kv_data_t expired_batch[100];
     
     while (expire_thread_running) {
+
+        pthread_mutex_lock(&expire_pause_mutex);
+        while (expire_paused && expire_thread_running) {
+            pthread_cond_wait(&expire_pause_cond, &expire_pause_mutex);
+        }
+        pthread_mutex_unlock(&expire_pause_mutex);
+        
+        if (!expire_thread_running) break; 
+        
         int64_t now = get_current_ms();
         int expired_count = 0;
         
@@ -174,11 +229,13 @@ void* kvs_rbtree_expire_worker(void* arg) {
             for (int i = 0; i < expired_count; i++) {
                 pthread_rwlock_wrlock(&seg_locks[1]);
 
-                #if ENABLE_PERSISTENCE
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
                 log_binary_command("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
+                if(BEGIN_IN){
+                    repl_push_cmd("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
+                }
                 #endif
                 kvs_rbtree_del(&global_rbtree, &expired_batch[i]);
                 pthread_rwlock_unlock(&seg_locks[1]);
@@ -198,6 +255,15 @@ void* kvs_skiplist_expire_worker(void* arg) {
     kv_data_t expired_batch[100];
     
     while (expire_thread_running) {
+
+        pthread_mutex_lock(&expire_pause_mutex);
+        while (expire_paused && expire_thread_running) {
+            pthread_cond_wait(&expire_pause_cond, &expire_pause_mutex);
+        }
+        pthread_mutex_unlock(&expire_pause_mutex);
+        
+        if (!expire_thread_running) break; 
+        
         int64_t now = get_current_ms();
         int expired_count = 0;
         
@@ -217,11 +283,13 @@ void* kvs_skiplist_expire_worker(void* arg) {
             for (int i = 0; i < expired_count; i++) {
                 pthread_rwlock_wrlock(&seg_locks[2]);
 
-                #if ENABLE_PERSISTENCE
+                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
                 log_binary_command("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
                 #endif
                 #if ENABLE_REPLICATION_MASTER
-                repl_push_cmd("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
+                if(BEGIN_IN){
+                    repl_push_cmd("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
+                }
                 #endif
                 kvs_skip_del(&global_skip, &expired_batch[i]);
                 pthread_rwlock_unlock(&seg_locks[2]);
