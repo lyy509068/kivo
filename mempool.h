@@ -37,6 +37,5 @@ mem_pool_t *mem_pool_create(size_t user_size);
 void *mem_pool_alloc(mem_pool_t *pool);
 void mem_pool_free(mem_pool_t *pool, void *ptr);
 void mem_pool_destroy(mem_pool_t *pool);
-void mem_pool_stats(mem_pool_t *pool);
 
 #endif

@@ -4,6 +4,13 @@
 #include <stdbool.h>
 #include "resp.h"
 
+extern int g_enable_persistence;
+extern int g_enable_snapshot;
+extern int g_enable_ttl;
+extern int g_enable_mempool;
+extern int g_enable_repl_master;
+extern int g_enable_repl_slave;
+
 #define ENABLE_REPLICATION_MASTER 0
 #define ENABLE_REPLICATION_SLAVE  0
 

@@ -60,7 +60,7 @@ void kvs_destroy_locks(void) {
     }
 }
 
-#if ENABLE_TTL
+
 //清理线程
 static pthread_t global_expire_thread;
 static volatile int expire_thread_running = 0;
@@ -81,9 +81,9 @@ void expire_thread_destroy(void) {
         pthread_join(global_expire_thread, NULL);
     }
 }
-#endif
+
+
 //内存池
-#if ENABLE_MEM_POOL
 extern mem_pool_t *array_item_pool;
 extern mem_pool_t *rbtree_node_pool;
 extern mem_pool_t *hash_node_pool;
@@ -92,176 +92,80 @@ extern mem_pool_t *skip_node_pool;
 void *kvs_malloc(size_t size) {
     if (size == 0) return NULL;
 
-    // 命中数组节点
-    if (size == sizeof(kvs_array_item_t) && array_item_pool) {
-        void *ptr = mem_pool_alloc(array_item_pool);
-        if (ptr) {
-            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-            header->owner = array_item_pool; 
-            header->size = size;
+    if (g_enable_mempool) {
+        if (size == sizeof(kvs_array_item_t) && array_item_pool) {
+            void *ptr = mem_pool_alloc(array_item_pool);
+            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = array_item_pool; h->size = size; }
+            return ptr;
         }
-        return ptr;
-    }
-    
-    // 命中红黑树节点
-    if (size == sizeof(rbtree_node_binary_t) && rbtree_node_pool) {
-        void *ptr = mem_pool_alloc(rbtree_node_pool);
-        if (ptr) {
-            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-            header->owner = rbtree_node_pool;
-            header->size = size;
+        if (size == sizeof(rbtree_node_binary_t) && rbtree_node_pool) {
+            void *ptr = mem_pool_alloc(rbtree_node_pool);
+            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = rbtree_node_pool; h->size = size; }
+            return ptr;
         }
-        return ptr;
-    }
-    
-    // 命中哈希节点
-    if (size == sizeof(hashnode_t) && hash_node_pool) {
-        void *ptr = mem_pool_alloc(hash_node_pool);
-        if (ptr) {
-            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-            header->owner = hash_node_pool;
-            header->size = size;
+        if (size == sizeof(hashnode_t) && hash_node_pool) {
+            void *ptr = mem_pool_alloc(hash_node_pool);
+            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = hash_node_pool; h->size = size; }
+            return ptr;
         }
-        return ptr;
-    }
-    
-    // 命中跳表节点 (注意：仅当跳表节点大小固定时才能稳定触发)
-    if (size == sizeof(skipnode_binary_t) && skip_node_pool) {
-        void *ptr = mem_pool_alloc(skip_node_pool);
-        if (ptr) {
-            mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-            header->owner = skip_node_pool;
-            header->size = size;
+        if (size == sizeof(skipnode_binary_t) && skip_node_pool) {
+            void *ptr = mem_pool_alloc(skip_node_pool);
+            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = skip_node_pool; h->size = size; }
+            return ptr;
         }
-        return ptr;
+        size_t chunk_size = sizeof(mem_header_t) + size;
+        void *chunk = malloc(chunk_size);
+        if (!chunk) return NULL;
+        mem_header_t *h = (mem_header_t *)chunk;
+        h->owner = NULL; h->size = size;
+        return (void *)((char *)chunk + sizeof(mem_header_t));
     }
 
-    size_t chunk_size = sizeof(mem_header_t) + size;
-    void *chunk = malloc(chunk_size);
-    if (!chunk) return NULL;
-    
-    mem_header_t *header = (mem_header_t *)chunk;
-    header->owner = NULL; // 明确标明这块内存不是由内存池管理的
-    header->size = size;
-    
-    return (void *)((char *)chunk + sizeof(mem_header_t));
-}
-
-void kvs_free(void *ptr) {
-    if (!ptr) return;
-    
-    // 往回倒退 16 字节，看它的“身份证”
-    mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-    
-    if (header->owner != NULL) {
-        // 如果 owner 不为空，说明是从池子里分配的，交给池子处理
-        mem_pool_free((mem_pool_t *)header->owner, ptr);
-    } else {
-        // 如果 owner 为空，说明是上面走标准 malloc 分配的
-        free(header); 
-    }
-}
-void *kvs_calloc(size_t nmemb, size_t size) {
-    size_t total = nmemb * size;
-    void *ptr = kvs_malloc(total);
-    if (ptr) {
-        memset(ptr, 0, total);
-    }
-    return ptr;
-}
-void *kvs_realloc(void *ptr, size_t size) {
-    if (!ptr) return kvs_malloc(size);
-    if (size == 0) { kvs_free(ptr); return NULL; }
-    
-    mem_header_t *header = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-    
-    // 如果它是内存池的数据
-    if (header->owner != NULL) {
-        void *new_ptr = kvs_malloc(size);
-        if (new_ptr) {
-            size_t copy_size = (size < header->size) ? size : header->size;
-            memcpy(new_ptr, ptr, copy_size);
-            kvs_free(ptr);
-        }
-        return new_ptr;
-    } 
-    // 如果它是系统内存，直接利用原生 realloc 的高性能原地扩容特性
-    else {
-        // realloc 整个大块 (Header + Data)
-        void *new_chunk = realloc(header, sizeof(mem_header_t) + size);
-        if (!new_chunk) return NULL;
-        
-        mem_header_t *new_header = (mem_header_t *)new_chunk;
-        new_header->size = size; // 更新大小
-        // owner 依然是 NULL
-        
-        return (void *)((char *)new_chunk + sizeof(mem_header_t));
-    }
-}
-void mem_pool_stats(mem_pool_t *pool) {
-    if (!pool) return;
-    
-    int active_items = pool->total_allocated - pool->total_freed;
-    
-    // 计算总块数
-    int total_blocks = 0;
-    pool_block_t *curr = pool->blocks;
-    while (curr) {
-        total_blocks++;
-        curr = curr->next;
-    }
-    
-    size_t block_mem_size = pool->block_capacity * pool->chunk_size;
-    size_t total_mem = total_blocks * (block_mem_size + sizeof(pool_block_t));
-    
-    printf("Memory Pool: active=%d, total_mem=%.2f KB\n", 
-           active_items, total_mem / 1024.0);
-    
-    // 打印系统内存（虚拟内存和物理内存）
-    pid_t pid = getpid();
-    char path[256];
-    char line[256];
-    FILE *fp;
-    
-    sprintf(path, "/proc/%d/status", pid);
-    fp = fopen(path, "r");
-    if (fp) {
-        while (fgets(line, sizeof(line), fp)) {
-            if (strncmp(line, "VmSize:", 7) == 0) {
-                printf("  %s", line);
-            } else if (strncmp(line, "VmRSS:", 6) == 0) {
-                printf("  %s", line);
-            }
-        }
-        fclose(fp);
-    }
-}
-
-#else  
-void *kvs_malloc(size_t size) {
     return malloc(size);
 }
 
 void kvs_free(void *ptr) {
+    if (!ptr) return;
+    if (g_enable_mempool) {
+        mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
+        if (h->owner) { mem_pool_free((mem_pool_t *)h->owner, ptr); return; }
+        free(h); return;
+    }
     free(ptr);
 }
 
 void *kvs_calloc(size_t nmemb, size_t size) {
-    return calloc(nmemb, size);
+    size_t total = nmemb * size;
+    void *ptr = kvs_malloc(total);
+    if (ptr) memset(ptr, 0, total);
+    return ptr;
 }
 
 void *kvs_realloc(void *ptr, size_t size) {
+    if (!ptr) return kvs_malloc(size);
+    if (size == 0) { kvs_free(ptr); return NULL; }
+    if (g_enable_mempool) {
+        mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
+        if (h->owner) {
+            void *new_ptr = kvs_malloc(size);
+            if (new_ptr) {
+                size_t copy_size = (size < h->size) ? size : h->size;
+                memcpy(new_ptr, ptr, copy_size);
+                kvs_free(ptr);
+            }
+            return new_ptr;
+        }
+        void *new_chunk = realloc(h, sizeof(mem_header_t) + size);
+        if (!new_chunk) return NULL;
+        ((mem_header_t *)new_chunk)->size = size;
+        return (void *)((char *)new_chunk + sizeof(mem_header_t));
+    }
     return realloc(ptr, size);
 }
 
-void mem_pool_stats(mem_pool_t *pool) {
-    (void)pool;
-}
 
-#endif
 
 //增量持久化 日志
-#if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
 void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len, int64_t expire_time) {
 
     if (!cmd || !key || key_len <= 0) {
@@ -299,7 +203,6 @@ void log_binary_command(const char *cmd, void *key, int key_len, void *value, in
     kvs_persistence_write(buf, payload_len);//需要把过期时间写进日志
     kvs_free(buf);
 }
-#endif 
 
 
 typedef struct {
@@ -374,7 +277,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     unsigned long long default_expire = 0;
 
 
-    #if ENABLE_TTL
+    if(g_enable_ttl){
     if (req->argc >= 5 && req->argv[3] != NULL && req->argv[4] != NULL) {
         if (req->argv_len[3] == 2 && strncasecmp(req->argv[3], "EX", 2) == 0) {
             long long seconds = atoll(req->argv[4]);
@@ -390,7 +293,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         }
     }
     //printf("=========================default_expire=%lld==========================\n",default_expire);
-    #endif
+    }
 
     switch (target_cmd) {
     #if ENABLE_ARRAY
@@ -402,9 +305,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("SET", key, key_len, value, value_len, default_expire);
-                #endif
+                }
                 
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -438,9 +341,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("DEL", key, key_len, NULL, 0, default_expire); 
-                #endif
+                }
                 
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[0]); // 释放锁
@@ -454,9 +357,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("MOD", key, key_len, value, value_len, default_expire);
-                #endif
+                }
                 
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -483,9 +386,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("RSET", key, key_len, value, value_len, default_expire);
-                #endif
+                }
                 
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -518,9 +421,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("RDEL", key, key_len, NULL, 0, default_expire); 
-                #endif
+                }
                 
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[1]); // 释放锁
@@ -534,9 +437,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("RMOD", key, key_len, value, value_len, default_expire);
-                #endif
+                }
                 
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -565,9 +468,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 if (ret == 0) {
                     reply->status = KVS_RESP_OK;
                     
-                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                    if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                     log_binary_command("HSET", key, key_len, value, value_len, default_expire);
-                    #endif
+                    }
                     
                 }
                 else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -607,9 +510,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 if (ret == 0) {
                     reply->status = KVS_RESP_OK;
                     
-                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                    if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                     log_binary_command("HDEL", key, key_len, NULL, 0, default_expire); 
-                    #endif
+                    }
                     
                 } else { reply->status = KVS_RESP_NO_EXISTS; }
                 
@@ -627,9 +530,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 if (ret == 0) {
                     reply->status = KVS_RESP_OK;
                     
-                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                    if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                     log_binary_command("HMOD", key, key_len, value, value_len, default_expire);
-                    #endif
+                    }
                     
                 }
                 else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -664,9 +567,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("SSET", key, key_len, value, value_len, default_expire);
-                #endif
+                }
                 
             }
             else if (ret == 1) { reply->status = KVS_RESP_EXISTS; }
@@ -704,9 +607,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("SDEL", key, key_len, NULL, 0, default_expire); 
-                #endif
+                }
                 
             } else { reply->status = KVS_RESP_NO_EXISTS; }
             pthread_rwlock_unlock(&seg_locks[2]); // 释放锁
@@ -722,9 +625,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (ret == 0) {
                 reply->status = KVS_RESP_OK;
                 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave){
                 log_binary_command("SMOD", key, key_len, value, value_len, default_expire);
-                #endif
+                }
                 
             }
             else if (ret == 1) { reply->status = KVS_RESP_NO_EXISTS; }
@@ -743,7 +646,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             break;
     #endif
         case CMD_PING:{
-            // PING (argc == 1)
             if (req->argc == 1) {
                 reply->status = KVS_RESP_PONG;
             } 
@@ -783,10 +685,10 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             printf("Received 'SYNC' command from slave.\n");
             fflush(stdout);
 
-            #if ENABLE_REPLICATION_MASTER
-            #if ENABLE_TTL
+            if (g_enable_repl_master){
+            if(g_enable_ttl){
             expire_thread_pause();// 暂停超时删除线程
-            #endif
+            }
             if (g_rdma_ctx) {            
                 printf("[Repl Master] RDMA link is already RTS. Triggering Zero-Copy log sync directly...\n");
                 fflush(stdout);
@@ -802,25 +704,25 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 fprintf(stderr, "[Repl Error] RDMA context is not initialized! Cannot sync.\n");
                 fflush(stdout);
             }
-            #endif
+            }
 
             break;
         }
         case CMD_REPL_SYNC_DONE: {
             printf("[Master] Received SYNC_DONE from slave. Full sync completed!\n");
 
-            #if ENABLE_REPLICATION_MASTER
-            #if ENABLE_TTL
+            if (g_enable_repl_master){
+            if(g_enable_ttl){
             extern int BEGIN_IN;
             BEGIN_IN = 1; //增量持久化开始标志
             expire_thread_resume();// 恢复超时删除线程
-            #endif
+            }
             if (ebpf_register_slave() == 0) {
                 if (ebpf_set_forward_switch(1) == 0) {
                     printf("[Master] eBPF TC clone switch ENABLED.\n");
                 }
             }
-            #endif
+            }
 
             break;
         }

@@ -190,14 +190,14 @@ int proactor_start(unsigned short port, stream_handler_t handler) {
     submit_accept(listen_fd);
     gettimeofday(&begin, NULL);
 
-#if ENABLE_REPLICATION_SLAVE
+    if (g_enable_repl_slave){
     const char *master_ip = "192.168.92.128";
     unsigned short master_port = 2000;
     int master_fd = repl_connect_to_master(master_ip, master_port);
     if (master_fd < 0) {
         fprintf(stderr, "[Proactor Error] Slave failed to establish replication link.\n");
     }
-#endif
+    }
 
     struct io_uring_cqe *cqe;
     while (1) {

@@ -63,7 +63,7 @@ int repl_init(const char *rdma_dev, const char *ebpf_obj_path) {
         return -1;
     }
 
-    #if ENABLE_REPLICATION_MASTER
+    if (g_enable_repl_master){
     if (ebpf_obj_path) {
         if (ebpf_init_loader(ebpf_obj_path) < 0) {
             printf("[Repl Error] Failed to load eBPF byte code\n");
@@ -73,7 +73,7 @@ int repl_init(const char *rdma_dev, const char *ebpf_obj_path) {
     }
     ebpf_register_slave();
     printf("[Repl Master] eBPF TC metadata registered.\n");
-    #endif
+    }
 
     g_repl_ctx_ready = true;
     return 0;
@@ -349,9 +349,9 @@ void* pure_rdma_repl_slave_thread(void *arg) {
                 fsync(local_fd);
                 close(local_fd);
             }
-            #if ENABLE_REPLICATION_SLAVE
+            if (g_enable_repl_slave){
             kvs_persistence_recover();
-            #endif
+            }
             printf("[Repl Slave] AOF reload successfully!\n");
 
             start_replica_udp_server_coroutine(3000);
@@ -372,16 +372,16 @@ void repl_destroy(void) {
         g_rdma_ctx = NULL;
     }
 
-    #if ENABLE_REPLICATION_SLAVE
+    if (g_enable_repl_slave){
     if (repl_slave_tid) {
         pthread_join(repl_slave_tid, NULL);
         repl_slave_tid = 0;
     }
-    #endif
+    }
 
-    #if ENABLE_REPLICATION_MASTER
+    if (g_enable_repl_master){
     ebpf_cleanup(); 
-    #endif
+    }
 
     if (g_repl_ctx.wbuffer) {
         kvs_free(g_repl_ctx.wbuffer);

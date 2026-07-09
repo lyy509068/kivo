@@ -211,7 +211,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     
     gettimeofday(&begin, NULL);
 
-    #if ENABLE_REPLICATION_SLAVE
+    if (g_enable_repl_slave){
         const char *master_ip = "192.168.92.128";
         unsigned short master_port = 2000;
         //连接主端
@@ -220,8 +220,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
         if (master_fd < 0) {
             fprintf(stderr, "[Reactor Error] Slave failed to establish replication link.\n");
         }
-
-    #endif
+    }
     
     while (1) {
         struct epoll_event events[1024] = {0};

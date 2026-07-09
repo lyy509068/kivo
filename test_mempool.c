@@ -284,3 +284,4 @@ out:
     return 0;
 }
 //LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server 2000
+// sudo LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server config.conf

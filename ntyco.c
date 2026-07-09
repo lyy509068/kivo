@@ -142,10 +142,10 @@ int ntyco_start(unsigned short port, stream_handler_t handler) {
     nty_coroutine *server_co = NULL;
     nty_coroutine_create(&server_co, ntyco_server_co, (void*)(long)listen_fd);
 
-    #if ENABLE_REPLICATION_SLAVE
+    if (g_enable_repl_slave){
         nty_coroutine *slave_init_co = NULL;
         nty_coroutine_create(&slave_init_co, ntyco_slave_init_co, NULL);
-    #endif
+    }
 
     nty_schedule_run();
     return 0;

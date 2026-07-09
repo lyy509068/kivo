@@ -45,9 +45,8 @@ extern kvs_hash_t    global_hash;
 extern kvs_skip_t    global_skip;
 #endif
 
-#if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER
 extern void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len, int64_t expire_time);
-#endif
+
 
 // 全局控制变量
 volatile int expire_thread_running = 1;
@@ -83,14 +82,14 @@ void* kvs_array_expire_worker(void* arg) {
         for (int i = 0; i < global_array.idx; ) {
             if (global_array.table[i].expire_time > 0 && now > global_array.table[i].expire_time) {
 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
+                if (g_enable_persistence || g_enable_repl_master){
                 log_binary_command("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0, 0);
-                #endif
-                #if ENABLE_REPLICATION_MASTER
+                }
+                if (g_enable_repl_master){
                 if(BEGIN_IN){
                     repl_push_cmd("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
                 }
-                #endif
+                }
                 kv_data_destroy(&global_array.table[i].key);
                 kv_data_destroy(&global_array.table[i].value);
                 
@@ -150,23 +149,24 @@ void* kvs_hash_expire_worker(void* arg) {
                         prev->next = next;
                     }
 
-                    #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
+                    if (g_enable_persistence || g_enable_repl_master){
                     log_binary_command("HDEL", curr->key.data, (int)curr->key.len, NULL, 0, 0);
-                    #endif
-                    #if ENABLE_REPLICATION_MASTER
+                    }
+                    if (g_enable_repl_master){
                     if(BEGIN_IN){
                         repl_push_cmd("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
                     }
-                    #endif
+                    }
                     kv_data_destroy(&curr->key);
                     kv_data_destroy(&curr->value);
                     
-                #if ENABLE_MEM_POOL
-                    // 如果启用了内存池，则还给哈希节点池
-                    mem_pool_free(hash_node_pool, curr); 
-                #else
+                if (g_enable_mempool){
+                    mem_pool_free(hash_node_pool, curr);  // 如果启用了内存池，则还给哈希节点池
+                }
+                else{
                     kvs_free(curr);
-                #endif
+                }
+                
                     global_hash.count--;
                     curr = next; // 继续往后处理
                 } else {
@@ -229,14 +229,14 @@ void* kvs_rbtree_expire_worker(void* arg) {
             for (int i = 0; i < expired_count; i++) {
                 pthread_rwlock_wrlock(&seg_locks[1]);
 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
+                if (g_enable_persistence || g_enable_repl_master){
                 log_binary_command("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
-                #endif
-                #if ENABLE_REPLICATION_MASTER
+                }
+                if (g_enable_repl_master){
                 if(BEGIN_IN){
                     repl_push_cmd("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 }
-                #endif
+                }
                 kvs_rbtree_del(&global_rbtree, &expired_batch[i]);
                 pthread_rwlock_unlock(&seg_locks[1]);
             }
@@ -283,14 +283,14 @@ void* kvs_skiplist_expire_worker(void* arg) {
             for (int i = 0; i < expired_count; i++) {
                 pthread_rwlock_wrlock(&seg_locks[2]);
 
-                #if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER 
+                if (g_enable_persistence || g_enable_repl_master){
                 log_binary_command("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
-                #endif
-                #if ENABLE_REPLICATION_MASTER
+                }
+                if (g_enable_repl_master){
                 if(BEGIN_IN){
                     repl_push_cmd("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 }
-                #endif
+                }
                 kvs_skip_del(&global_skip, &expired_batch[i]);
                 pthread_rwlock_unlock(&seg_locks[2]);
             }

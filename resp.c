@@ -191,7 +191,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             resp_request_t req;
             resp_unpack(in_buf, in_buf + processed, &req);
 
-            #if ENABLE_REPLICATION_MASTER
+            if (g_enable_repl_master){
             extern struct conn conn_list[]; 
             struct conn *c = &conn_list[fd];
             if (req.argc > 0) {
@@ -203,7 +203,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                     continue; 
                 }
             }
-            #endif
+            }
     
             // 进入业务层处理普通命令
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 

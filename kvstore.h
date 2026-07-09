@@ -13,11 +13,17 @@
 #include "repl.h"
 
 
+extern int g_enable_persistence;
+extern int g_enable_snapshot;
+extern int g_enable_ttl;
+extern int g_enable_mempool;
+extern int g_enable_repl_master;
+extern int g_enable_repl_slave;
+
 //超时删除
 #define LOCK_SEGMENTS 32
 extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
-#define ENABLE_TTL 0
-#if ENABLE_TTL
+
 void expire_thread_pause(void);
 void expire_thread_resume(void);
 int kvs_expire_thread_start(void);
@@ -26,39 +32,36 @@ int kvs_init_locks(void);
 void kvs_destroy_locks(void);
 int expire_thread_init(void);
 void expire_thread_destroy(void);
-#endif
+
 
 
 //内存池
-#define ENABLE_MEM_POOL   0
-#if ENABLE_MEM_POOL
+
 extern mem_pool_t *array_item_pool;
 extern mem_pool_t *rbtree_node_pool;
 extern mem_pool_t *hash_node_pool;
 extern mem_pool_t *skip_node_pool;
-#endif
+
 void *kvs_malloc(size_t size);
 void *kvs_calloc(size_t nmemb, size_t size);
 void *kvs_realloc(void *ptr, size_t new_size);
 void kvs_free(void *ptr);
 
-//增量持久化
-#define ENABLE_PERSISTENCE        0       
+//增量持久化       
 #define PERSISTENCE_FILE    "kvstore.aof"  
-#if ENABLE_PERSISTENCE || ENABLE_REPLICATION_MASTER || ENABLE_REPLICATION_SLAVE
+
 int kvs_persistence_init(void);
 void kvs_persistence_write(const void *data, int len);
 void kvs_persistence_recover(void);
 void kvs_persistence_close(void);
-#endif
 
-//全量持久化
-#define ENABLE_SNAPSHOT           0    
+
+//全量持久化   
 #define SNAPSHOT_FILE     "kvstore.snap"  
-#if ENABLE_SNAPSHOT
+
 int kvs_snapshot_save(void);
 int kvs_snapshot_load(void);
-#endif
+
 
 
 // 二进制数据块
