@@ -70,7 +70,7 @@ int main(int argc, char *argv[]) {
 
     int engine_type = atoi(argv[1]);
     if (engine_type < 1 || engine_type > 4) {
-        printf("❌ Invalid engine type!\n");
+        printf("Invalid engine type!\n");
         return 1;
     }
 
@@ -78,7 +78,7 @@ int main(int argc, char *argv[]) {
     int send_len;
 
     printf("======================================================\n");
-    printf("🚀 [STAGE 1] PUSHING DATA & CREATING SNAPSHOT (ENGINE %d)\n", engine_type);
+    printf("[STAGE 1] PUSHING DATA & CREATING SNAPSHOT (ENGINE %d)\n", engine_type);
     printf("======================================================\n\n");
 
     int sock = connect_server();
@@ -97,14 +97,14 @@ int main(int argc, char *argv[]) {
         send_len = build_resp_request(send_buf, cmd, key, val);
 
         if (send_all(sock, send_buf, send_len) < 0) {
-            printf("❌ Server disconnected during send at index: %d\n", i);
+            printf("Server disconnected during send at index: %d\n", i);
             close(sock);
             return 1;
         }
         
         memset(recv_buf, 0, sizeof(recv_buf));
         if (recv_all(sock, recv_buf, 5) < 0 || strstr(recv_buf, "OK") == NULL) {
-            printf("❌ Unexpected server reply at index: %d! (Recv: %s)\n", i, recv_buf);
+            printf("Unexpected server reply at index: %d! (Recv: %s)\n", i, recv_buf);
             close(sock);
             return 1;
         }
@@ -113,7 +113,7 @@ int main(int argc, char *argv[]) {
             printf("  -> Progress: Injected and verified %d records...\n", i);
         }
     }
-    printf("✅ [PUSH] Successfully injected and verified %d records.\n", TOTAL_RECORDS);
+    printf("[PUSH] Successfully injected and verified %d records.\n", TOTAL_RECORDS);
 
     // 发送 SAVE 快照落盘命令
     printf("\n[SAVE] Sending RESP 'SAVE' Command to trigger snapshot dump...\n");
@@ -123,15 +123,13 @@ int main(int argc, char *argv[]) {
     
     memset(recv_buf, 0, sizeof(recv_buf));
     if (recv_all(sock, recv_buf, 5) < 0 || strstr(recv_buf, "OK") == NULL) {
-        printf("❌ SAVE command failed! Got: [%s]\n", recv_buf);
+        printf("SAVE command failed! Got: [%s]\n", recv_buf);
         close(sock);
         return 1;
     }
-    printf("🎉 [Server RESP ACK]: %s", recv_buf); 
+    printf("[Server RESP ACK]: %s", recv_buf); 
 
-    // ✨ 直接断开连接
+    // 直接断开连接
     close(sock);
-    printf("\n🔌 Disconnected from server successfully.\n");
-    printf("👉 Please manually stop (Ctrl+C) and restart your server now.\n\n");
     return 0;
 }

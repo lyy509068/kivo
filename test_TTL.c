@@ -53,7 +53,9 @@ int connect_server() {
     return -1;
 }
 
-int send_all(int sock, const char *buf, int len) {
+int 
+
+send_all(int sock, const char *buf, int len) {
     int total_sent = 0;
     while (total_sent < len) {
         int sent = send(sock, buf + total_sent, len - total_sent, 0);
@@ -164,8 +166,8 @@ int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
     int engine = 1;
-    int ttl_sec = 30;
-    int sleep_sec = 35;
+    int ttl_sec = 3;
+    int sleep_sec = 4;
 
     if (argc >= 2) engine = atoi(argv[1]);
     if (argc >= 3) ttl_sec = atoi(argv[2]);

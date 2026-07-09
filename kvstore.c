@@ -783,9 +783,10 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             printf("Received 'SYNC' command from slave.\n");
             fflush(stdout);
 
-            expire_thread_pause();// 暂停超时删除线程
-
             #if ENABLE_REPLICATION_MASTER
+            #if ENABLE_TTL
+            expire_thread_pause();// 暂停超时删除线程
+            #endif
             if (g_rdma_ctx) {            
                 printf("[Repl Master] RDMA link is already RTS. Triggering Zero-Copy log sync directly...\n");
                 fflush(stdout);
@@ -807,11 +808,13 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         }
         case CMD_REPL_SYNC_DONE: {
             printf("[Master] Received SYNC_DONE from slave. Full sync completed!\n");
+
+            #if ENABLE_REPLICATION_MASTER
+            #if ENABLE_TTL
             extern int BEGIN_IN;
             BEGIN_IN = 1; //增量持久化开始标志
             expire_thread_resume();// 恢复超时删除线程
-
-            #if ENABLE_REPLICATION_MASTER
+            #endif
             if (ebpf_register_slave() == 0) {
                 if (ebpf_set_forward_switch(1) == 0) {
                     printf("[Master] eBPF TC clone switch ENABLED.\n");

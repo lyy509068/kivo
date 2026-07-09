@@ -47,9 +47,9 @@ void submit_accept(int listen_fd) {
 
 void submit_recv(int fd) {
     struct conn *c = &proactor_conn_list[fd];
-    if (c->rcapacity - c->rlength < 4096) {
+    if (c->rcapacity - c->rlength < 65536) {
         int new_capacity = c->rcapacity * 2;
-        if (new_capacity < 4096) new_capacity = 4096;
+        if (new_capacity < 65536) new_capacity = 65536;
         char *new_buf = (char *)kvs_realloc(c->rbuffer, new_capacity);
         if (!new_buf) { proactor_close_and_free_connection(fd); return; }
         c->rbuffer = new_buf;
@@ -74,6 +74,8 @@ void submit_send(int fd) {
 }
 
 void on_recv_completed(int fd, int res) {
+    //fprintf(stderr, "[RECV] fd=%d, res=%d, rlength=%d, wlength=%d\n", fd, res, proactor_conn_list[fd].rlength, proactor_conn_list[fd].wlength);
+    //fflush(stderr);
     struct conn *c = &proactor_conn_list[fd];
     if (res <= 0) { proactor_close_and_free_connection(fd); return; }
 
@@ -111,11 +113,17 @@ void on_recv_completed(int fd, int res) {
         c->rlength = remaining;
     }
 
-    if (c->wlength > 0) submit_send(fd);
-    else submit_recv(fd);
+    if (c->wlength > 0) {
+        submit_send(fd);
+    }
+    else {
+        submit_recv(fd);
+    }
 }
 
 void on_send_completed(int fd, int res) {
+    //fprintf(stderr, "[SEND] fd=%d, res=%d, wlength=%d\n", fd, res, proactor_conn_list[fd].wlength);
+    //fflush(stderr);
     struct conn *c = &proactor_conn_list[fd];
     if (res < 0) { proactor_close_and_free_connection(fd); return; }
 
@@ -128,7 +136,11 @@ void on_send_completed(int fd, int res) {
         }
         c->wlength = 0;
     }
-    submit_recv(fd);
+    if (c->wlength > 0) {
+        submit_send(fd);
+    } else {
+        submit_recv(fd);
+    }
 }
 
 void on_accept_completed(int listen_fd, int clientfd) {
@@ -216,9 +228,9 @@ struct conn* proactor_host_slave_connection(int fd, char *wbuf, int wcap, int wl
     struct conn *c = &proactor_conn_list[fd];
     c->fd = fd;
     c->role = CONN_MASTER;
-    c->rbuffer = (char *)kvs_malloc(4096);
+    c->rbuffer = (char *)kvs_malloc(65536);
     if (!c->rbuffer) return NULL;
-    c->rcapacity = 4096;
+    c->rcapacity = 65536;
     c->rlength = 0;
     c->wbuffer = wbuf;
     c->wcapacity = wcap;

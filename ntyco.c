@@ -46,8 +46,9 @@ void ntyco_client_co(void *arg) {
     if (!c->rbuffer || !c->wbuffer) { ntyco_close_and_free_connection(fd); return; }
 
     while (1) {
-        if (c->rcapacity - c->rlength < 4096) {
+        if (c->rcapacity - c->rlength < 65536) {
             int new_capacity = c->rcapacity * 2;
+            if (new_capacity < 65536) new_capacity = 65536;
             c->rbuffer = (char *)kvs_realloc(c->rbuffer, new_capacity);
             c->rcapacity = new_capacity;
         }
@@ -158,8 +159,8 @@ struct conn* ntyco_host_slave_connection(int fd, char *wbuf, int wcap, int wlen)
     c->wbuffer = wbuf;
     c->wcapacity = wcap;
     c->wlength = wlen;
-    c->rbuffer = (char *)kvs_malloc(INIT_BUFFER_SIZE);
-    c->rcapacity = INIT_BUFFER_SIZE;
+    c->rbuffer = (char *)kvs_malloc(65536);
+    c->rcapacity = 65536;
     c->rlength = 0;
 
     nty_coroutine *client_co = NULL;

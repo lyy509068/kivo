@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include "resp.h"
 
-#define ENABLE_REPLICATION_MASTER 1
+#define ENABLE_REPLICATION_MASTER 0
 #define ENABLE_REPLICATION_SLAVE  0
 
 struct repl_context {

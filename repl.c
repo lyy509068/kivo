@@ -24,6 +24,7 @@
 #define DEFAULT_RDMA_DEVICE "rxe0"
 
 volatile int g_running = 1; 
+static int g_slave_fd = -1;
 
 static pthread_t repl_slave_tid; 
 static bool g_repl_ctx_ready = false;
@@ -220,6 +221,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
 }
 
 void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd) {
+    g_slave_fd = fd;
     printf("[Repl Master] Recieved RDMA_CONNECT. Shaking hands with slave...\n");
     
     struct ring_meta slave_meta;
@@ -347,8 +349,9 @@ void* pure_rdma_repl_slave_thread(void *arg) {
                 fsync(local_fd);
                 close(local_fd);
             }
-
+            #if ENABLE_REPLICATION_SLAVE
             kvs_persistence_recover();
+            #endif
             printf("[Repl Slave] AOF reload successfully!\n");
 
             start_replica_udp_server_coroutine(3000);
@@ -381,7 +384,7 @@ void repl_destroy(void) {
     #endif
 
     if (g_repl_ctx.wbuffer) {
-        free(g_repl_ctx.wbuffer);
+        kvs_free(g_repl_ctx.wbuffer);
         g_repl_ctx.wbuffer = NULL;
     }
     if (g_repl_ctx.fd >= 0) {
@@ -391,7 +394,7 @@ void repl_destroy(void) {
 }
 
 void repl_push_cmd(const char *cmd, void *key, int key_len, void *value, int value_len) {
-    if (g_repl_ctx.fd < 0) return;
+    if (g_slave_fd < 0) return;
 
     char buf[512];
     int len;
@@ -405,5 +408,5 @@ void repl_push_cmd(const char *cmd, void *key, int key_len, void *value, int val
                        strlen(cmd), cmd,
                        key_len, key_len, (char*)key);
     }
-    send(g_repl_ctx.fd, buf, len, MSG_DONTWAIT);
+    send(g_slave_fd, buf, len, MSG_DONTWAIT);
 }

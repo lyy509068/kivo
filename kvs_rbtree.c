@@ -388,8 +388,7 @@ kv_data_t* kvs_rbtree_get(kvs_rbtree_t *inst, kv_data_t *key) {
     }
     
     if (node->expire_time > 0 && get_current_ms_rbtree() > node->expire_time) {
-        printf("[EXPIRE_DEBUG] 🚨 RBTREE Lazy Delete Triggered for Key: %.*s!\n", 
-                   (int)node->key.len, (char*)node->key.data);
+        //printf("[EXPIRE_DEBUG] RBTREE Lazy Delete Triggered for Key: %.*s!\n", (int)node->key.len, (char*)node->key.data);
         kvs_rbtree_del(inst, key); // 惰性删除：将其从树中剔除并释放
         return NULL;               // 返回空
     }

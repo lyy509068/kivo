@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
 
     int engine_type = atoi(argv[1]);
     if (engine_type < 1 || engine_type > 4) {
-        printf("❌ Invalid engine type!\n");
+        printf("Invalid engine type!\n");
         return 1;
     }
 
@@ -60,12 +60,12 @@ int main(int argc, char *argv[]) {
     int send_len;
 
     printf("======================================================\n");
-    printf("🚀 [STAGE 2] RECONNECTING & VERIFYING SNAPSHOT (ENGINE %d)\n", engine_type);
+    printf("[STAGE 2] RECONNECTING & VERIFYING SNAPSHOT (ENGINE %d)\n", engine_type);
     printf("======================================================\n\n");
 
     int sock = connect_server();
     if (sock < 0) {
-        printf("❌ [FATAL] Cannot connect to server. Did you remember to restart it manually?\n");
+        printf("[FATAL] Cannot connect to server. Did you remember to restart it manually?\n");
         return 1;
     }
 
@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
 
         send_len = build_resp_request(send_buf, get_cmd, key);
         if (send_all(sock, send_buf, send_len) < 0) {
-            printf("❌ Server disconnected during send at index: %d\n", i);
+            printf("Server disconnected during send at index: %d\n", i);
             close(sock);
             return 1;
         }
@@ -87,14 +87,14 @@ int main(int argc, char *argv[]) {
         memset(recv_buf, 0, sizeof(recv_buf));
         int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
         if (rlen <= 0) {
-            printf("❌ Server disconnected during recv at index: %d\n", i);
+            printf("Server disconnected during recv at index: %d\n", i);
             close(sock);
             return 1;
         }
         recv_buf[rlen] = '\0';
         
         if (strstr(recv_buf, expected_val) == NULL) {
-            printf("❌ Data Mismatch/Lost at %s! Expected: %s, Got: [%s]\n", key, expected_val, recv_buf);
+            printf("Data Mismatch/Lost at %s! Expected: %s, Got: [%s]\n", key, expected_val, recv_buf);
             close(sock);
             return 1;
         }
@@ -103,18 +103,18 @@ int main(int argc, char *argv[]) {
             printf("  -> Progress: Verified %d records successfully...\n", i);
         }
     }
-    printf("✅ [VERIFY] ALL 100,000 RECORDS VERIFIED FROM SNAPSHOT!\n");
+    printf("[VERIFY] ALL 100,000 RECORDS VERIFIED FROM SNAPSHOT!\n");
 
-    // ✨ 强校验通过，抹除快照文件，不留痕迹
+    //  强校验通过，抹除快照文件，不留痕迹
     printf("\n[PURGE] Purging snapshot file: %s...\n", SNAPSHOT_FILE);
     if (remove(SNAPSHOT_FILE) == 0) {
-        printf("  🎉 [Success] %s deleted successfully.\n", SNAPSHOT_FILE);
+        printf(" [Success] %s deleted successfully.\n", SNAPSHOT_FILE);
     } else {
-        printf("  ⚠️ [Warning] Snapshot file not found or couldn't be deleted.\n");
+        printf(" [Warning] Snapshot file not found or couldn't be deleted.\n");
     }
 
-    // ✨ 直接断开连接，不写 shutdown
+    //  直接断开连接，不写 shutdown
     close(sock);
-    printf("🔌 Disconnected. 🏆 [SNAPSHOT TEST PASS FOR ENGINE %d] 🏆\n\n", engine_type);
+    printf("🔌 Disconnected. [SNAPSHOT TEST PASS FOR ENGINE %d] \n\n", engine_type);
     return 0;
 }

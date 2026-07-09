@@ -32,11 +32,11 @@ redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 SSET key:__rand_int__ value:__ra
 redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 SGET key:__rand_int__ value:__rand_int__
 
 # 测试结果
-  数据结构	命令	  QPS (请求/秒)	 平均延迟
-Array (基础)	SET	14,450 ops/sec	~2-3ms
-RBTREE (红黑树)	RSET	29,850 ops/sec	~1-2ms
-HASH (哈希表)	HSET	25,316 ops/sec	~1-2ms
-SKIPLIST (跳表)	SSET	29,411 ops/sec	~1-2ms
+  数据结构	命令	  QPS (请求/秒)	 
+Array (基础)	SET	  21k ops/sec	
+RBTREE (红黑树)	RSET	  108k ops/sec	
+HASH (哈希表)	HSET	  121k ops/sec	
+SKIPLIST (跳表)	SSET	  101k ops/sec	
 
 # 全量持久化测试 test_fullpersistence
 ./test_fullpersistence1 (1 2 3 4) 选择一种数据结构(array rbtree hash skiptable)插入10w条数据    
@@ -86,7 +86,7 @@ eBPF程序传输增量用到UDP传输，有丢包的问题
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？
-2. reactor, ntyco, io_uring的三种网络模型的性能差异？
+2. reactor, ntyco, io_uring的三种网络模型的性能差异？ 
 3. 多线程的kvstore该如何改进？
 4. 私有协议如何设计会更加安全可靠？
 5. 协议改进以后，对已有的代码有哪些改变？
