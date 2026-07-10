@@ -161,8 +161,8 @@ int main(int argc, char *argv[]) {
     g_enable_repl_master = (cfg.replication == 1);
     g_enable_repl_slave  = (cfg.replication == 2);
 
-    init_kvengine();
     protocol_set_command_handler(kvs_execute_command);
+    init_kvengine();
 
     #if (NETWORK_SELECT == NETWORK_REACTOR)
     reactor_start(cfg.port, protocol_process_stream);

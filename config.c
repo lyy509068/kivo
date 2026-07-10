@@ -4,7 +4,7 @@
 #include <stdlib.h>
 
 static int parse_persistence(const char *val) {
-    if (strcmp(val, "AOF") == 0)  return 1;
+    if (strcmp(val, "ON") == 0)  return 1;
     return 0;  
 }
 

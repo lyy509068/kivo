@@ -84,13 +84,13 @@ int verify_batch_replies(int sock, char *recv_buf, int recv_buf_size,
     int expected_total_bytes = BATCH_SIZE * 5;
     
     if (recv_buf_size < expected_total_bytes) {
-        printf("❌ [BATCH %d] recv_buf too small!\n", batch_idx);
+        printf("[BATCH %d] recv_buf too small!\n", batch_idx);
         return -1;
     }
     
     // 阻塞接收全部回复
     if (recv_all(sock, recv_buf, expected_total_bytes) < 0) {
-        printf("❌ [BATCH %d] Failed to receive all replies (expected %d bytes)\n",
+        printf("[BATCH %d] Failed to receive all replies (expected %d bytes)\n",
                batch_idx, expected_total_bytes);
         return -1;
     }
@@ -107,7 +107,7 @@ int verify_batch_replies(int sock, char *recv_buf, int recv_buf_size,
                 if (bad_reply[j] == '\r') bad_reply[j] = 'R';
                 else if (bad_reply[j] == '\n') bad_reply[j] = 'N';
             }
-            printf("❌ [BATCH %d][CMD %d] index=%d key=key_%06d "
+            printf("[BATCH %d][CMD %d] index=%d key=key_%06d "
                    "expected '+OK\\r\\n' but got '%s'\n",
                    batch_idx, i, start_idx + i, start_idx + i, bad_reply);
             return -1;
@@ -122,14 +122,14 @@ void test_engine(int engine_type) {
     
     printf("\n");
     printf("==================================================================\n");
-    printf("🚀 Testing Engine %d [%s] — Batch Mode\n", engine_type, set_cmd);
+    printf("Testing Engine %d [%s] — Batch Mode\n", engine_type, set_cmd);
     printf("   Batch size: %d | Total batches: %d | Total: %d records\n",
            BATCH_SIZE, TOTAL_BATCHES, BATCH_SIZE * TOTAL_BATCHES);
     printf("==================================================================\n");
 
     int sock = connect_server();
     if (sock < 0) {
-        printf("❌ [FATAL] Cannot connect to server!\n");
+        printf("[FATAL] Cannot connect to server!\n");
         return;
     }
 
@@ -137,7 +137,7 @@ void test_engine(int engine_type) {
     char *send_buf = (char *)malloc(MAX_SEND_BUF);
     char *recv_buf = (char *)malloc(MAX_RECV_BUF);
     if (!send_buf || !recv_buf) {
-        printf("❌ [FATAL] malloc failed!\n");
+        printf("[FATAL] malloc failed!\n");
         close(sock);
         return;
     }
@@ -148,14 +148,14 @@ void test_engine(int engine_type) {
     for (int batch = 0; batch < TOTAL_BATCHES; batch++) {
         int start_idx = record_idx;
         
-        // 1️⃣ 批量发送100条命令
+        // 批量发送100条命令
         if (send_batch_commands(sock, set_cmd, send_buf, batch, start_idx) < 0) {
-            printf("❌ [BATCH %d] send failed!\n", batch);
+            printf("[BATCH %d] send failed!\n", batch);
             total_errors++;
             break;
         }
         
-        // 2️⃣ 批量接收并校验100条回复
+        // 批量接收并校验100条回复
         if (verify_batch_replies(sock, recv_buf, MAX_RECV_BUF, batch, start_idx) < 0) {
             total_errors++;
             // 校验失败后连接状态可能混乱，中止测试
@@ -166,17 +166,17 @@ void test_engine(int engine_type) {
         
         // 每100批打印一次进度
         if ((batch + 1) % 100 == 0) {
-            printf("  ✅ Completed %d batches (%d records)...\n",
+            printf("  Completed %d batches (%d records)...\n",
                    batch + 1, record_idx);
         }
     }
 
     printf("\n--------------------------------------------------------\n");
     if (total_errors == 0) {
-        printf("✅ [Engine %d] ALL %d records PASSED!\n", 
+        printf("[Engine %d] ALL %d records PASSED!\n", 
                engine_type, record_idx);
     } else {
-        printf("❌ [Engine %d] %d errors detected. Only %d records processed.\n",
+        printf("[Engine %d] %d errors detected. Only %d records processed.\n",
                engine_type, total_errors, record_idx);
     }
     printf("--------------------------------------------------------\n");
@@ -205,6 +205,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    printf("\n✅ All tests completed.\n");
+    printf("\nAll tests completed.\n");
     return 0;
 }

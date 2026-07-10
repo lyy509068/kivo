@@ -227,7 +227,6 @@ int kvs_snapshot_save(void) {
     return 0;
 }
 
-// 保持不变：从快照文件读取数据（mmap 零拷贝）
 int kvs_snapshot_load(void) {
     int fd = open("kvstore.snap", O_RDONLY);
     if (fd < 0) {
@@ -252,43 +251,88 @@ int kvs_snapshot_load(void) {
         return -1;
     }
 
-    uint64_t my_calc_crc = 0; 
-    size_t p = 0; 
+    // 快速校验 CRC（不解析数据结构）
+  
+    uint64_t file_stored_crc = *(uint64_t *)(mmap_addr + data_limit);
+    uint64_t calc_crc = 0;
+    
+    // 逐字节计算整个数据区的 CRC
+    for (size_t i = 0; i < data_limit; i++) {
+        calc_crc = kvs_crc64(calc_crc, mmap_addr + i, 1);
+    }
+    
+    printf("[SNAP] CRC Check - Calculated: %llu, Stored: %llu\n", 
+           (unsigned long long)calc_crc, (unsigned long long)file_stored_crc);
+    
+    // CRC 不匹配 → 文件被篡改，直接返回
+    if (calc_crc != file_stored_crc) {
+        printf("[CRITICAL] Snapshot CRC Mismatch! File may be corrupted.\n");
+        munmap(mmap_addr, file_size);
+        return -1; 
+    }
+    
+    printf("[SNAP] CRC verified OK, loading data...\n");
 
+    // CRC 通过后才逐条解析加载
+    size_t p = 0; 
     int loaded_count = 0;
     int expired_cleanup_count = 0; 
     int64_t now = get_current_ms_snapshot(); 
 
-    while (p < data_limit) {
+    while (p + sizeof(int) <= data_limit) {
         int type = *(int *)(mmap_addr + p);
-        my_calc_crc = kvs_crc64(my_calc_crc, mmap_addr + p, sizeof(int));
         p += sizeof(int);
 
+        // 验证 type 是否合法（1-4）
+        if (type < SNAP_TYPE_ARRAY || type > SNAP_TYPE_SKIPLIST) {
+            printf("[SNAP] Invalid type %d at offset %zu\n", type, p - sizeof(int));
+            break;
+        }
+
+        // 边界检查：expire_time（8字节）
+        if (p + sizeof(int64_t) > data_limit) break;
         int64_t expire_time = *(int64_t *)(mmap_addr + p);
-        my_calc_crc = kvs_crc64(my_calc_crc, mmap_addr + p, sizeof(int64_t));
         p += sizeof(int64_t);
 
+        // 边界检查：key_len（4字节）
+        if (p + sizeof(int) > data_limit) break;
         int key_len = *(int *)(mmap_addr + p);
-        my_calc_crc = kvs_crc64(my_calc_crc, mmap_addr + p, sizeof(int));
         p += sizeof(int);
 
+        // 验证 key_len 合理性
+        if (key_len <= 0 || key_len > 1024 * 1024) {
+            printf("[SNAP] Invalid key_len %d at offset %zu\n", key_len, p - sizeof(int));
+            break;
+        }
+
+        // 边界检查：key data
+        if (p + key_len > data_limit) break;
         void *k_buf = (void *)(mmap_addr + p);
-        my_calc_crc = kvs_crc64(my_calc_crc, mmap_addr + p, key_len);
         p += key_len;
-        
+
+        // 边界检查：val_len（4字节）
+        if (p + sizeof(int) > data_limit) break;
         int val_len = *(int *)(mmap_addr + p);
-        my_calc_crc = kvs_crc64(my_calc_crc, mmap_addr + p, sizeof(int));
         p += sizeof(int);
 
+        // 验证 val_len 合理性
+        if (val_len < 0 || val_len > 10 * 1024 * 1024) {
+            printf("[SNAP] Invalid val_len %d at offset %zu\n", val_len, p - sizeof(int));
+            break;
+        }
+
+        // 边界检查：val data
+        if (p + val_len > data_limit) break;
         void *v_buf = (void *)(mmap_addr + p);
-        my_calc_crc = kvs_crc64(my_calc_crc, mmap_addr + p, val_len);
         p += val_len;
-        
+
+        // 过期跳过
         if (expire_time > 0 && now > expire_time) {
             expired_cleanup_count++;
             continue; 
         }
 
+        // 加载到对应数据结构
         kv_data_t kv_k = { .data = k_buf, .len = key_len };
         kv_data_t kv_v = { .data = v_buf, .len = val_len };
         
@@ -320,17 +364,9 @@ int kvs_snapshot_load(void) {
         loaded_count++;
     }
 
-    uint64_t file_stored_crc = *(uint64_t *)(mmap_addr + data_limit);
     munmap(mmap_addr, file_size);
 
-    if (my_calc_crc != file_stored_crc) {
-        printf("[CRITICAL] mmap Snapshot CRC Mismatch!!!\n");
-        printf("-> Expected (Calculated): %llu\n", (unsigned long long)my_calc_crc);
-        printf("-> Got (File Stored):     %llu\n", (unsigned long long)file_stored_crc);
-        return -1; 
-    }
-
-    printf("[SUCCESS] mmap Snapshot checked OK! Loaded %d entries (Purged %d expired)\n", 
+    printf("[SNAP] Load complete: %d loaded, %d expired skipped\n", 
            loaded_count, expired_cleanup_count);
     return 0;
 }

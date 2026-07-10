@@ -15,11 +15,11 @@ typedef enum {
     KVS_RESP_GET_OK = 3,      // 3: GET 成功 (返回 $len\r\nbody\r\n)
     KVS_RESP_UNKNOWN = 4,     // 4: 未知命令
     
-    KVS_RESP_SHUTDOWN = 5,     // 5: 停机指令 (占位，或根据实际调整)
-    KVS_RESP_EXISTS = 6,       // 6: KEY 已存在 (对应 REXISTS 成功返回 1)
-    KVS_RESP_NO_EXISTS = 7,    // 7: KEY 不存在 (返回 $-1\r\n)
+    KVS_RESP_EXISTS = 5,       // 6: KEY 已存在 (对应 REXISTS 成功返回 1)
+    KVS_RESP_NO_EXISTS = 6,    // 7: KEY 不存在 (返回 $-1\r\n)
     
-    KVS_RESP_PONG = 8,         // 8: PONG 回应
+    KVS_RESP_PONG = 7,         // 8: PONG 回应
+    KVS_RESP_SAVE_SUCCESS = 8, // 11: SAVE 快照保存成功 (返回 +OK)
     KVS_RESP_SAVE_ERR = 9,     // 9: SAVE 快照落盘失败 (返回 -ERR save failed)
     KVS_RESP_SYNC_LOG = 10     // 10：请求同步日志状态码
 } kvs_status_t;
@@ -37,7 +37,6 @@ typedef struct {
     kvs_status_t status; // 业务层执行状态码
     void *body;          // 查询到的值 (仅 GET 命令有效，需业务层 malloc，协议层负责 free)
     int body_len;        // 查询到的值的长度
-    bool needs_replication; //是否需要同步给从端
 } resp_reply_t;
 
 
@@ -50,8 +49,8 @@ extern int ntyco_start(unsigned short port, stream_handler_t handler);
 
 
 void protocol_set_command_handler(cmd_handler_t handler);
-void protocol_process_resp(char *recv_buf, int *recv_len, char *send_buf, int *send_len);
 int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd);
+int protocol_process_recover(const char *in_buf, int in_len);
 int protocol_process_udp_silent(const char *in_buf, int in_len);
 int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply);
 

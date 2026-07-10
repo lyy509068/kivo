@@ -1,4 +1,4 @@
-
+// 修改：整体要写成resp格式
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,12 +42,6 @@ static aof_buffer_t aof_buf_active;
 static aof_buffer_t aof_buf_flush;
 static int is_io_uring_busy = 0; // 标记 io_uring 是否正在刷盘
 static off_t aof_file_offset = 0; // 记录当前文件追加的绝对偏移量
-
-static int64_t get_current_ms_aof(void) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
-}
 
 // 初始化 AOF 环境
 int kvs_persistence_init(void) {
@@ -139,10 +133,10 @@ void kvs_persistence_write(const void *data, int len) {
 
     pthread_mutex_lock(&aof_mutex);
 
-    // 1. 顺便收割一下已经完成的异步 I/O 请求
+    // 收割已经完成的异步 I/O 请求
     aof_check_cqe_nonblock();
 
-    // 2. 如果单条命令大于缓冲区剩余空间，先强制把当前积压的刷出去
+    // 如果单条命令大于缓冲区剩余空间，先强制把当前积压的刷出
     if (aof_buf_active.len + len > AOF_BUF_SIZE) {
         // 如果 flush 缓冲区还没释放（内核还在写），主线程稍微等一下
         while (is_io_uring_busy) {
@@ -154,12 +148,11 @@ void kvs_persistence_write(const void *data, int len) {
         aof_trigger_flush_nolock();
     }
 
-    // 3. 将数据追加到活跃的用户态缓冲区
+    // 将数据追加到活跃的用户态缓冲区
     memcpy(aof_buf_active.buf + aof_buf_active.len, data, len);
     aof_buf_active.len += len;
 
-    // 4. 策略：Redis 默认的每一秒刷盘(everysec)或有积压就触发异步落盘
-    // 这里采取：只要缓冲区有数据且 io_uring 空闲，就立刻推给内核异步去写
+    // 只要缓冲区有数据且 io_uring 空闲，就立刻推给内核异步去写
     if (!is_io_uring_busy) {
         aof_trigger_flush_nolock();
     } else {
@@ -171,137 +164,36 @@ void kvs_persistence_write(const void *data, int len) {
     pthread_mutex_unlock(&aof_mutex);
 }
 
-// 加载，使用 mmap 零拷贝高速读取重放
 void kvs_persistence_recover(void) {
     if (aof_fd < 0) return;
 
     pthread_mutex_lock(&aof_mutex);
 
-    // 获取 AOF 文件大小
     struct stat st;
     if (fstat(aof_fd, &st) < 0 || st.st_size <= 0) {
+        printf("[AOF] No data to recover or file error\n");
         pthread_mutex_unlock(&aof_mutex);
         return; 
     }
     size_t file_size = st.st_size;
 
-    // 将整个 AOF 日志映射到内存空间
-    unsigned char *mmap_addr = mmap(NULL, file_size, PROT_READ, MAP_SHARED, aof_fd, 0);
-    if (mmap_addr == MAP_FAILED) {
+    // mmap 零拷贝映射整个 AOF 文件
+    unsigned char *data = mmap(NULL, file_size, PROT_READ, MAP_SHARED, aof_fd, 0);
+    if (data == MAP_FAILED) {
         printf("[AOF Critical] mmap failed during recovery!\n");
         pthread_mutex_unlock(&aof_mutex);
         return;
     }
 
-    int recovered_count = 0;
-    int expired_cleanup_count = 0; 
-    int64_t now = get_current_ms_aof();
-    size_t p = 0; // mmap 虚拟内存解析指针
+    printf("[AOF] Starting recovery, file size: %zu bytes\n", file_size);
 
-    // 线性解析映射的内存空间
-    while (p < file_size) {
-        int cmd_len = 0, key_len = 0, val_len = 0;
-        int64_t expire_time = 0;
-
-        // 安全边界检查：防止读取越界
-        if (p + sizeof(int) > file_size) break;
-        cmd_len = *(int *)(mmap_addr + p);
-        p += sizeof(int);
-        
-        if (cmd_len <= 0 || p + cmd_len + sizeof(int64_t) + sizeof(int) > file_size) {
-            printf("[AOF Warning] Corrupted command structure or EOF. Stopping.\n");
-            break;
-        }
-
-        // 直接拿到 cmd 字符串指针（零拷贝，注意尾部边界）
-        char cmd[32] = {0};
-        if (cmd_len < 32) {
-            memcpy(cmd, mmap_addr + p, cmd_len);
-        }
-        p += cmd_len;
-
-        // 读取过期时间
-        expire_time = *(int64_t *)(mmap_addr + p);
-        p += sizeof(int64_t);
-
-        int is_write_cmd = (strcmp(cmd, "SET") == 0 || strcmp(cmd, "MOD") == 0 || 
-                            strcmp(cmd, "RSET") == 0 || strcmp(cmd, "RMOD") == 0 ||
-                            strcmp(cmd, "HSET") == 0 || strcmp(cmd, "HMOD") == 0 || 
-                            strcmp(cmd, "SSET") == 0 || strcmp(cmd, "SMOD") == 0);
-
-        // 读取 Key 长度
-        key_len = *(int *)(mmap_addr + p);
-        p += sizeof(int);
-
-        if (key_len <= 0 || p + key_len + sizeof(int) > file_size) break;
-
-        // 零拷贝：Key 直接指向 mmap 映射的内存
-        void *key = (void *)(mmap_addr + p);
-        p += key_len;
-
-        // 读取 Value 长度
-        val_len = *(int *)(mmap_addr + p);
-        p += sizeof(int);
-
-        if (val_len < 0 || p + val_len > file_size) break;
-
-        // 零拷贝：Value 直接指向 mmap 映射的内存
-        void *val = (val_len > 0) ? (void *)(mmap_addr + p) : NULL;
-        p += val_len;
-
-        // 过期拦截拦截
-        if (is_write_cmd && expire_time > 0 && now > expire_time) {
-            expired_cleanup_count++;
-            continue; 
-        }
-
-        void *safe_key = kvs_malloc(key_len);
-        memcpy(safe_key, key, key_len);
-
-        void *safe_val = NULL;
-        if (val_len > 0 && val) {
-            safe_val = kvs_malloc(val_len);
-            memcpy(safe_val, val, val_len);
-        }
-
-        kv_data_t kv_k = {safe_key, key_len};
-        kv_data_t kv_v = {safe_val, val_len};
-
-        #if ENABLE_ARRAY
-        if (strcmp(cmd, "SET") == 0) kvs_array_set(&global_array, &kv_k, &kv_v, expire_time);
-        else if (strcmp(cmd, "DEL") == 0) kvs_array_del(&global_array, &kv_k);
-        else if (strcmp(cmd, "MOD") == 0) kvs_array_mod(&global_array, &kv_k, &kv_v, expire_time);
-        #endif
-        
-        #if ENABLE_RBTREE
-        if (strcmp(cmd, "RSET") == 0) kvs_rbtree_set(&global_rbtree, &kv_k, &kv_v, expire_time);
-        else if (strcmp(cmd, "RDEL") == 0) kvs_rbtree_del(&global_rbtree, &kv_k);
-        else if (strcmp(cmd, "RMOD") == 0) kvs_rbtree_mod(&global_rbtree, &kv_k, &kv_v, expire_time);
-        #endif
-        
-        #if ENABLE_HASH
-        if (strcmp(cmd, "HSET") == 0) kvs_hash_set(&global_hash, &kv_k, &kv_v, expire_time);
-        else if (strcmp(cmd, "HDEL") == 0) kvs_hash_del(&global_hash, &kv_k);
-        else if (strcmp(cmd, "HMOD") == 0) kvs_hash_mod(&global_hash, &kv_k, &kv_v, expire_time);
-        #endif
-        
-        #if ENABLE_SKIPLIST
-        if (strcmp(cmd, "SSET") == 0) kvs_skip_set(&global_skip, &kv_k, &kv_v, expire_time);
-        else if (strcmp(cmd, "SDEL") == 0) kvs_skip_del(&global_skip, &kv_k);
-        else if (strcmp(cmd, "SMOD") == 0) kvs_skip_mod(&global_skip, &kv_k, &kv_v, expire_time);
-        #endif
-
-        recovered_count++;
-    }
-
-    // 恢复完成，解除映射
-    munmap(mmap_addr, file_size);
-
+    // 调用协议层的恢复函数处理所有命令
+    int processed = protocol_process_recover((const char *)data, file_size);
+    
+    munmap(data, file_size);
     aof_file_offset = file_size;
 
-    printf("[AOF mmap] Recovery finished: %d commands replayed (Purged %d expired logs)\n", 
-           recovered_count, expired_cleanup_count);
-
+    printf("[AOF] Recovery completed: processed %d bytes\n", processed);
     pthread_mutex_unlock(&aof_mutex);
 }
 

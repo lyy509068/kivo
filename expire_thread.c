@@ -45,8 +45,26 @@ extern kvs_hash_t    global_hash;
 extern kvs_skip_t    global_skip;
 #endif
 
-extern void log_binary_command(const char *cmd, void *key, int key_len, void *value, int value_len, int64_t expire_time);
+extern void kvs_persistence_write(const void *data, int len);
 
+static void write_del_log(const char *cmd, const void *key, int key_len) {
+    if (!(g_enable_persistence || g_enable_repl_master)) {
+        return;
+    }
+    
+    char resp_buf[4096];
+    int resp_len = 0;
+    int cmd_len = strlen(cmd);
+    
+    // 构造 RESP 格式: *2\r\n$<cmd_len>\r\n<cmd>\r\n$<key_len>\r\n<key>\r\n
+    resp_len = sprintf(resp_buf, "*2\r\n$%d\r\n%s\r\n$%d\r\n", cmd_len, cmd, key_len);
+    memcpy(resp_buf + resp_len, key, key_len);
+    resp_len += key_len;
+    memcpy(resp_buf + resp_len, "\r\n", 2);
+    resp_len += 2;
+    
+    kvs_persistence_write(resp_buf, resp_len);
+}
 
 // 全局控制变量
 volatile int expire_thread_running = 1;
@@ -83,7 +101,7 @@ void* kvs_array_expire_worker(void* arg) {
             if (global_array.table[i].expire_time > 0 && now > global_array.table[i].expire_time) {
 
                 if (g_enable_persistence || g_enable_repl_master){
-                log_binary_command("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0, 0);
+                    write_del_log("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len);
                 }
                 if (g_enable_repl_master){
                 if(BEGIN_IN){
@@ -150,7 +168,7 @@ void* kvs_hash_expire_worker(void* arg) {
                     }
 
                     if (g_enable_persistence || g_enable_repl_master){
-                    log_binary_command("HDEL", curr->key.data, (int)curr->key.len, NULL, 0, 0);
+                        write_del_log("HDEL", curr->key.data, (int)curr->key.len);
                     }
                     if (g_enable_repl_master){
                     if(BEGIN_IN){
@@ -230,7 +248,7 @@ void* kvs_rbtree_expire_worker(void* arg) {
                 pthread_rwlock_wrlock(&seg_locks[1]);
 
                 if (g_enable_persistence || g_enable_repl_master){
-                log_binary_command("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
+                    write_del_log("RDEL", expired_batch[i].data, (int)expired_batch[i].len);
                 }
                 if (g_enable_repl_master){
                 if(BEGIN_IN){
@@ -284,7 +302,7 @@ void* kvs_skiplist_expire_worker(void* arg) {
                 pthread_rwlock_wrlock(&seg_locks[2]);
 
                 if (g_enable_persistence || g_enable_repl_master){
-                log_binary_command("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0, 0);
+                    write_del_log("SDEL", expired_batch[i].data, (int)expired_batch[i].len);
                 }
                 if (g_enable_repl_master){
                 if(BEGIN_IN){
