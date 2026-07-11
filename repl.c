@@ -30,6 +30,12 @@ static pthread_t repl_slave_tid;
 static bool g_repl_ctx_ready = false;
 static struct repl_context g_repl_ctx = { .fd = -1, .wbuffer = NULL, .wcapacity = 0, .wlength = 0 };
 
+
+repl_backlog_item_t g_repl_backlog[REPL_BACKLOG_MAX];
+int g_repl_backlog_count;
+volatile int g_repl_backlog_enabled;  // 1=追加中, 0=关闭
+
+
 struct rdma_ring_ctx *g_rdma_ctx = NULL; 
 
 extern int start_replica_udp_server_coroutine(int listen_port);
@@ -220,7 +226,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     return g_repl_ctx.fd;
 }
 
-void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd) {
+void handle_slave_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd) {
     g_slave_fd = fd;
     printf("[Repl Master] Recieved RDMA_CONNECT. Shaking hands with slave...\n");
     
@@ -235,9 +241,7 @@ void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int
     }
 
     if (rdma_ring_configure(g_rdma_ctx, &slave_meta) != 0) {
-        //fprintf(stderr, "[Protocol Master Error] Failed to configure Master QP to RTS!\n");
-    } else {
-        //printf("[Protocol Master] RDMA Pipeline is now RTS (Ready to Send).\n");
+        fprintf(stderr, "[Protocol Master Error] Failed to configure Master QP to RTS!\n");
     }
 
     uint32_t my_rkey = g_rdma_ctx->mr_buf->rkey;
@@ -270,23 +274,12 @@ void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int
 
     int total_sent = 0;
     while (total_sent < ack_len) {
-        int sent = send(fd, ack_cmd + total_sent, ack_len - total_sent, 0);//网络底层改变对这里不影响把？？
+        int sent = send(fd, ack_cmd + total_sent, ack_len - total_sent, 0);
         if (sent <= 0) return;
         total_sent += sent;
     }
-    printf("[Repl Master] RDMA_CONNECT_ACK sent successfully (%d bytes).\n", total_sent);
+    printf("[Repl Master] RDMA_CONNECT_ACK sent successfully.\n");
 
-    if (wbuf && wcap && wlen) {
-        int needed = *wlen + ack_len + 1;
-        if (needed > *wcap) {
-            int new_cap = *wcap * 2;
-            if (new_cap < needed) new_cap = needed;
-            char *new_buf = (char *)kvs_realloc(*wbuf, new_cap);
-            if (new_buf) { *wbuf = new_buf; *wcap = new_cap; }
-        }
-        memcpy(*wbuf + *wlen, ack_cmd, ack_len);
-        *wlen += ack_len;
-    }
 }
 
 int repl_sync_log_via_rdma(void) {
@@ -295,70 +288,135 @@ int repl_sync_log_via_rdma(void) {
         return -1;
     }
 
-    int fd = open(PERSISTENCE_FILE, O_RDONLY);
-    if (fd < 0) {
+    // 打开源文件
+    int src_fd = open(PERSISTENCE_FILE, O_RDONLY);
+    if (src_fd < 0) {
         perror("[Repl Error] Failed to open persistence file");
         return -1;
     }
-
+    // 获取文件大小
     struct stat st;
-    if (fstat(fd, &st) < 0) {
-        close(fd);
-        return -1;
-    }
+    if (fstat(src_fd, &st) < 0) { close(src_fd); return -1; }
     size_t file_size = st.st_size;
-    if (file_size == 0) { close(fd); return 0; }
-
+    if (file_size == 0) { close(src_fd); return 0; }
+    // 检查文件大小有没有超出上限
     if (file_size > RING_BUFFER_SIZE) {
         fprintf(stderr, "[Repl Error] Log file size %zu exceeds limit\n", file_size);
-        close(fd);
-        return -1;
+        close(src_fd); return -1;
     }
 
-    // 用 mmap + memcpy 替代 read，避免 ntyco 协程阻塞
-    void *mapped = mmap(NULL, file_size, PROT_READ, MAP_SHARED, fd, 0);
-    close(fd);
+    // mmap 源文件
+    void *mapped = mmap(NULL, file_size, PROT_READ, MAP_SHARED, src_fd, 0);
+    close(src_fd);
     if (mapped == MAP_FAILED) {
-        perror("[Repl Error] mmap failed");
+        perror("[Repl Error] mmap source failed");
         return -1;
     }
 
-    memcpy(g_rdma_ctx->buffer, mapped, file_size);
+    // 生成临时文件名
+    char tmp_file[256];
+    snprintf(tmp_file, sizeof(tmp_file), "%s.sync.%d", PERSISTENCE_FILE, getpid());
+
+    // 把 mmap 写入临时文件
+    int tmp_fd = open(tmp_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (tmp_fd < 0) {
+        perror("[Repl Error] Failed to create temp file");
+        munmap(mapped, file_size); return -1;
+    }
+    ssize_t written = write(tmp_fd, mapped, file_size);
+    close(tmp_fd);
     munmap(mapped, file_size);
 
+    if (written != (ssize_t)file_size) {
+        perror("[Repl Error] Failed to write temp file");
+        unlink(tmp_file); return -1;
+    }
+
+    // mmap 临时文件，拷贝到 RDMA 缓冲区
+    tmp_fd = open(tmp_file, O_RDONLY); 
+    if (tmp_fd < 0) { unlink(tmp_file); return -1; }
+
+    void *tmp_mapped = mmap(NULL, file_size, PROT_READ, MAP_SHARED, tmp_fd, 0);
+    close(tmp_fd);
+    if (tmp_mapped == MAP_FAILED) { unlink(tmp_file); return -1; }
+
+    memcpy(g_rdma_ctx->buffer, tmp_mapped, file_size);
+    munmap(tmp_mapped, file_size);
+
+    // RDMA 发送
     int ret = rdma_master_write_log_imm(g_rdma_ctx, (uint32_t)file_size);
-    if (ret != 0) return -1;
+    if (ret != 0) { unlink(tmp_file); return -1; }
+
+    // 删除临时文件
+    unlink(tmp_file);
 
     printf("Master : Successfully pushed %zu bytes to slave.\n", file_size);
     return 0;
 }
 
-// 接收全量日志线程
+
+// 补发缓冲区
+int repl_flush_backlog_via_rdma(void) {
+    if (!g_rdma_ctx) {
+        fprintf(stderr, "[Repl Error] g_rdma_ctx is NULL, cannot flush backlog\n");
+        return -1;
+    }
+
+    size_t total = 0;
+    for (int i = 0; i < g_repl_backlog_count; i++) {
+        if (total + g_repl_backlog[i].len > RING_BUFFER_SIZE) {
+            fprintf(stderr, "[Repl Error] Backlog overflow, truncated\n");
+            break;
+        }
+        memcpy(g_rdma_ctx->buffer + total, g_repl_backlog[i].data, g_repl_backlog[i].len);
+        total += g_repl_backlog[i].len;
+        kvs_free(g_repl_backlog[i].data);
+    }
+    g_repl_backlog_count = 0;
+    g_repl_backlog_enabled = 0;
+
+    if (total == 0){
+        fprintf(stderr, "Backlog flushed 0 bytes to slave via RDMA.\n");
+        return 0;
+    } 
+
+    int ret = rdma_master_write_log_imm(g_rdma_ctx, (uint32_t)total);
+    if (ret != 0) {
+        fprintf(stderr, "[Repl Error] Backlog RDMA send failed\n");
+        return -1;
+    }
+
+    printf("Master : Backlog flushed %zu bytes to slave via RDMA.\n", total);
+    return 0;
+}
+
+
 void* pure_rdma_repl_slave_thread(void *arg) {
-    printf("[Repl Slave Thread] Pure RDMA replication engine started.\n");
-    
+    int first_sync = 1;  
+
     while (g_running) {
         uint32_t incoming_log_size = 0;
         int ret = rdma_slave_block_and_get_imm(g_rdma_ctx, &incoming_log_size);
         if (ret == 1) {
-            printf("[Repl Slave] Hardware DMA Sync Done. Size: %u bytes. Dumping...\n", incoming_log_size);
-
+            // 写入 AOF
             int local_fd = open(PERSISTENCE_FILE, O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (local_fd >= 0) {
                 write(local_fd, g_rdma_ctx->buffer, incoming_log_size);
                 fsync(local_fd);
                 close(local_fd);
             }
-            if (g_enable_repl_slave){
+
+            // 重新加载引擎
             kvs_persistence_recover();
-            }
             printf("[Repl Slave] AOF reload successfully!\n");
 
-            start_replica_udp_server_coroutine(3000);
-
-            const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
-            send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
-            printf("[Repl Slave] SYNC_DONE report sent to Master.\n");
+            if (first_sync) {
+                start_replica_udp_server_coroutine(3000);
+                const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
+                send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
+                printf("[Repl Slave] SYNC_DONE report sent to Master.\n");
+                first_sync = 0;
+            }    
         }
     }
     return NULL;

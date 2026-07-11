@@ -565,9 +565,8 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             if (req->argc == 1) {
                 reply->status = KVS_RESP_PONG;
             } 
-            // 带参数 (argc == 2) Redis 规定要原样回显该参数
             else if (req->argc == 2) {
-                reply->status = KVS_RESP_GET_OK; // 借用 GET_OK 的打包逻辑
+                reply->status = KVS_RESP_GET_OK; 
                 reply->body = kvs_malloc(key_len+1);
                 if (reply->body) {
                     memcpy(reply->body, key, key_len);
@@ -576,7 +575,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     reply->status = KVS_RESP_ERROR;
                 }
             } 
-            // 参数太多了
             else { 
                 reply->status = KVS_RESP_PARSE_ERROR; 
             }
@@ -590,9 +588,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 int ret = kvs_snapshot_save();
                 
                 if (ret == 0) {
-                    reply->status = KVS_RESP_SAVE_SUCCESS;       
+                    reply->status = KVS_RESP_SUCCESS;       
                 } else {
-                    reply->status = KVS_RESP_SAVE_ERR; 
+                    reply->status = KVS_RESP_ERR; 
                 }
             }
             break;
@@ -602,44 +600,43 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             fflush(stdout);
 
             if (g_enable_repl_master){
-            if(g_enable_ttl){
-            expire_thread_pause();// 暂停超时删除线程
-            }
-            if (g_rdma_ctx) {            
-                printf("[Repl Master] RDMA link is already RTS. Triggering Zero-Copy log sync directly...\n");
-                fflush(stdout);
-        
-                if (repl_sync_log_via_rdma() != 0) {
-                    printf("[Repl Error] Zero-Copy log sync via RDMA failed!\n");
-                    fflush(stdout);
+                if(g_enable_ttl) expire_thread_pause();// 暂停超时删除线程
+                g_repl_backlog_enabled = 1;  // 开始缓存
+                g_repl_backlog_count = 0;
+                if (g_rdma_ctx) {            
+                    if (repl_sync_log_via_rdma() != 0) {
+                        printf("[Repl Error] Zero-Copy log sync via RDMA failed!\n");
+                        fflush(stdout);
+                    }
                 } else {
-                    printf("[Repl Master] Zero-Copy log sync task dispatched successfully.\n");
+                    fprintf(stderr, "[Repl Error] RDMA context is not initialized! Cannot sync.\n");
                     fflush(stdout);
                 }
-            } else {
-                fprintf(stderr, "[Repl Error] RDMA context is not initialized! Cannot sync.\n");
-                fflush(stdout);
             }
-            }
-
+            reply->status = KVS_RESP_SUCCESS;
+            
             break;
         }
         case CMD_REPL_SYNC_DONE: {
-            printf("[Master] Received SYNC_DONE from slave. Full sync completed!\n");
+            printf("[Master] Received SYNC_DONE from slave.\n");
 
+            if (repl_flush_backlog_via_rdma() != 0) {
+                fprintf(stderr, "[Repl Error] Failed to flush backlog to slave!\n");
+                break;
+            }
             repl_destroy();// 释放 RDMA 资源
 
             if (g_enable_repl_master){
-            if(g_enable_ttl){
-            extern int BEGIN_IN;
-            BEGIN_IN = 1; //增量持久化开始标志
-            expire_thread_resume();// 恢复超时删除线程
-            }
-            if (ebpf_register_slave() == 0) {
+                if(g_enable_ttl){
+                    extern int BEGIN_IN;
+                    BEGIN_IN = 1; //增量持久化开始标志
+                    expire_thread_resume();// 恢复超时删除线程
+                }
+            /*if (ebpf_register_slave() == 0) {
                 if (ebpf_set_forward_switch(1) == 0) {
                     printf("[Master] eBPF TC clone switch ENABLED.\n");
                 }
-            }
+            }*/
             }
 
             break;

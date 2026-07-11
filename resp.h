@@ -19,8 +19,8 @@ typedef enum {
     KVS_RESP_NO_EXISTS = 6,    // 7: KEY 不存在 (返回 $-1\r\n)
     
     KVS_RESP_PONG = 7,         // 8: PONG 回应
-    KVS_RESP_SAVE_SUCCESS = 8, // 11: SAVE 快照保存成功 (返回 +OK)
-    KVS_RESP_SAVE_ERR = 9,     // 9: SAVE 快照落盘失败 (返回 -ERR save failed)
+    KVS_RESP_SUCCESS = 8, // 11: SAVE 快照保存成功 (返回 +OK)
+    KVS_RESP_ERR = 9,     // 9: SAVE 快照落盘失败 (返回 -ERR save failed)
     KVS_RESP_SYNC_LOG = 10     // 10：请求同步日志状态码
 } kvs_status_t;
 

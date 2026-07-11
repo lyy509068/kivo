@@ -14,6 +14,17 @@ extern int g_enable_repl_slave;
 #define ENABLE_REPLICATION_MASTER 0
 #define ENABLE_REPLICATION_SLAVE  0
 
+#define REPL_BACKLOG_MAX 1024  // 最多缓存 1024 条命令
+
+typedef struct {
+    char *data;      
+    int len;
+} repl_backlog_item_t;
+
+extern repl_backlog_item_t g_repl_backlog[REPL_BACKLOG_MAX];
+extern int g_repl_backlog_count;
+extern volatile int g_repl_backlog_enabled;
+
 struct repl_context {
     int fd;
     char *wbuffer;
@@ -28,8 +39,9 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port);
 int repl_start_slave_engine(void);
 void* pure_rdma_repl_slave_thread(void *arg);
 
-void handle_master_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd);
+void handle_slave_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd);
 int repl_sync_log_via_rdma(void);
+int repl_flush_backlog_via_rdma(void);
 void repl_push_cmd(const char *cmd, void *key, int key_len, void *value, int value_len);
 
 #endif

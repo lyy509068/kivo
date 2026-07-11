@@ -101,9 +101,9 @@ static void resp_pack(char *send_buf, int *send_len, resp_reply_t *reply) {
         *send_len += sprintf(send_buf + *send_len, "+OK\r\n");
     } else if (reply->status == KVS_RESP_PONG) {
         *send_len += sprintf(send_buf + *send_len, "+PONG\r\n");
-    }else if (reply->status == KVS_RESP_SAVE_SUCCESS) {
+    }else if (reply->status == KVS_RESP_SUCCESS) {
         *send_len += sprintf(send_buf + *send_len, "+OK\r\n");
-    }else if (reply->status == KVS_RESP_SAVE_ERR) {
+    }else if (reply->status == KVS_RESP_ERR) {
         *send_len += sprintf(send_buf + *send_len, "-ERR save snapshot failed\r\n");
     }else if (reply->status == KVS_RESP_GET_OK && reply->body) {
         *send_len += sprintf(send_buf + *send_len, "$%d\r\n", reply->body_len);
@@ -192,7 +192,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                 if (req.argc > 0) {
                     if (strcmp(req.argv[0], "RDMA_CONNECT") == 0) {
                         c->role = CONN_SLAVE;
-                        handle_master_rdma_connect(&req, wbuf, wcap, wlen, fd);//收到 RDMA_CONNECT 握手命令，不经过网络层，直接回复一个RDMA_CONNECT_ACK
+                        handle_slave_rdma_connect(&req, wbuf, wcap, wlen, fd);//收到 RDMA_CONNECT 握手命令，不经过网络层，直接回复一个RDMA_CONNECT_ACK
                         free_resp_request(&req);
                         kvs_free(saved_resp_cmd); // 释放保存的命令
                         processed += single_cmd_len;
@@ -208,10 +208,17 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             }
 
             // 如果这条命令的回复码是OK，写日志并打包回复给客户端
+            // 如果检测到来时缓存 追加日志的同时 把增量命令写进缓冲区！！！
             if (wbuf && wcap && wlen) {
                 if (reply.status == KVS_RESP_OK) {
                     if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
                         kvs_persistence_write(saved_resp_cmd, single_cmd_len);
+                    }
+                    if (g_enable_repl_master && g_repl_backlog_enabled && g_repl_backlog_count < REPL_BACKLOG_MAX) {
+                        g_repl_backlog[g_repl_backlog_count].data = kvs_malloc(single_cmd_len);
+                        memcpy(g_repl_backlog[g_repl_backlog_count].data, saved_resp_cmd, single_cmd_len);
+                        g_repl_backlog[g_repl_backlog_count].len = single_cmd_len;
+                        g_repl_backlog_count++;
                     }
                 }
                 resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
