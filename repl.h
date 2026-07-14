@@ -11,7 +11,7 @@ extern int g_enable_mempool;
 extern int g_enable_repl_master;
 extern int g_enable_repl_slave;
 
-#define ENABLE_REPLICATION_MASTER 0
+#define ENABLE_REPLICATION_MASTER 1
 #define ENABLE_REPLICATION_SLAVE  0
 
 #define REPL_BACKLOG_MAX 1024  // 最多缓存 1024 条命令
@@ -32,7 +32,7 @@ struct repl_context {
     int wlength;
 };
 
-int repl_init(const char *rdma_dev, const char *ebpf_obj_path);
+int repl_init(const char *rdma_dev);
 void repl_destroy(void);
 
 int repl_connect_to_master(const char *master_ip, unsigned short master_port);

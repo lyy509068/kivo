@@ -1,28 +1,36 @@
 CC = gcc
 CLANG = clang
 CFLAGS = -Wall -g -I ./NtyCo/core/
-LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm -lbpf -lelf -lz
+
+LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm
+
+BPF_LDFLAGS = -lbpf -lelf -lz
 
 BPF_CFLAGS = -target bpf -D__TARGET_ARCH_x86 -I/usr/include/x86_64-linux-gnu -I/usr/include -g -O2 -Wall
 
-SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c proactor.c ntyco.c resp.c udp.c\
+SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c proactor.c ntyco.c resp.c \
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c config.c\
-       rdma.c ebpf.c repl.c expire_thread.c
+       rdma.c repl.c expire_thread.c
 
 TARGET = server
+
+RELAY_TARGET = ebpf_relay
+
+BPF_KERN_OBJ = sync_filter.bpf.o
+
 TESTCASES = test_fullpersistence1 test_fullpersistence2 test_incrementpersistence1 \
             test_incrementpersistence2 test_mempool test_master test_slave test_TTL \
-			test_batchcommand test_specialchars
+            test_batchcommand test_specialchars
+
 SUBDIR = ./NtyCo/
 
-OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o udp.o\
+OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o \
        kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o config.o\
-       rdma.o ebpf.o repl.o expire_thread.o
+       rdma.o repl.o expire_thread.o
 
 .PHONY: all clean ECHO $(SUBDIR) load_bpf unload_bpf
 
-# 默认只编译代码，不进行任何内核挂载
-all: $(SUBDIR) sync_filter.bpf.o $(TARGET) $(TESTCASES)
+all: $(SUBDIR) $(BPF_KERN_OBJ) $(TARGET) $(RELAY_TARGET) $(TESTCASES)
 
 $(SUBDIR): ECHO
 	make -C $@
@@ -30,30 +38,37 @@ $(SUBDIR): ECHO
 ECHO:
 	@echo $(SUBDIR)
 
-sync_filter.bpf.o: sync_filter.bpf.c
+# eBPF 内核态字节码编译
+$(BPF_KERN_OBJ): sync_filter.bpf.c
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 	@echo "✨ BPF Kernel bytes bytecode compiled."
 
+# 主服务器程序
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
+# eBPF 用户态中继程序
+$(RELAY_TARGET): ebpf_relay.o
+	$(CC) -o $@ $< $(BPF_LDFLAGS)
+
+ebpf_relay.o: ebpf_relay.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# 测试用例
 $(TESTCASES): %: %.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+# 通用 .c -> .o 编译规则
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# eBPF 部署与卸载规则
 IFACE = ens33
 
-load_bpf: sync_filter.bpf.o
+load_bpf: $(BPF_KERN_OBJ)
 	@echo "加载 eBPF 程序并强行 Pin Maps..."
 	@sudo rm -rf /sys/fs/bpf/* 2>/dev/null || true
-	# 1. 使用 bpftool 加载程序，并将内部所有带 pinning=1 的 maps 自动钉到 /sys/fs/bpf/
-	sudo bpftool prog load sync_filter.bpf.o /sys/fs/bpf/handle_tc_dual_write type classifier pinmaps /sys/fs/bpf/
-	# 2. 挂载 tc 队列
+	sudo bpftool prog load $(BPF_KERN_OBJ) /sys/fs/bpf/handle_tc_dual_write type classifier pinmaps /sys/fs/bpf/
 	sudo tc qdisc add dev $(IFACE) clsact 2>/dev/null || true
-	# 3. 将已经钉选在 BPF FS 里的程序直接绑定到网卡 Ingress 上
 	sudo tc filter replace dev $(IFACE) ingress bpf pinned /sys/fs/bpf/handle_tc_dual_write direct-action
 	@echo "eBPF 全局管道和 Maps 已在内核就绪！"
 
@@ -65,5 +80,5 @@ unload_bpf:
 	@echo "内核环境已恢复"
 
 clean: 
-	rm -rf $(OBJS) $(TARGET) $(TESTCASES) kvstore.aof kvstore.snap sync_filter.bpf.o
+	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o config.o rdma.o repl.o expire_thread.o
 	make -C $(SUBDIR) clean

@@ -12,7 +12,6 @@
 #include <strings.h> 
 #include "resp.h" 
 #include "repl.h"
-#include "ebpf.h"
 #include "rdma.h"
 
 extern struct rdma_ring_ctx *g_rdma_ctx;
@@ -632,11 +631,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                     BEGIN_IN = 1; //增量持久化开始标志
                     expire_thread_resume();// 恢复超时删除线程
                 }
-            /*if (ebpf_register_slave() == 0) {
-                if (ebpf_set_forward_switch(1) == 0) {
-                    printf("[Master] eBPF TC clone switch ENABLED.\n");
-                }
-            }*/
             }
 
             break;

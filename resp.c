@@ -214,6 +214,7 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                     if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
                         kvs_persistence_write(saved_resp_cmd, single_cmd_len);
                     }
+                    // 是主端，开始缓存标志，缓冲区没有越界
                     if (g_enable_repl_master && g_repl_backlog_enabled && g_repl_backlog_count < REPL_BACKLOG_MAX) {
                         g_repl_backlog[g_repl_backlog_count].data = kvs_malloc(single_cmd_len);
                         memcpy(g_repl_backlog[g_repl_backlog_count].data, saved_resp_cmd, single_cmd_len);
@@ -293,41 +294,7 @@ int protocol_process_recover(const char *in_buf, int in_len) {
         processed += single_cmd_len; 
     }
 
-    printf("[Recover] Recovery stats: %d commands replayed, %d skipped\n", recovered_count, skipped_count);
+    printf("[Recover] Recovery stats: %d commands replayed.\n", recovered_count);
     
     return processed; // 返回处理的字节数
-}
-
-int protocol_process_udp_silent(const char *in_buf, int in_len) {
-    if (in_len <= 0) return -1;
-
-    const char *resp_start = NULL;
-    
-    for (int i = 0; i < in_len - 3; i++) {
-        if (in_buf[i] == '*') {
-            int j = i + 1;
-            while (j < in_len && in_buf[j] >= '0' && in_buf[j] <= '9') j++;
-            if (j > i + 1 && j < in_len - 1 && in_buf[j] == '\r' && in_buf[j+1] == '\n') {
-                resp_start = &in_buf[i];
-                break;
-            }
-        }
-    }
-    
-    if (!resp_start) return -1;
-
-    resp_request_t req;
-    memset(&req, 0, sizeof(resp_request_t));
-    resp_unpack(resp_start, resp_start, &req);
-
-    if (req.argc > 0 && req.argv && req.argv[0]) {
-        resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
-        if (g_command_handler) {
-            g_command_handler(&req, &reply); 
-        }
-        if (reply.body) kvs_free(reply.body);
-    }
-
-    free_resp_request(&req); 
-    return 0;
 }

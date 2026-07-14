@@ -92,8 +92,7 @@ int init_kvengine(void) {
 
     if (g_enable_repl_master || g_enable_repl_slave) {
         const char *rdma_dev = RDMA_DEV_NAME;
-        const char *ebpf_path = g_enable_repl_master ? EBPF_OBJ_PATH : NULL;
-        if (repl_init(rdma_dev, ebpf_path) != 0) return -1;
+        if (repl_init(rdma_dev) != 0) return -1;
         if (g_enable_repl_slave) {
             g_running = 1;
             pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL);

@@ -5,7 +5,6 @@
 #include "repl.h"
 #include "resp.h"
 #include "rdma.h"
-#include "ebpf.h"
 #include "network.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,7 +57,7 @@ static int get_rocev2_ipv4_gid(struct ibv_context *ctx, int port_num, union ibv_
 }
 
 
-int repl_init(const char *rdma_dev, const char *ebpf_obj_path) {
+int repl_init(const char *rdma_dev) {
     const char *final_dev = rdma_dev ? rdma_dev : DEFAULT_RDMA_DEVICE;
     printf("[Repl] Initializing RDMA engine on device: %s\n", final_dev);
 
@@ -67,18 +66,6 @@ int repl_init(const char *rdma_dev, const char *ebpf_obj_path) {
         printf("[Repl Error] Failed to init RDMA hardware on device: %s\n", final_dev);
         g_repl_ctx_ready = false; 
         return -1;
-    }
-
-    if (g_enable_repl_master){
-    if (ebpf_obj_path) {
-        if (ebpf_init_loader(ebpf_obj_path) < 0) {
-            printf("[Repl Error] Failed to load eBPF byte code\n");
-            g_repl_ctx_ready = false;
-            return -1;
-        }
-    }
-    ebpf_register_slave();
-    printf("[Repl Master] eBPF TC metadata registered.\n");
     }
 
     g_repl_ctx_ready = true;
@@ -215,14 +202,14 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         }
     }
 
-    // 设为非阻塞，托管
-    int flags = fcntl(g_repl_ctx.fd, F_GETFL, 0);
-    fcntl(g_repl_ctx.fd, F_SETFL, flags | O_NONBLOCK);
+    // ===== 删除以下 4 行：不托管给网络层 =====
+    // int flags = fcntl(g_repl_ctx.fd, F_GETFL, 0);
+    // fcntl(g_repl_ctx.fd, F_SETFL, flags | O_NONBLOCK);
+    // struct conn *c = net_host_slave_connection(g_repl_ctx.fd, g_repl_ctx.wbuffer, g_repl_ctx.wcapacity, g_repl_ctx.wlength);
+    // if (!c) return -1;
+    // rdma_init_context(c);
 
-    struct conn *c = net_host_slave_connection(g_repl_ctx.fd, g_repl_ctx.wbuffer, g_repl_ctx.wcapacity, g_repl_ctx.wlength);
-    if (!c) return -1;
-
-    rdma_init_context(c);
+    // ===== 直接返回 fd，保持阻塞模式 =====
     return g_repl_ctx.fd;
 }
 
@@ -410,11 +397,16 @@ void* pure_rdma_repl_slave_thread(void *arg) {
             kvs_persistence_recover();
             printf("[Repl Slave] AOF reload successfully!\n");
 
-            if (first_sync) {
-                start_replica_udp_server_coroutine(3000);
-                const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
-                send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
-                printf("[Repl Slave] SYNC_DONE report sent to Master.\n");
+            if (first_sync) {                
+                if (g_repl_ctx.fd >= 0) {
+                    const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
+                    ssize_t send_ret = send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
+                    if (send_ret < 0) {
+                        printf("[Repl Slave] SYNC_DONE send FAILED: errno=%d (%s)\n", errno, strerror(errno));
+                    } else {
+                        printf("[Repl Slave] SYNC_DONE report sent to Master (%zd bytes).\n", send_ret);
+                    }                    
+                }
                 first_sync = 0;
             }    
         }
@@ -435,10 +427,6 @@ void repl_destroy(void) {
         pthread_join(repl_slave_tid, NULL);
         repl_slave_tid = 0;
     }
-    }
-
-    if (g_enable_repl_master){
-    ebpf_cleanup(); 
     }
 
     if (g_repl_ctx.wbuffer) {
