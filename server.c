@@ -6,7 +6,6 @@
 #include "network.h" 
 #include "repl.h"  
 #include "rdma.h"
-#include "ebpf.h"
 #include "config.h"
 
 // 全局配置变量

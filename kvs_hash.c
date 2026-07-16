@@ -58,12 +58,17 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     hashnode_t *node = hash->buckets[h];
     while (node) {
         if (kv_data_cmp(&node->key, key) == 0) {
-            // 如果存在但已经过期了
+            // 处理过期节点
             if (node->expire_time > 0 && get_current_ms_hash() > node->expire_time) {
-                kvs_hash_del(hash, key); // 强行剔除死数据
-                break;                   // 跳出循环，去后面走创建新节点流程
+                kvs_hash_del(hash, key);
+                break;
             }
-            return 1; // 真正健康的已存在
+            
+            // ✅ 修复：更新value和过期时间（而不是直接返回）
+            kv_data_destroy(&node->value);
+            if (kv_data_dup(&node->value, value) != 0) return -2;
+            node->expire_time = expire_time;
+            return 0;  // 更新成功
         }
         node = node->next;
     }
@@ -72,14 +77,12 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     hashnode_t *new_node = (hashnode_t *)kvs_malloc(sizeof(hashnode_t));
     if (!new_node) return -1;
 
-    // 修复潜在隐患：显式将 new_node 内存清零，防止 dup 局部失败时 destroy 裸指针
     memset(new_node, 0, sizeof(hashnode_t));
 
-    // 使用深拷贝辅助函数
     if (kv_data_dup(&new_node->key, key) != 0 || 
         kv_data_dup(&new_node->value, value) != 0) {
-        kv_data_destroy(&new_node->key); // 失败时回滚已分配的 key 内存
-        kvs_free(new_node);              // 释放节点本身
+        kv_data_destroy(&new_node->key);
+        kvs_free(new_node);
         return -1;
     }
 

@@ -187,7 +187,7 @@ void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data
 
 #if ENABLE_SKIPLIST
 
-#define MAX_LEVEL 6
+#define MAX_LEVEL 12
 
 // 二进制安全跳表节点
 typedef struct skipnode_binary_s {

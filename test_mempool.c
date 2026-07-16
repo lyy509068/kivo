@@ -14,11 +14,18 @@
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 2000
 #define BATCH_SIZE 100
+#define MAX_KEY_LEN 64
+#define MAX_VAL_LEN 128
+#define SEND_BUF_SIZE 65536
+#define RECV_BUF_SIZE 65536
 
 // RESP 命令映射
 const char* SET_CMDS[] = {"", "SET", "RSET", "HSET", "SSET"};
 const char* GET_CMDS[] = {"", "GET", "RGET", "HGET", "SGET"};
 const char* DEL_CMDS[] = {"", "DEL", "RDEL", "HDEL", "SDEL"};
+
+const char* STRATEGY_NAMES[] = {"Glibc_Malloc", "Jemalloc", "Custom_Mempool"};
+const char* ENGINE_NAMES[] = {"", "Array", "RBTree", "Hash", "SkipList"};
 
 // 自动获取服务器 PID
 pid_t get_server_pid() {
@@ -49,16 +56,6 @@ void get_server_memory(pid_t pid, long *vmsize, long *vmrss) {
     fclose(fp);
 }
 
-// 记录量化日志
-void log_results(const char* strategy, int engine, long total_ops, long time_ms, 
-                 long qps, long d_vmsize, long d_vmrss, long batch_size) {
-    FILE *fp = fopen("mempool_random_test.log", "a");
-    if (!fp) return;
-    fprintf(fp, "[Mixed Strategy: %s | Engine: %d | Batch: %ld] TotalOps: %ld | Time: %ld ms | QPS: %ld | VmSize+: %+ld kB | VmRSS+: %+ld kB\n\n",
-            strategy, engine, batch_size, total_ops, time_ms, qps, d_vmsize, d_vmrss);
-    fclose(fp);
-}
-
 // 构建 RESP 格式请求
 int build_resp_cmd(char *buf, const char *cmd, const char *key, const char *val) {
     if (val) {
@@ -70,74 +67,133 @@ int build_resp_cmd(char *buf, const char *cmd, const char *key, const char *val)
     }
 }
 
-/* =========================================================================
- * 【核心状态机】：流式解析 RESP 协议响应数量（完美处理 TCP 粘包与分包）
- * ========================================================================= */
+// RESP 协议解析状态机
 int parse_resp_count(const char *buf, int len, int *parsed_bytes) {
     int count = 0;
     int i = 0;
 
     while (i < len) {
         if (buf[i] == '+' || buf[i] == '-' || buf[i] == ':') {
-            // 单行回复: 状态(+)、错误(-)、整数(:) -> 寻找到 \r\n 结束
             char *p = memchr(buf + i, '\n', len - i);
-            if (!p) break; // 未收全，留到下次
+            if (!p) break;
             i = (p - buf) + 1;
             count++;
         } 
         else if (buf[i] == '$') {
-            // 多行块字符串: $长度\r\n数据\r\n
             char *p1 = memchr(buf + i, '\n', len - i);
-            if (!p1) break; // 第一行长度未收全
+            if (!p1) break;
             
             int str_len = atoi(buf + i + 1);
             if (str_len == -1) {
-                // $-1\r\n 代表 Null Bulk String (GET 未命中)
                 i = (p1 - buf) + 1;
                 count++;
             } else {
-                // 计算该响应的总期望物理长度
                 int first_line_len = (p1 - (buf + i)) + 1;
-                int total_expected = i + first_line_len + str_len + 2; // +2 是数据末尾的 \r\n
-                if (len < total_expected) break; // 数据体未收全，挂起等待下一次 recv
-                
+                int total_expected = i + first_line_len + str_len + 2;
+                if (len < total_expected) break;
                 i = total_expected;
                 count++;
             }
         } 
         else {
-            // 协议错位异常保护，跳过单字节防止死循环
             i++;
         }
     }
-    *parsed_bytes = i; // 返回本次成功消耗掉的字节数
+    *parsed_bytes = i;
     return count;
 }
 
-int main(int argc, char *argv[]) {
-    srand(time(NULL));
-    
-    if (argc < 4) {
-        fprintf(stderr, "Usage: %s <strategy: 0|1|2> <engine_type: 1-4> <total_ops>\n", argv[0]);
-        fprintf(stderr, "Strategies: 0=Glibc, 1=Jemalloc, 2=Custom Mempool\n");
-        fprintf(stderr, "Engine:     1=Array, 2=RBTree, 3=Hash, 4=SkipList\n");
-        return 1;
+// 发送并接收批次响应
+int send_and_receive_batch(int sock, char *batch_buf, int batch_len, int batch_count,
+                           char *stream_buf, int *stream_len) {
+    if (send(sock, batch_buf, batch_len, 0) < 0) {
+        return -1;
     }
+    
+    int resp_received = 0;
+    while (resp_received < batch_count) {
+        int n = recv(sock, stream_buf + (*stream_len), RECV_BUF_SIZE - (*stream_len), 0);
+        if (n <= 0) return -1;
+        *stream_len += n;
 
-    int strategy = atoi(argv[1]);
-    int engine_type = atoi(argv[2]);
-    long total_ops = atol(argv[3]);
+        int parsed_bytes = 0;
+        int ready_count = parse_resp_count(stream_buf, *stream_len, &parsed_bytes);
+        resp_received += ready_count;
 
-    const char* strategy_names[] = {"Glibc_Malloc", "Jemalloc", "Custom_Mempool"};
+        if (parsed_bytes > 0) {
+            memmove(stream_buf, stream_buf + parsed_bytes, *stream_len - parsed_bytes);
+            *stream_len -= parsed_bytes;
+        }
+    }
+    return 0;
+}
 
+// 检查文件是否为空(或只有空白字符)，用于判断是否需要写表头
+int is_file_empty(const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) return 1;  // 文件不存在，视为空
+    
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    fclose(fp);
+    
+    return (size == 0);
+}
+
+// 写入表头(仅在文件为空时)
+void write_header_if_needed(const char *filename, long total_ops) {
+    if (!is_file_empty(filename)) {
+        return;  // 文件已有内容，不写表头
+    }
+    
+    FILE *fp = fopen(filename, "w");
+    if (!fp) return;
+    
+    fprintf(fp, "# MEMORY POOL 3-PHASE BENCHMARK RESULTS\n");
+    fprintf(fp, "# Test: SET:60%% GET:15%% DEL:10%% MOD:15%%\n");
+    fprintf(fp, "# Legend: 1=Initial  2=Peak  3=Clean\n");
+    fprintf(fp, "#\n");
+    fprintf(fp, "%-14s | %-10s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n",
+            "Strategy", "Engine", 
+            "VmSz1", "VmSz2", "VmSz3",
+            "VmRSS1", "VmRSS2", "VmRSS3",
+            "Time_ms", "QPS", "Ops");
+    fprintf(fp, "----------------|------------|----------|----------|----------|----------|----------|----------|----------|----------|----------\n");
+    
+    fclose(fp);
+}
+
+// 追加测试结果
+void append_result(const char *filename, int strategy, int engine_type,
+                   long vmsize1, long vmsize2, long vmsize3,
+                   long vmrss1, long vmrss2, long vmrss3,
+                   long time_ms, long qps, long total_ops) {
+    FILE *fp = fopen(filename, "a");  // "a" = append mode
+    if (!fp) return;
+    
+    fprintf(fp, "%-14s | %-10s | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld\n",
+            STRATEGY_NAMES[strategy], ENGINE_NAMES[engine_type],
+            vmsize1, vmsize2, vmsize3,
+            vmrss1, vmrss2, vmrss3,
+            time_ms, qps, total_ops);
+    
+    fclose(fp);
+}
+
+// 单次测试
+int run_single_test(int strategy, int engine_type, long total_ops, const char *log_filename) {
     pid_t server_pid = get_server_pid();
     if (server_pid <= 0) {
-        fprintf(stderr, "Server process not found. Please start it first.\n");
-        return 1;
+        printf("  [ERROR] Server not found\n");
+        return -1;
     }
 
+    // 连接服务器
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) { perror("socket failed"); return 1; }
+    if (sock < 0) {
+        printf("  [ERROR] Socket creation failed\n");
+        return -1;
+    }
     
     struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(SERVER_PORT) };
     inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
@@ -148,140 +204,219 @@ int main(int argc, char *argv[]) {
         retry++;
     }
     if (retry >= 10) {
-        fprintf(stderr, "Connection failed after 10 retries\n");
+        printf("  [ERROR] Connection failed\n");
         close(sock);
-        return 1;
+        return -1;
     }
-    printf("[Client] Connected to server (PID: %d) successfully!\n", server_pid);
 
-    long init_vmsize = 0, init_vmrss = 0;
+    // 阶段1: 初始内存
+    long init_vmsize, init_vmrss;
     get_server_memory(server_pid, &init_vmsize, &init_vmrss);
-    
-    long max_key_index = 0; 
-    char send_buf[512], key[64], val[64];
-    
-    // 动态大缓冲区管理 Pipeline
-    char *batch_buf = malloc(65536);
-    char *stream_buf = malloc(65536); // 用户态 TCP 流式接收残余缓冲区
+    printf("  Phase1 Init:   VmSize=%ld KB, VmRSS=%ld KB\n", init_vmsize, init_vmrss);
+
+    // 分配缓冲区
+    char *batch_buf = malloc(SEND_BUF_SIZE);
+    char *stream_buf = malloc(RECV_BUF_SIZE);
     if (!batch_buf || !stream_buf) {
-        fprintf(stderr, "Memory allocation failed for buffers\n");
-        return 1;
+        printf("  [ERROR] Buffer allocation failed\n");
+        close(sock);
+        return -1;
     }
     
-    int batch_len = 0;
-    int batch_count = 0;
-    int stream_len = 0; // 接收缓冲区当前残留的字节数
+    int batch_len = 0, batch_count = 0, stream_len = 0;
+    long max_key_index = 0;
     
-    long count_set = 0, count_get = 0, count_del = 0, count_mod = 0;
-
-    printf("[START] Testing %s on Engine %d (%ld Ops, Pipeline Batch: %d)...\n", 
-           strategy_names[strategy], engine_type, total_ops, BATCH_SIZE);
-           
+    // 阶段2: 执行操作并计时
+    printf("  Phase2 Load:   ");
+    fflush(stdout);
     struct timeval tv_begin, tv_end;
     gettimeofday(&tv_begin, NULL);
 
     for (long i = 0; i < total_ops; i++) {
         int prob = rand() % 100;
+        char send_buf[512], key[MAX_KEY_LEN], val[MAX_VAL_LEN];
         int len = 0;
 
-        if (prob < 60) { 
+        if (prob < 60) { // SET 60%
             max_key_index++;
-            sprintf(key, "rand_key_%08ld", max_key_index);
-            sprintf(val, "value_bytes_%04d", rand() % 1000);
+            sprintf(key, "key_%010ld", max_key_index);
+            sprintf(val, "val_%010d_%04d", rand() % 100000, rand() % 10000);
             len = build_resp_cmd(send_buf, SET_CMDS[engine_type], key, val);
-            count_set++;
         } 
-        else if (prob < 75) { 
-            long target_idx = (max_key_index > 0) ? (rand() % max_key_index + 1) : 0;
-            sprintf(key, "rand_key_%08ld", target_idx);
-            len = build_resp_cmd(send_buf, GET_CMDS[engine_type], key, NULL);
-            count_get++;
+        else if (prob < 75) { // GET 15%
+            if (max_key_index > 0) {
+                sprintf(key, "key_%010ld", (rand() % max_key_index) + 1);
+                len = build_resp_cmd(send_buf, GET_CMDS[engine_type], key, NULL);
+            } else { i--; continue; }
         } 
-        else if (prob < 95) { 
-            long target_idx = (max_key_index > 0) ? (rand() % max_key_index + 1) : 0;
-            sprintf(key, "rand_key_%08ld", target_idx);
-            len = build_resp_cmd(send_buf, DEL_CMDS[engine_type], key, NULL);
-            count_del++;
+        else if (prob < 85) { // DEL 10%
+            if (max_key_index > 0) {
+                sprintf(key, "key_%010ld", (rand() % max_key_index) + 1);
+                len = build_resp_cmd(send_buf, DEL_CMDS[engine_type], key, NULL);
+            } else { i--; continue; }
         } 
-        else { 
-            long target_idx = (max_key_index > 0) ? (rand() % max_key_index + 1) : 0;
-            sprintf(key, "rand_key_%08ld", target_idx);
-            sprintf(val, "modified_value_padding_longer_bytes_%04d", rand() % 1000);
-            len = build_resp_cmd(send_buf, SET_CMDS[engine_type], key, val);
-            count_mod++;
+        else { // MOD 15%
+            if (max_key_index > 0) {
+                sprintf(key, "key_%010ld", (rand() % max_key_index) + 1);
+                sprintf(val, "mod_%010d_%04d", rand() % 100000, rand() % 10000);
+                len = build_resp_cmd(send_buf, SET_CMDS[engine_type], key, val);
+            } else { i--; continue; }
         }
 
         memcpy(batch_buf + batch_len, send_buf, len);
         batch_len += len;
         batch_count++;
         
-        // 触发 Pipeline 批次发送
-        if (batch_count >= BATCH_SIZE || i == total_ops - 1) {
-            if (send(sock, batch_buf, batch_len, 0) < 0) {
-                perror("send failed");
-                break;
+        if (batch_count >= BATCH_SIZE || batch_len > SEND_BUF_SIZE - 512 || i == total_ops - 1) {
+            if (send_and_receive_batch(sock, batch_buf, batch_len, batch_count,
+                                       stream_buf, &stream_len) < 0) {
+                printf("  [ERROR] Communication error at op %ld\n", i);
+                free(batch_buf); free(stream_buf); close(sock);
+                return -1;
             }
-            
-            int resp_received = 0;
-            // 只要当前批次没收满，持续深入 I/O 读循环
-            while (resp_received < batch_count) {
-                int n = recv(sock, stream_buf + stream_len, 65536 - stream_len, 0);
-                if (n < 0) {
-                    perror("recv failed");
-                    goto out;
-                } else if (n == 0) {
-                    fprintf(stderr, "Connection closed by server\n");
-                    goto out;
-                }
-                stream_len += n;
-
-                // 精准状态机解析当前缓冲区内包含了多少个完整 RESP 报文
-                int parsed_bytes = 0;
-                int ready_count = parse_resp_count(stream_buf, stream_len, &parsed_bytes);
-                
-                resp_received += ready_count;
-
-                if (parsed_bytes > 0) {
-                    // 将已被消费的数据移出缓冲区（处理半包/残留问题）
-                    memmove(stream_buf, stream_buf + parsed_bytes, stream_len - parsed_bytes);
-                    stream_len -= parsed_bytes;
-                }
-            }
-            
             batch_len = 0;
             batch_count = 0;
         }
 
-        if (i > 0 && i % 50000 == 0) {
-            printf("  -> Progress: %ld / %ld ops finished.\n", i, total_ops);
+        // 进度提示：每完成10%输出一个点
+        if ((i + 1) % (total_ops / 10) == 0) {
+            printf(".");
+            fflush(stdout);
         }
     }
+    printf(" done\n");
 
-out:
     gettimeofday(&tv_end, NULL);
+    
+    // 峰值内存
+    long peak_vmsize, peak_vmrss;
+    get_server_memory(server_pid, &peak_vmsize, &peak_vmrss);
+    printf("  Phase2 Peak:   VmSize=%ld KB, VmRSS=%ld KB\n", peak_vmsize, peak_vmrss);
 
-    long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + (tv_end.tv_usec - tv_begin.tv_usec) / 1000;
+    // 阶段3: 清空所有数据
+    printf("  Phase3 Clean:  ");
+    fflush(stdout);
+    batch_len = 0;
+    batch_count = 0;
+    for (long i = 1; i <= max_key_index; i++) {
+        char send_buf[512], key[MAX_KEY_LEN];
+        sprintf(key, "key_%010ld", i);
+        int len = build_resp_cmd(send_buf, DEL_CMDS[engine_type], key, NULL);
+        
+        memcpy(batch_buf + batch_len, send_buf, len);
+        batch_len += len;
+        batch_count++;
+        
+        if (batch_count >= BATCH_SIZE || i == max_key_index) {
+            send_and_receive_batch(sock, batch_buf, batch_len, batch_count,
+                                  stream_buf, &stream_len);
+            batch_len = 0;
+            batch_count = 0;
+        }
+
+        if (i % (max_key_index / 10) == 0) {
+            printf(".");
+            fflush(stdout);
+        }
+    }
+    printf(" done\n");
+    
+    // 等待内存回收
+    sleep(2);
+    
+    // 清理后内存
+    long clean_vmsize, clean_vmrss;
+    get_server_memory(server_pid, &clean_vmsize, &clean_vmrss);
+    printf("  Phase3 Clean:  VmSize=%ld KB, VmRSS=%ld KB\n", clean_vmsize, clean_vmrss);
+
+    // 计算指标
+    long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + 
+                   (tv_end.tv_usec - tv_begin.tv_usec) / 1000;
     if (time_ms == 0) time_ms = 1;
     long qps = total_ops * 1000 / time_ms;
+    printf("  Result:        Time=%ld ms, QPS=%ld\n\n", time_ms, qps);
 
-    long cur_vmsize = 0, cur_vmrss = 0;
-    get_server_memory(server_pid, &cur_vmsize, &cur_vmrss);
-
-    printf("\n============================= TEST REPORT =============================\n");
-    printf("Strategy: %s | Engine Type: %d\n", strategy_names[strategy], engine_type);
-    printf("Executed Ops  : SET:%ld | GET:%ld | DEL:%ld | MOD:%ld (Total:%ld)\n", count_set, count_get, count_del, count_mod, total_ops);
-    printf("Time Cost     : %ld ms\n", time_ms);
-    printf("Throughput    : %ld QPS\n", qps);
-    printf("Memory Delta  : VmSize: %+ld kB | VmRSS: %+ld kB\n", cur_vmsize - init_vmsize, cur_vmrss - init_vmrss);
-    printf("=======================================================================\n");
-
-    log_results(strategy_names[strategy], engine_type, total_ops, time_ms, qps, 
-                cur_vmsize - init_vmsize, cur_vmrss - init_vmrss, BATCH_SIZE);
+    // 追加结果到文件
+    append_result(log_filename, strategy, engine_type,
+                  init_vmsize, peak_vmsize, clean_vmsize,
+                  init_vmrss, peak_vmrss, clean_vmrss,
+                  time_ms, qps, total_ops);
 
     free(batch_buf);
     free(stream_buf);
     close(sock);
     return 0;
 }
-//LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server 2000
+
+int main(int argc, char *argv[]) {
+    srand(time(NULL));
+    
+    if (argc < 3) {
+        printf("Usage: %s <strategy> <engine> [ops]\n", argv[0]);
+        printf("  strategy: 0=Glibc  1=Jemalloc  2=Mempool  (or 'all')\n");
+        printf("  engine:   1=Array  2=RBTree    3=Hash  4=SkipList  (or 'all')\n");
+        printf("  ops:      total operations (default: 1000000)\n");
+        printf("\nExamples:\n");
+        printf("  %s 2 3            # Mempool + Hash, 1M ops\n", argv[0]);
+        printf("  %s all all        # All 12 combinations\n", argv[0]);
+        return 1;
+    }
+
+    long total_ops = (argc >= 4) ? atol(argv[3]) : 1000000;
+    
+    // 固定日志文件名
+    const char *log_filename = "benchmark_results.txt";
+    
+    // 如果是新文件，先写表头
+    write_header_if_needed(log_filename, total_ops);
+
+    // 解析参数
+    int strategies[3] = {0, 1, 2};
+    int engines[4] = {1, 2, 3, 4};
+    int strat_count = 3;
+    int eng_count = 4;
+
+    if (strcmp(argv[1], "all") != 0) {
+        strategies[0] = atoi(argv[1]);
+        strat_count = 1;
+    }
+    if (strcmp(argv[2], "all") != 0) {
+        engines[0] = atoi(argv[2]);
+        eng_count = 1;
+    }
+
+    // 运行测试
+    int total_tests = strat_count * eng_count;
+    int current_test = 0;
+
+    printf("\n");
+    printf("========================================\n");
+    printf("  Memory Pool Benchmark\n");
+    printf("  Total tests: %d\n", total_tests);
+    printf("  Log file: %s\n", log_filename);
+    printf("========================================\n\n");
+
+    for (int s = 0; s < strat_count; s++) {
+        for (int e = 0; e < eng_count; e++) {
+            current_test++;
+            printf("[%d/%d] %s + %s\n", 
+                   current_test, total_tests,
+                   STRATEGY_NAMES[strategies[s]], ENGINE_NAMES[engines[e]]);
+            
+            int ret = run_single_test(strategies[s], engines[e], total_ops, log_filename);
+            if (ret < 0) {
+                printf("  *** TEST FAILED ***\n\n");
+            }
+            
+            sleep(1);
+        }
+    }
+    
+    printf("========================================\n");
+    printf("  All tests completed!\n");
+    printf("  Results appended to: %s\n", log_filename);
+    printf("========================================\n");
+    
+    return 0;
+}
 // sudo LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server config.conf

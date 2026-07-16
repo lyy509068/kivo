@@ -26,7 +26,6 @@
 #include "resp.h"
 #include "repl.h" 
 #include "rdma.h"
-#include "ebpf.h"
 
 static stream_handler_t g_stream_handler = NULL;
 static int epfd = 0;
@@ -96,7 +95,6 @@ void recv_cb(int fd) {
     int total_parsed_bytes = 0; 
     while (c->rlength > total_parsed_bytes) { 
         int parsed_bytes = 0;
-        long long expect_file_size = 0; 
         int is_master = (c->role == CONN_MASTER); 
         
         int status = g_stream_handler(
@@ -106,7 +104,6 @@ void recv_cb(int fd) {
             is_master ? NULL : &c->wbuffer,   
             is_master ? NULL : &c->wcapacity,
             is_master ? NULL : &c->wlength, 
-            &expect_file_size,
             fd 
         );
 
@@ -265,8 +262,6 @@ struct conn* reactor_host_slave_connection(int fd, char *wbuf, int wcap, int wle
     c->wbuffer = wbuf;     
     c->wcapacity = wcap;
     c->wlength = wlen;
-            
-    c->local_file_fd = -1;
 
     reactor_set_event(fd, EPOLLIN, 1); 
     return c;

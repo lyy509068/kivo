@@ -158,7 +158,7 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
 /*
  * 协议层入口，支持：1.处理客户端命令  2.处理主端同步回复
  */
-int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd) {
+int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd) {
     if (in_len <= 0) {
         *parsed = 0;
         return 0;
@@ -294,7 +294,7 @@ int protocol_process_recover(const char *in_buf, int in_len) {
         processed += single_cmd_len; 
     }
 
-    printf("[Recover] Recovery stats: %d commands replayed.\n", recovered_count);
+    // printf("[Recover] Recovery stats: %d commands replayed.\n", recovered_count);
     
     return processed; // 返回处理的字节数
 }

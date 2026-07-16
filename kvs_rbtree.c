@@ -226,7 +226,6 @@ static rbtree_node_binary_t* rbtree_delete(rbtree_binary_t *T, rbtree_node_binar
         x = y->right;
     }
     
-    // 【无条件赋值！即便 x 是 T->nil，也必须把父节点传给它，供 fixup 回溯
     x->parent = y->parent; 
     
     if (y->parent == T->nil) {
@@ -238,25 +237,27 @@ static rbtree_node_binary_t* rbtree_delete(rbtree_binary_t *T, rbtree_node_binar
     }
     
     if (y != z) {
-        kv_data_destroy(&z->key);
-        kv_data_destroy(&z->value);
+        // ✅ 修复：先保存 z 的旧数据
+        kv_data_t old_key = z->key;
+        kv_data_t old_value = z->value;
         
+        // 把 y 的数据转移到 z
         z->key = y->key;
         z->value = y->value;
-        z->expire_time = y->expire_time; 
+        z->expire_time = y->expire_time;
         
-        y->key.data = NULL;
-        y->key.len = 0;
-        y->value.data = NULL;
-        y->value.len = 0;
+        // 把旧数据放到 y，让外层统一释放
+        y->key = old_key;
+        y->value = old_value;
     }
     
     if (y->color == BLACK) {
         rbtree_delete_fixup(T, x);
     }
     
-    return y; 
+    return y;  // 外层会统一释放 y 的 key/value 和 y 本身
 }
+
 
 static rbtree_node_binary_t* rbtree_search(rbtree_binary_t *T, kv_data_t *key) {
     if (!T || !key || !T->root) return NULL; //安全拦截

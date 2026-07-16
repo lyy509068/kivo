@@ -53,9 +53,7 @@ int connect_server() {
     return -1;
 }
 
-int 
-
-send_all(int sock, const char *buf, int len) {
+int send_all(int sock, const char *buf, int len) {
     int total_sent = 0;
     while (total_sent < len) {
         int sent = send(sock, buf + total_sent, len - total_sent, 0);
@@ -75,13 +73,30 @@ int recv_all(int sock, char *buf, int len) {
     return total_recv;
 }
 
-int run_ttl_testcase(int engine_type, const char *engine_name, int ttl_sec, int sleep_sec) {
+// 定义引擎信息结构
+typedef struct {
+    int type;
+    const char *name;
+    const char *set_cmd;
+    const char *get_cmd;
+} engine_info_t;
+
+int run_all_ttl_testcase(int ttl_sec, int sleep_sec) {
     char send_buf[1024];
     char recv_buf[1024];
     int send_len;
 
+    // 定义所有引擎
+    engine_info_t engines[] = {
+        {SNAP_TYPE_ARRAY,    "Array",    "SET",  "GET"},
+        {SNAP_TYPE_RBTREE,   "RBTree",   "RSET", "RGET"},
+        {SNAP_TYPE_HASH,     "Hash",     "HSET", "HGET"},
+        {SNAP_TYPE_SKIPLIST, "SkipList", "SSET", "SGET"}
+    };
+    int engine_count = sizeof(engines) / sizeof(engines[0]);
+
     printf("\n======================================================\n");
-    printf("  TTL TEST: %s | TTL=%ds | Sleep=%ds\n", engine_name, ttl_sec, sleep_sec);
+    printf("  TTL TEST: ALL ENGINES | TTL=%ds | Sleep=%ds\n", ttl_sec, sleep_sec);
     printf("======================================================\n\n");
 
     int sock = connect_server();
@@ -90,74 +105,109 @@ int run_ttl_testcase(int engine_type, const char *engine_name, int ttl_sec, int 
         return 1;
     }
 
-    const char *set_cmd, *get_cmd;
-    switch (engine_type) {
-        case SNAP_TYPE_ARRAY:    set_cmd = "SET";  get_cmd = "GET";  break;
-        case SNAP_TYPE_RBTREE:   set_cmd = "RSET"; get_cmd = "RGET"; break;
-        case SNAP_TYPE_HASH:     set_cmd = "HSET"; get_cmd = "HGET"; break;
-        case SNAP_TYPE_SKIPLIST: set_cmd = "SSET"; get_cmd = "SGET"; break;
-        default: close(sock); return 1;
-    }
-
-    // PHASE 1: 写入带 TTL 的数据
-    printf("=== PHASE 1: Injecting %d records with %ds TTL ===\n", TOTAL_RECORDS, ttl_sec);
-    for (int i = 0; i < TOTAL_RECORDS; i++) {
-        char key[32], val[32];
-        sprintf(key, "ttlkey_%04d", i);
-        sprintf(val, "ttlval_%04d", i);
-        
-        send_len = build_resp_request_ttl(send_buf, set_cmd, key, val, ttl_sec);
-        if (send_all(sock, send_buf, send_len) < 0) {
-            printf("Server disconnected at index: %d\n", i);
-            close(sock); return 1;
+    // PHASE 1: 向所有引擎写入带 TTL 的数据
+    printf("=== PHASE 1: Injecting %d records per engine with %ds TTL ===\n", TOTAL_RECORDS, ttl_sec);
+    int total_injected = 0;
+    
+    for (int e = 0; e < engine_count; e++) {
+        printf("  [%s] Injecting...\n", engines[e].name);
+        for (int i = 0; i < TOTAL_RECORDS; i++) {
+            char key[64], val[64];
+            sprintf(key, "%s_ttlkey_%04d", engines[e].name, i);
+            sprintf(val, "%s_ttlval_%04d", engines[e].name, i);
+            
+            send_len = build_resp_request_ttl(send_buf, engines[e].set_cmd, key, val, ttl_sec);
+            if (send_all(sock, send_buf, send_len) < 0) {
+                printf("[FAIL] Server disconnected at engine %s, index: %d\n", engines[e].name, i);
+                close(sock); return 1;
+            }
+            memset(recv_buf, 0, sizeof(recv_buf));
+            if (recv_all(sock, recv_buf, 5) < 0 || strstr(recv_buf, "OK") == NULL) {
+                printf("[FAIL] Bad reply at engine %s, index: %d\n", engines[e].name, i);
+                close(sock); return 1;
+            }
+            total_injected++;
         }
-        memset(recv_buf, 0, sizeof(recv_buf));
-        if (recv_all(sock, recv_buf, 5) < 0 || strstr(recv_buf, "OK") == NULL) {
-            printf("Bad reply at index: %d\n", i);
-            close(sock); return 1;
+        printf("  [%s] Done.\n", engines[e].name);
+    }
+    printf("[Client] Total %d items injected across all engines.\n", total_injected);
+
+    // PHASE 2: 立即验证所有引擎的数据存在
+    printf("\n=== PHASE 2: Immediate check (should ALL EXIST) ===\n");
+    int immediate_failures = 0;
+    
+    for (int e = 0; e < engine_count; e++) {
+        int engine_fails = 0;
+        for (int i = 0; i < TOTAL_RECORDS; i++) {
+            char key[64], expected_val[64];
+            sprintf(key, "%s_ttlkey_%04d", engines[e].name, i);
+            sprintf(expected_val, "%s_ttlval_%04d", engines[e].name, i);
+
+            send_len = build_resp_request_ttl(send_buf, engines[e].get_cmd, key, NULL, 0);
+            send_all(sock, send_buf, send_len);
+            memset(recv_buf, 0, sizeof(recv_buf));
+            int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
+            if (rlen <= 0 || strstr(recv_buf, expected_val) == NULL) {
+                if (engine_fails == 0) {
+                    printf("[FAIL] %s: Data missing too early at index: %d\n", engines[e].name, i);
+                }
+                engine_fails++;
+            }
+        }
+        if (engine_fails == 0) {
+            printf("  [%s] All %d records exist. \n", engines[e].name, TOTAL_RECORDS);
+        } else {
+            printf("  [%s] %d/%d records missing! \n", engines[e].name, engine_fails, TOTAL_RECORDS);
+            immediate_failures += engine_fails;
         }
     }
-    printf("[Client] %d items injected.\n", TOTAL_RECORDS);
-
-    // PHASE 2: 立即验证数据存在
-    printf("\n=== PHASE 2: Immediate check (should EXIST) ===\n");
-    for (int i = 0; i < TOTAL_RECORDS; i++) {
-        char key[32], expected_val[32];
-        sprintf(key, "ttlkey_%04d", i);
-        sprintf(expected_val, "ttlval_%04d", i);
-
-        send_len = build_resp_request_ttl(send_buf, get_cmd, key, NULL, 0);
-        send_all(sock, send_buf, send_len);
-        memset(recv_buf, 0, sizeof(recv_buf));
-        int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
-        if (rlen <= 0 || strstr(recv_buf, expected_val) == NULL) {
-            printf("[FAIL] Data missing too early at index: %d\n", i);
-            close(sock); return 1;
-        }
+    
+    if (immediate_failures > 0) {
+        printf("[FAIL] Immediate check failed with %d missing records.\n", immediate_failures);
+        close(sock); return 1;
     }
-    printf("[Client] All records exist.\n");
+    printf("[Client] All records across all engines exist.\n");
 
     // PHASE 3: 等待过期
     printf("\n=== PHASE 3: Sleeping %ds for expiration... ===\n", sleep_sec);
     sleep(sleep_sec);
 
-    // PHASE 4: 验证数据已过期
-    printf("\n=== PHASE 4: Post-expire check (should NOT exist) ===\n");
-    for (int i = 0; i < TOTAL_RECORDS; i++) {
-        char key[32];
-        sprintf(key, "ttlkey_%04d", i);
+    // PHASE 4: 验证所有引擎的数据已过期
+    printf("\n=== PHASE 4: Post-expire check (should ALL BE EXPIRED) ===\n");
+    int expire_failures = 0;
+    
+    for (int e = 0; e < engine_count; e++) {
+        int engine_fails = 0;
+        for (int i = 0; i < TOTAL_RECORDS; i++) {
+            char key[64];
+            sprintf(key, "%s_ttlkey_%04d", engines[e].name, i);
 
-        send_len = build_resp_request_ttl(send_buf, get_cmd, key, NULL, 0);
-        send_all(sock, send_buf, send_len);
-        memset(recv_buf, 0, sizeof(recv_buf));
-        int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
-        if (rlen <= 0 || strncmp(recv_buf, "$-1\r\n", 5) != 0) {
-            printf("[FAIL] Key '%s' should be expired! Got: [%s]\n", key, recv_buf);
-            close(sock); return 1;
+            send_len = build_resp_request_ttl(send_buf, engines[e].get_cmd, key, NULL, 0);
+            send_all(sock, send_buf, send_len);
+            memset(recv_buf, 0, sizeof(recv_buf));
+            int rlen = recv(sock, recv_buf, sizeof(recv_buf) - 1, 0);
+            if (rlen <= 0 || strncmp(recv_buf, "$-1\r\n", 5) != 0) {
+                if (engine_fails < 5) {  // 只显示前5个失败
+                    printf("[FAIL] %s: Key '%s' should be expired! Got: [%.20s]\n", 
+                           engines[e].name, key, recv_buf);
+                }
+                engine_fails++;
+            }
+        }
+        if (engine_fails == 0) {
+            printf("  [%s] All %d records expired correctly. \n", engines[e].name, TOTAL_RECORDS);
+        } else {
+            printf("  [%s] %d/%d records still exist! \n", engines[e].name, engine_fails, TOTAL_RECORDS);
+            expire_failures += engine_fails;
         }
     }
+    
+    if (expire_failures > 0) {
+        printf("\n[FAIL] TTL test failed with %d unexpired records.\n", expire_failures);
+        close(sock); return 1;
+    }
 
-    printf("\n[PASS] TTL test OK for %s!\n", engine_name);
+    printf("\n[PASS] TTL test OK for ALL engines!\n");
     close(sock);
     return 0;
 }
@@ -165,21 +215,17 @@ int run_ttl_testcase(int engine_type, const char *engine_name, int ttl_sec, int 
 int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    int engine = 1;
     int ttl_sec = 3;
     int sleep_sec = 4;
 
-    if (argc >= 2) engine = atoi(argv[1]);
-    if (argc >= 3) ttl_sec = atoi(argv[2]);
-    if (argc >= 4) sleep_sec = atoi(argv[3]);
+    if (argc >= 2) ttl_sec = atoi(argv[1]);
+    if (argc >= 3) sleep_sec = atoi(argv[2]);
 
-    if (engine < 1 || engine > 4) {
-        printf("Usage: %s <engine> [ttl_sec] [sleep_sec]\n", argv[0]);
-        printf("  1:Array  2:RBTree  3:Hash  4:SkipList\n");
-        printf("  Default: ttl=3s sleep=5s\n");
-        return 1;
-    }
+    printf("TTL Test Configuration:\n");
+    printf("  TTL: %d seconds\n", ttl_sec);
+    printf("  Sleep: %d seconds\n", sleep_sec);
+    printf("  Records per engine: %d\n", TOTAL_RECORDS);
+    printf("  Total records: %d\n\n", TOTAL_RECORDS * 4);
 
-    const char *names[] = {"", "Array", "Rbtree", "Hash", "SkipList"};
-    return run_ttl_testcase(engine, names[engine], ttl_sec, sleep_sec);
+    return run_all_ttl_testcase(ttl_sec, sleep_sec);
 }

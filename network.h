@@ -18,7 +18,7 @@
 
 typedef void (*RCALLBACK)(int fd);// 回调函数recv accept send
 
-typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd);// 操作协议层的句柄
+typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);// 操作协议层的句柄
 // 连接身份标志
 typedef enum {
     CONN_CLIENT = 0, // 普通客户端
@@ -50,16 +50,7 @@ struct conn {
     int wcapacity;   
     int wlength;
     
-    int file_fd;         // 主端正在发送的文件描述符
-    long long file_size; // 文件总大小
-    long long file_ptr;  // 已经发送了多少字节
-
-    int local_file_fd;          // 从端落盘用的文件描述符
-    long long expect_file_size; // 文件总大小
-    long long already_recv_size;// 当前已经接收了多少字节
-
     conn_role_t role; // 当前连接的身份，默认为CONN_CLIENT
-    int ebpf_mounted; // 默认为0，未挂载
 
     struct rdma_ring_ctx *rdma_ctx;
 

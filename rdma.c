@@ -66,7 +66,7 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
         ib_dev = dev_list[0]; 
     }
 
-    printf("[RDMA] Successfully attached to hardware device: %s\n", ibv_get_device_name(ib_dev));
+    // printf("[RDMA] Successfully attached to hardware device: %s\n", ibv_get_device_name(ib_dev));
 
     rctx->ctx = ibv_open_device(ib_dev);
     ibv_free_device_list(dev_list); 
@@ -118,13 +118,6 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
 err:
     rdma_ring_destroy(rctx);
     return NULL;
-}
-
-int rdma_check_transfer_complete(struct conn *c) {
-    if (c->rdma_ctx && c->rdma_ctx->local_meta->tail >= c->expect_file_size) {
-        return 0; 
-    }
-    return 1;
 }
 
 int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote) {
@@ -230,12 +223,6 @@ void rdma_ring_destroy(struct rdma_ring_ctx *rctx) {
 }
 
 extern struct rdma_ring_ctx *g_rdma_ctx; 
-
-int rdma_init_context(struct conn *c) {
-    if (!c || !g_rdma_ctx) return -1;
-    c->rdma_ctx = g_rdma_ctx; 
-    return 0;
-}
 
 int rdma_master_write_log_imm(struct rdma_ring_ctx *rctx, uint32_t log_size) {
     if (!rctx || log_size == 0) return -1;

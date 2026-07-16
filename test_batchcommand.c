@@ -8,10 +8,12 @@
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 2000
-#define BATCH_SIZE  100        // 每批发送100条命令
-#define TOTAL_BATCHES 1000    // 共发1000批 = 10万条
-#define MAX_SEND_BUF (BATCH_SIZE * 256)
-#define MAX_RECV_BUF (BATCH_SIZE * 256)
+#define TOTAL_KEYS  100
+#define KEYS_PER_TYPE 25
+#define REPEAT_TIMES 1000
+
+#define MAX_SEND_BUF (TOTAL_KEYS * 256)
+#define MAX_RECV_BUF (TOTAL_KEYS * 256)
 
 const char* SET_CMDS[] = {"", "SET", "RSET", "HSET", "SSET"};
 
@@ -31,13 +33,11 @@ int connect_server() {
     return sock;
 }
 
-// 拼一个 RESP SET 命令
 int build_resp_cmd(char *buf, const char *cmd, const char *key, const char *val) {
     return sprintf(buf, "*3\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n$%zu\r\n%s\r\n",
                    strlen(cmd), cmd, strlen(key), key, strlen(val), val);
 }
 
-// 可靠发送全部数据
 int send_all(int fd, const char *buf, int len) {
     int sent = 0;
     while (sent < len) {
@@ -48,7 +48,6 @@ int send_all(int fd, const char *buf, int len) {
     return sent;
 }
 
-// 可靠接收指定长度数据
 int recv_all(int fd, char *buf, int len) {
     int received = 0;
     while (received < len) {
@@ -59,57 +58,55 @@ int recv_all(int fd, char *buf, int len) {
     return received;
 }
 
-// 批量发送所有命令
-int send_batch_commands(int sock, const char *set_cmd, char *send_buf, 
-                        int batch_idx, int start_idx) {
+// 构建一轮的命令（key带轮次号）
+int build_round_commands(char *send_buf, int round) {
     int total_len = 0;
     
-    for (int i = 0; i < BATCH_SIZE; i++) {
-        int idx = start_idx + i;
-        char key[32], val[32];
-        sprintf(key, "key_%06d", idx);
-        sprintf(val, "val_%06d", idx);
+    for (int engine = 1; engine <= 4; engine++) {
+        const char *cmd = SET_CMDS[engine];
         
-        int cmd_len = build_resp_cmd(send_buf + total_len, set_cmd, key, val);
-        total_len += cmd_len;
+        for (int i = 0; i < KEYS_PER_TYPE; i++) {
+            char key[64], val[64];
+            sprintf(key, "%s_r%04d_k%02d", cmd, round, i);
+            sprintf(val, "%s_r%04d_v%02d", cmd, round, i);
+            
+            int cmd_len = build_resp_cmd(send_buf + total_len, cmd, key, val);
+            total_len += cmd_len;
+        }
     }
     
-    return send_all(sock, send_buf, total_len);
+    return total_len;
 }
 
-// 接收并校验 BATCH_SIZE 条 "+OK\r\n" 回复
-int verify_batch_replies(int sock, char *recv_buf, int recv_buf_size,
-                         int batch_idx, int start_idx) {
-    // 需要接收的总字节数：BATCH_SIZE * 5（"+OK\r\n" = 5字节）
-    int expected_total_bytes = BATCH_SIZE * 5;
+int verify_all_replies(int sock, char *recv_buf, int recv_buf_size, int round) {
+    int expected_total_bytes = TOTAL_KEYS * 5;
     
     if (recv_buf_size < expected_total_bytes) {
-        printf("[BATCH %d] recv_buf too small!\n", batch_idx);
+        printf("[ROUND %d] recv_buf too small!\n", round);
         return -1;
     }
     
-    // 阻塞接收全部回复
     if (recv_all(sock, recv_buf, expected_total_bytes) < 0) {
-        printf("[BATCH %d] Failed to receive all replies (expected %d bytes)\n",
-               batch_idx, expected_total_bytes);
+        printf("[ROUND %d] Failed to receive all replies (expected %d bytes)\n",
+               round, expected_total_bytes);
         return -1;
     }
     
-    // 逐条校验每条回复是否为 "+OK\r\n"
-    for (int i = 0; i < BATCH_SIZE; i++) {
+    for (int i = 0; i < TOTAL_KEYS; i++) {
         char *reply = recv_buf + i * 5;
         if (memcmp(reply, "+OK\r\n", 5) != 0) {
-            // 打印出错详情（安全截断）
             char bad_reply[32] = {0};
             memcpy(bad_reply, reply, 20);
-            // 把 \r\n 替换成可见字符方便调试
             for (int j = 0; j < 20; j++) {
                 if (bad_reply[j] == '\r') bad_reply[j] = 'R';
                 else if (bad_reply[j] == '\n') bad_reply[j] = 'N';
             }
-            printf("[BATCH %d][CMD %d] index=%d key=key_%06d "
+            
+            int engine_idx = i / KEYS_PER_TYPE + 1;
+            int cmd_idx = i % KEYS_PER_TYPE;
+            printf("[ROUND %d][ENGINE %d][CMD %d] "
                    "expected '+OK\\r\\n' but got '%s'\n",
-                   batch_idx, i, start_idx + i, start_idx + i, bad_reply);
+                   round, engine_idx, cmd_idx, bad_reply);
             return -1;
         }
     }
@@ -117,94 +114,69 @@ int verify_batch_replies(int sock, char *recv_buf, int recv_buf_size,
     return 0;
 }
 
-void test_engine(int engine_type) {
-    const char *set_cmd = SET_CMDS[engine_type];
-    
+int main() {
     printf("\n");
     printf("==================================================================\n");
-    printf("Testing Engine %d [%s] — Batch Mode\n", engine_type, set_cmd);
-    printf("   Batch size: %d | Total batches: %d | Total: %d records\n",
-           BATCH_SIZE, TOTAL_BATCHES, BATCH_SIZE * TOTAL_BATCHES);
-    printf("==================================================================\n");
+    printf("Pipeline Test: Insert 100 unique records per round\n");
+    printf("  SET: 25 | RSET: 25 | HSET: 25 | SSET: 25\n");
+    printf("  Repeat: %d rounds | Total: %d operations\n",
+           REPEAT_TIMES, TOTAL_KEYS * REPEAT_TIMES);
+    printf("==================================================================\n\n");
 
     int sock = connect_server();
     if (sock < 0) {
         printf("[FATAL] Cannot connect to server!\n");
-        return;
+        return 1;
     }
 
-    // 分配大缓冲区
     char *send_buf = (char *)malloc(MAX_SEND_BUF);
     char *recv_buf = (char *)malloc(MAX_RECV_BUF);
     if (!send_buf || !recv_buf) {
         printf("[FATAL] malloc failed!\n");
         close(sock);
-        return;
+        return 1;
     }
 
     int total_errors = 0;
-    int record_idx = 0;
+    int completed_rounds = 0;
 
-    for (int batch = 0; batch < TOTAL_BATCHES; batch++) {
-        int start_idx = record_idx;
+    for (int round = 0; round < REPEAT_TIMES; round++) {
+        // 每轮构建新的命令（key带轮次号）
+        int send_len = build_round_commands(send_buf, round);
         
-        // 批量发送100条命令
-        if (send_batch_commands(sock, set_cmd, send_buf, batch, start_idx) < 0) {
-            printf("[BATCH %d] send failed!\n", batch);
+        if (send_all(sock, send_buf, send_len) < 0) {
+            printf("[ROUND %d] send failed!\n", round);
             total_errors++;
             break;
         }
         
-        // 批量接收并校验100条回复
-        if (verify_batch_replies(sock, recv_buf, MAX_RECV_BUF, batch, start_idx) < 0) {
+        if (verify_all_replies(sock, recv_buf, MAX_RECV_BUF, round) < 0) {
             total_errors++;
-            // 校验失败后连接状态可能混乱，中止测试
             break;
         }
         
-        record_idx += BATCH_SIZE;
+        completed_rounds++;
         
-        // 每100批打印一次进度
-        if ((batch + 1) % 100 == 0) {
-            printf("  Completed %d batches (%d records)...\n",
-                   batch + 1, record_idx);
+        if ((round + 1) % 100 == 0) {
+            printf("  Completed %d rounds (%d operations)...\n",
+                   round + 1, (round + 1) * TOTAL_KEYS);
         }
     }
 
     printf("\n--------------------------------------------------------\n");
     if (total_errors == 0) {
-        printf("[Engine %d] ALL %d records PASSED!\n", 
-               engine_type, record_idx);
+        printf("[RESULT] ALL %d rounds PASSED!\n", completed_rounds);
+        printf("         Total operations: %d\n", completed_rounds * TOTAL_KEYS);
     } else {
-        printf("[Engine %d] %d errors detected. Only %d records processed.\n",
-               engine_type, total_errors, record_idx);
+        printf("[RESULT] %d errors detected.\n", total_errors);
+        printf("         Only %d rounds completed.\n", completed_rounds);
     }
     printf("--------------------------------------------------------\n");
 
     free(send_buf);
     free(recv_buf);
     close(sock);
-}
-
-int main(int argc, char *argv[]) {
-
-    if (argc >= 2) {
-        // 指定引擎
-        int engine_type = atoi(argv[1]);
-        if (engine_type < 1 || engine_type > 4) {
-            printf("Usage: %s [engine_type]\n", argv[0]);
-            printf("  1: Array  2: RBTree  3: Hash  4: SkipList\n");
-            printf("  (no arg = test all 4 engines)\n");
-            return 1;
-        }
-        test_engine(engine_type);
-    } else {
-        // 测试全部4种引擎
-        for (int eng = 1; eng <= 4; eng++) {
-            test_engine(eng);
-        }
-    }
-
-    printf("\nAll tests completed.\n");
+    
+    printf("\nTest completed.\n");
     return 0;
 }

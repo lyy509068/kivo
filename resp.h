@@ -41,7 +41,7 @@ typedef struct {
 
 
 typedef int (*cmd_handler_t)(const resp_request_t *req, resp_reply_t *reply);//协议层用来调用业务层
-typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd);//网络层用来调用协议层
+typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);//网络层用来调用协议层
 //网络传输函数
 extern int reactor_start(unsigned short port, stream_handler_t handler);
 extern int proactor_start(unsigned short port, stream_handler_t handler);
@@ -49,9 +49,8 @@ extern int ntyco_start(unsigned short port, stream_handler_t handler);
 
 
 void protocol_set_command_handler(cmd_handler_t handler);
-int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, long long *out_val, int fd);
+int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);
 int protocol_process_recover(const char *in_buf, int in_len);
-int protocol_process_udp_silent(const char *in_buf, int in_len);
 int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply);
 
 

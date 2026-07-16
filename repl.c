@@ -59,7 +59,7 @@ static int get_rocev2_ipv4_gid(struct ibv_context *ctx, int port_num, union ibv_
 
 int repl_init(const char *rdma_dev) {
     const char *final_dev = rdma_dev ? rdma_dev : DEFAULT_RDMA_DEVICE;
-    printf("[Repl] Initializing RDMA engine on device: %s\n", final_dev);
+    // printf("[Repl] Initializing RDMA engine on device: %s\n", final_dev);
 
     g_rdma_ctx = rdma_ring_init(final_dev);
     if (!g_rdma_ctx) {
@@ -79,7 +79,7 @@ int repl_start_slave_engine(void) {
     }
     g_running = 1;
     if (pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL) != 0) return -1;
-    printf("[Repl Slave] Pure RDMA background replication engine IS RUNNING.\n");
+    // printf("[Repl Slave] Pure RDMA background replication engine IS RUNNING.\n");
     return 0;
 }
 
@@ -105,7 +105,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     }
     g_repl_ctx.wlength = 0;
     
-    printf("Slave: Successfully connected to Master at %s:%d\n", master_ip, master_port);
+    // printf("Slave: Successfully connected to Master at %s:%d\n", master_ip, master_port);
     
     // 发送 RDMA_CONNECT
     uint32_t my_rkey = g_rdma_ctx->mr_buf->rkey;
@@ -162,7 +162,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
 
     // 解析 ACK，配置 QP
     if (ack_total > 0 && strstr(ack_buf, "RDMA_CONNECT_ACK")) {
-        printf("[Repl Slave] Received RDMA_CONNECT_ACK (%d bytes)\n", ack_total);
+        printf("[Repl Slave] Received RDMA_CONNECT_ACK.\n");
 
         struct ring_meta master_meta;
         char *lines[16];
@@ -202,20 +202,13 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         }
     }
 
-    // ===== 删除以下 4 行：不托管给网络层 =====
-    // int flags = fcntl(g_repl_ctx.fd, F_GETFL, 0);
-    // fcntl(g_repl_ctx.fd, F_SETFL, flags | O_NONBLOCK);
-    // struct conn *c = net_host_slave_connection(g_repl_ctx.fd, g_repl_ctx.wbuffer, g_repl_ctx.wcapacity, g_repl_ctx.wlength);
-    // if (!c) return -1;
-    // rdma_init_context(c);
-
-    // ===== 直接返回 fd，保持阻塞模式 =====
     return g_repl_ctx.fd;
 }
 
 void handle_slave_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd) {
     g_slave_fd = fd;
-    printf("[Repl Master] Recieved RDMA_CONNECT. Shaking hands with slave...\n");
+    
+    printf("[Repl Master] Recieved RDMA_CONNECT.\n");
     
     struct ring_meta slave_meta;
     slave_meta.rkey = (uint32_t)strtoul(req->argv[1], NULL, 10);
@@ -404,7 +397,7 @@ void* pure_rdma_repl_slave_thread(void *arg) {
                     if (send_ret < 0) {
                         printf("[Repl Slave] SYNC_DONE send FAILED: errno=%d (%s)\n", errno, strerror(errno));
                     } else {
-                        printf("[Repl Slave] SYNC_DONE report sent to Master (%zd bytes).\n", send_ret);
+                        printf("[Repl Slave] SYNC_DONE report sent to Master.\n");
                     }                    
                 }
                 first_sync = 0;

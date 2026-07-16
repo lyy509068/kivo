@@ -39,13 +39,8 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name);
 // 状态机绑定配置 (INIT -> RTR -> RTS)
 int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote);
 
-// 判断日志是否发完
-int rdma_check_transfer_complete(struct conn *c);
-
 // 资源销毁
 void rdma_ring_destroy(struct rdma_ring_ctx *rctx);
-
-int rdma_init_context(struct conn *c);
 
 // 通过 RDMA 单边写将大块日志轰入从端，并附带立即数（日志大小）
 int rdma_master_write_log_imm(struct rdma_ring_ctx *rctx, uint32_t log_size);

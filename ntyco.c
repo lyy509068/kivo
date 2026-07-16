@@ -60,7 +60,6 @@ void ntyco_client_co(void *arg) {
         int total_parsed_bytes = 0;
         while (c->rlength > total_parsed_bytes) {
             int parsed_bytes = 0;
-            long long expect_file_size = 0;
             int is_master = (c->role == CONN_MASTER);
 
             int status = g_stream_handler(
@@ -70,7 +69,6 @@ void ntyco_client_co(void *arg) {
                 is_master ? NULL : &c->wbuffer,   
                 is_master ? NULL : &c->wcapacity,
                 is_master ? NULL : &c->wlength, 
-                &expect_file_size,
                 fd 
             );
 
