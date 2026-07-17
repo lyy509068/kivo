@@ -209,7 +209,7 @@ int reactor_start(unsigned short port, stream_handler_t handler) {
     gettimeofday(&begin, NULL);
 
     if (g_enable_repl_slave){
-        const char *master_ip = "192.168.92.128";
+        const char *master_ip = "192.168.37.128";
         unsigned short master_port = 2000;
         //连接主端
         int master_fd = repl_connect_to_master(master_ip, master_port); 

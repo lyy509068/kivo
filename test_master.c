@@ -5,7 +5,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-#define SERVER_IP "192.168.92.128"
+#define SERVER_IP "192.168.37.128"
 #define SERVER_PORT 2000
 #define RECORDS_PER_ENGINE 15000  // 每种引擎 1.5w 条
 

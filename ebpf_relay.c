@@ -11,7 +11,7 @@
 #include <fcntl.h>   
 #include <poll.h>    
 
-#define SLAVE_IP "192.168.92.130" 
+#define SLAVE_IP "192.168.37.129" 
 #define SLAVE_PORT 2000           
 #define MAX_PAYLOAD_SIZE 1024
 

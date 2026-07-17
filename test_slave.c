@@ -5,7 +5,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
-#define SERVER_IP "192.168.92.130"
+#define SERVER_IP "192.168.37.129"
 #define SERVER_PORT 2000
 #define TOTAL_RECORDS 30000  // 1.5w × 2 轮
 
