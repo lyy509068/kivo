@@ -127,7 +127,30 @@ static int init_listen_socket(unsigned short port) {
 void ntyco_slave_init_co(void *arg) {
     const char *master_ip = "192.168.37.128";
     unsigned short master_port = 2000;
-    repl_connect_to_master(master_ip, master_port);
+    
+    if (g_use_tcp_sync) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(master_port);
+        inet_pton(AF_INET, master_ip, &addr.sin_addr);
+        if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            close(fd);
+            return;
+        }
+        const char *sync = "*1\r\n$4\r\nSYNC\r\n";
+        send(fd, sync, strlen(sync), 0);
+        
+        pthread_t tid;
+        int *pfd = malloc(sizeof(int));
+        *pfd = fd;
+        pthread_create(&tid, NULL, tcp_sendfile_recv_thread, pfd);
+        pthread_detach(tid);
+        
+    } else {
+        repl_connect_to_master(master_ip, master_port);
+    }
 }
 
 int ntyco_start(unsigned short port, stream_handler_t handler) {

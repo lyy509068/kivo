@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/sendfile.h>
 
 #define REPL_INIT_BUFFER_SIZE 4096
 #define DEFAULT_RDMA_DEVICE "rxe0"
@@ -29,15 +30,12 @@ static pthread_t repl_slave_tid;
 static bool g_repl_ctx_ready = false;
 static struct repl_context g_repl_ctx = { .fd = -1, .wbuffer = NULL, .wcapacity = 0, .wlength = 0 };
 
-
-repl_backlog_item_t g_repl_backlog[REPL_BACKLOG_MAX];
-int g_repl_backlog_count;
-volatile int g_repl_backlog_enabled;  // 1=追加中, 0=关闭
-
+// 全量同步期间的增量命令处理
+repl_backlog_item_t g_repl_backlog[REPL_BACKLOG_MAX];// 缓冲区
+int g_repl_backlog_count;// 缓冲区容纳命令条数
+volatile int g_repl_backlog_enabled;  // 处理标志：1=追加中, 0=关闭
 
 struct rdma_ring_ctx *g_rdma_ctx = NULL; 
-
-extern int start_replica_udp_server_coroutine(int listen_port);
 
 // 动态嗅探 RoCEv2 IPv4 GID
 static int get_rocev2_ipv4_gid(struct ibv_context *ctx, int port_num, union ibv_gid *out_gid, int *out_index) {
@@ -56,7 +54,7 @@ static int get_rocev2_ipv4_gid(struct ibv_context *ctx, int port_num, union ibv_
     return -1;
 }
 
-
+// 两端RDMA都用：初始化RDMA 在主函数的初始化引擎中调用
 int repl_init(const char *rdma_dev) {
     const char *final_dev = rdma_dev ? rdma_dev : DEFAULT_RDMA_DEVICE;
     // printf("[Repl] Initializing RDMA engine on device: %s\n", final_dev);
@@ -72,6 +70,7 @@ int repl_init(const char *rdma_dev) {
     return 0;
 }
 
+// 从端RDMA专用：打开接收线程 
 int repl_start_slave_engine(void) {
     if (!g_rdma_ctx) return -1;
     for (int i = 0; i < 8; i++) {
@@ -79,10 +78,10 @@ int repl_start_slave_engine(void) {
     }
     g_running = 1;
     if (pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL) != 0) return -1;
-    // printf("[Repl Slave] Pure RDMA background replication engine IS RUNNING.\n");
     return 0;
 }
 
+// 从端RDMA专用：发CONNECT 等待接收ACK（配置RDMA连接） 发送SYCN  
 int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     g_repl_ctx.fd = socket(AF_INET, SOCK_STREAM, 0);
     if (g_repl_ctx.fd < 0) return -1;
@@ -104,8 +103,6 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         g_repl_ctx.wbuffer = (char *)kvs_malloc(g_repl_ctx.wcapacity);
     }
     g_repl_ctx.wlength = 0;
-    
-    // printf("Slave: Successfully connected to Master at %s:%d\n", master_ip, master_port);
     
     // 发送 RDMA_CONNECT
     uint32_t my_rkey = g_rdma_ctx->mr_buf->rkey;
@@ -160,7 +157,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
         if (strstr(ack_buf, "\r\n")) break;
     }
 
-    // 解析 ACK，配置 QP
+    // 解析 ACK，配置 QP 连接
     if (ack_total > 0 && strstr(ack_buf, "RDMA_CONNECT_ACK")) {
         printf("[Repl Slave] Received RDMA_CONNECT_ACK.\n");
 
@@ -205,6 +202,7 @@ int repl_connect_to_master(const char *master_ip, unsigned short master_port) {
     return g_repl_ctx.fd;
 }
 
+// 主端RDMA专用：接收CONNECT 配置QP连接 发送ACK
 void handle_slave_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int *wlen, int fd) {
     g_slave_fd = fd;
     
@@ -262,6 +260,7 @@ void handle_slave_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int 
 
 }
 
+// 主端专用：RDMA传输文件
 int repl_sync_log_via_rdma(void) {
     if (!g_rdma_ctx) {
         printf("[Repl Error] RDMA context not ready for log sync.\n");
@@ -334,8 +333,7 @@ int repl_sync_log_via_rdma(void) {
     return 0;
 }
 
-
-// 补发缓冲区
+// 主端专用：RDMA 补发缓冲区
 int repl_flush_backlog_via_rdma(void) {
     if (!g_rdma_ctx) {
         fprintf(stderr, "[Repl Error] g_rdma_ctx is NULL, cannot flush backlog\n");
@@ -370,7 +368,47 @@ int repl_flush_backlog_via_rdma(void) {
     return 0;
 }
 
+// 主端专用：sendfile传输文件  
+int repl_sync_log_via_tcp(void) {
+    if (g_repl_ctx.fd < 0) {
+        printf("[Repl Error] No slave connection fd for TCP sync.\n");
+        return -1;
+    }
 
+    int src_fd = open(PERSISTENCE_FILE, O_RDONLY);
+    if (src_fd < 0) {
+        perror("[Repl Error] Failed to open file for TCP sync");
+        return -1;
+    }
+
+    struct stat st;
+    fstat(src_fd, &st);
+    size_t file_size = st.st_size;
+    if (file_size == 0) { close(src_fd); return 0; }
+
+    // 先发文件大小（8字节）
+    uint64_t net_size = htobe64(file_size);
+    send(g_repl_ctx.fd, &net_size, sizeof(net_size), 0);
+
+    // sendfile 零拷贝发送
+    off_t offset = 0;
+    size_t remaining = file_size;
+    while (remaining > 0) {
+        ssize_t n = sendfile(g_repl_ctx.fd, src_fd, &offset, remaining);
+        if (n <= 0) {
+            perror("[Repl Error] sendfile failed");
+            close(src_fd);
+            return -1;
+        }
+        remaining -= n;
+    }
+
+    close(src_fd);
+    printf("Master : Successfully pushed %zu bytes to slave.\n", file_size);
+    return 0;
+}
+
+// 从端专用：接收RDMA文件线程 加载日志 发送DONE
 void* pure_rdma_repl_slave_thread(void *arg) {
     int first_sync = 1;  
 
@@ -407,6 +445,66 @@ void* pure_rdma_repl_slave_thread(void *arg) {
     return NULL;
 }
 
+// 从端专用：接收sendfile文件线程 加载日志 发送DONE
+void* tcp_sendfile_recv_thread(void *arg) {
+    int fd = *(int*)arg;  // 从 arg 获取 fd
+    free(arg);            // 释放 malloc 的 int
+    
+    // 读取文件大小
+    uint64_t net_size = 0;
+    ssize_t n = recv(fd, &net_size, sizeof(net_size), MSG_WAITALL);
+    if (n != sizeof(net_size)) {
+        printf("[Repl Slave TCP] Failed to receive file size\n");
+        close(fd);
+        return NULL;
+    }
+    size_t file_size = be64toh(net_size);
+    printf("[Repl Slave TCP] Receiving %zu bytes\n", file_size);
+
+    // 创建临时文件
+    char tmp_file[256];
+    snprintf(tmp_file, sizeof(tmp_file), "%s.tcp.%d", PERSISTENCE_FILE, getpid());
+    int tmp_fd = open(tmp_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (tmp_fd < 0) {
+        perror("[Repl Slave TCP] open temp file failed");
+        close(fd);
+        return NULL;
+    }
+
+    // splice 零拷贝接收
+    size_t remaining = file_size;
+    while (remaining > 0) {
+        ssize_t spliced = splice(fd, NULL, tmp_fd, NULL,
+                                  remaining > 65536 ? 65536 : remaining,
+                                  SPLICE_F_MOVE);
+        if (spliced <= 0) {
+            perror("[Repl Slave TCP] splice failed");
+            close(tmp_fd);
+            unlink(tmp_file);
+            close(fd);
+            return NULL;
+        }
+        remaining -= spliced;
+    }
+
+    fsync(tmp_fd);
+    close(tmp_fd);
+    rename(tmp_file, PERSISTENCE_FILE);
+
+    // 加载
+    kvs_persistence_recover();
+    printf("[Repl Slave TCP] AOF reload successfully!\n");
+
+    // 发送 DONE
+    const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
+    send(fd, done_cmd, strlen(done_cmd), 0);
+    printf("[Repl Slave TCP] SYNC_DONE sent.\n");
+
+    close(fd);
+    return NULL;
+}
+
+// 两端都用：主函数的销毁引擎中调用
 void repl_destroy(void) {
     if (g_running) g_running = 0;
 
@@ -432,6 +530,7 @@ void repl_destroy(void) {
     }
 }
 
+// 主端专用：发送少量增量命令，超时删除线程调用
 void repl_push_cmd(const char *cmd, void *key, int key_len, void *value, int value_len) {
     if (g_slave_fd < 0) return;
 

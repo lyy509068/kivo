@@ -179,7 +179,7 @@ enum {
     // SkipList
     CMD_SSET=15, CMD_SGET, CMD_SDEL, CMD_SMOD, CMD_SEXISTS,
 
-    CMD_PING=20, CMD_SAVE, CMD_REPL_SYNC,  CMD_REPL_SYNC_DONE, CMD_UNKNOWN
+    CMD_MEMTRIM=20, CMD_SAVE, CMD_REPL_SYNC,  CMD_REPL_SYNC_DONE, CMD_UNKNOWN
 };
 
 const kvs_cmd_map_t kvs_cmd_list[] = {
@@ -187,7 +187,8 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
     {"RSET",     4, CMD_RSET},     {"RGET",     4, CMD_RGET},     {"RDEL",     4, CMD_RDEL},     {"RMOD",     4, CMD_RMOD},     {"REXISTS",   7, CMD_REXISTS},
     {"HSET",     4, CMD_HSET},     {"HGET",     4, CMD_HGET},     {"HDEL",     4, CMD_HDEL},     {"HMOD",     4, CMD_HMOD},     {"HEXISTS",   7, CMD_HEXISTS},
     {"SSET",     4, CMD_SSET},     {"SGET",     4, CMD_SGET},     {"SDEL",     4, CMD_SDEL},     {"SMOD",     4, CMD_SMOD},     {"SEXISTS",   7, CMD_SEXISTS},
-    {"PING",     4, CMD_PING},     {"SAVE",     4, CMD_SAVE},     {"SYNC",     4, CMD_REPL_SYNC}, {"SYNC_DONE",9,CMD_REPL_SYNC_DONE}, {"UNKNOWN",  7, CMD_UNKNOWN}
+    {"MEMTRIM",  7, CMD_MEMTRIM},  {"SAVE",     4, CMD_SAVE},     {"SYNC",     4, CMD_REPL_SYNC}, {"SYNC_DONE",9,CMD_REPL_SYNC_DONE}, 
+    {"UNKNOWN",  7, CMD_UNKNOWN}
 };
 
 
@@ -560,25 +561,6 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             pthread_rwlock_unlock(&seg_locks[2]); // 释放锁
             break;
     #endif
-        case CMD_PING:{
-            if (req->argc == 1) {
-                reply->status = KVS_RESP_PONG;
-            } 
-            else if (req->argc == 2) {
-                reply->status = KVS_RESP_GET_OK; 
-                reply->body = kvs_malloc(key_len+1);
-                if (reply->body) {
-                    memcpy(reply->body, key, key_len);
-                    reply->body_len = key_len;
-                } else {
-                    reply->status = KVS_RESP_ERROR;
-                }
-            } 
-            else { 
-                reply->status = KVS_RESP_PARSE_ERROR; 
-            }
-            break;
-        }
         case CMD_SAVE: {
             if (req->argc != 1) {
                 reply->status = KVS_RESP_PARSE_ERROR; 
@@ -595,25 +577,30 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             break;
         }
         case CMD_REPL_SYNC: { 
+            // 只有主端才可能进入这个分支
             printf("Received 'SYNC' command from slave.\n");
             fflush(stdout);
 
-            if (g_enable_repl_master){
-                if(g_enable_ttl) expire_thread_pause();// 暂停超时删除线程
-                g_repl_backlog_enabled = 1;  // 开始缓存
-                g_repl_backlog_count = 0;
-                if (g_rdma_ctx) {            
-                    if (repl_sync_log_via_rdma() != 0) {
-                        printf("[Repl Error] Zero-Copy log sync via RDMA failed!\n");
-                        fflush(stdout);
-                    }
-                } else {
-                    fprintf(stderr, "[Repl Error] RDMA context is not initialized! Cannot sync.\n");
+            if(g_enable_ttl) expire_thread_pause();// 暂停超时删除线程
+            g_repl_backlog_enabled = 1;  // 告诉协议层可以把新的增量命令写进缓冲区
+            g_repl_backlog_count = 0;    // 缓冲区命令条数限制
+
+            if (g_use_tcp_sync) {// TCP 传输文件
+                if (repl_sync_log_via_tcp() != 0) {
+                    printf("[Repl Error] TCP log sync via sendfile failed!\n");
                     fflush(stdout);
                 }
+            } else if (g_rdma_ctx) {// RDMA 传输文件            
+                if (repl_sync_log_via_rdma() != 0) {
+                    printf("[Repl Error] Zero-Copy log sync via RDMA failed!\n");
+                    fflush(stdout);
+                }
+            } else {
+                fprintf(stderr, "[Repl Error] Transform falied! Cannot sync.\n");
+                fflush(stdout);
             }
-            reply->status = KVS_RESP_SUCCESS;
-            
+
+            reply->status = KVS_RESP_SUCCESS;// 告诉协议层给从端回复+OK
             break;
         }
         case CMD_REPL_SYNC_DONE: {
@@ -623,7 +610,7 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
                 fprintf(stderr, "[Repl Error] Failed to flush backlog to slave!\n");
                 break;
             }
-            repl_destroy();// 释放 RDMA 资源
+            repl_destroy();// 用完立刻释放 RDMA 资源
 
             if (g_enable_repl_master){
                 if(g_enable_ttl){

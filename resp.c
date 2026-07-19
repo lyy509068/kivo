@@ -7,9 +7,9 @@
 #include "repl.h"
 #include "rdma.h"
 
-/* * 内部辅助函数：在指定长度内安全寻找 \r\n 
- * 避免因为客户端发来恶意数据导致非法内存访问
- */
+/* 
+* 内部辅助函数：在指定长度内安全寻找 \r\n 
+*/
 static const char *find_crlf(const char *buf, int len) {
     for (int i = 0; i < len - 1; i++) {
         if (buf[i] == '\r' && buf[i+1] == '\n') {
@@ -21,8 +21,6 @@ static const char *find_crlf(const char *buf, int len) {
 
 /*
  * 探测函数：检查接收缓冲区内是否有一条完整的 RESP 请求
- * 期待格式如：*3\r\n$3\r\nSET\r\n$4\r\nname\r\n$4\r\nalex\r\n
- * 识别超时时间：*4\r\n$3\r\nSET\r\n$4\r\nname\r\n$4\r\nalex\r\n$13\r\n1234567890123\r\n
  */
 static int has_complete_resp_command(const char *buf, int buf_len, int *out_cmd_len) {
     if (buf_len < 4 || buf[0] != '*') return 0;
@@ -80,7 +78,6 @@ static void resp_unpack(const char *buf, const char *req_buf, resp_request_t *re
         p += arg_len + 2;
     }
 }
-
 
 /*
  * 释放解包时分配的内存
@@ -167,7 +164,35 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
     // 探测首字节
     char first_byte = in_buf[0];
 
-    //来自本地客户端和主端的命令或者是从端获取日志的命令，都是resp协议
+    // =========================================================================
+    // 拦截 1：处理 redis-benchmark 等客户端可能会发送的内联 PING 命令（无 * 号）
+    // =========================================================================
+    if (first_byte != '*') {
+        const char *crlf = find_crlf(in_buf, in_len);
+        if (crlf) {
+            int cmd_len = crlf - in_buf;
+            // 匹配到内联的 "PING\r\n"
+            if (cmd_len == 4 && strncasecmp(in_buf, "PING", 4) == 0) {
+                resp_reply_t reply = {KVS_RESP_PONG, NULL, 0};
+                if (wbuf && wcap && wlen) {
+                    resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
+                }
+                *parsed = cmd_len + 2; // "PING" 长度为4，加上 "\r\n" 长度为2
+                return 0;
+            }
+        } 
+        
+        // 如果未遇到换行，且数据不够长，可能是半包；否则直接视为非法的非 RESP 请求拒绝
+        if (!crlf && in_len < 100) {
+            *parsed = 0; 
+            return 0; // 等待拼包
+        }
+        return -1; // 不受支持的数据，交还给网络层进行断开
+    }
+
+    // =========================================================================
+    // 处理 标准 RESP 协议命令
+    // =========================================================================
     if (first_byte == '*') {
         int processed = 0;
 
@@ -199,6 +224,38 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                         continue; 
                     }
                 }
+            }
+
+            // =========================================================================
+            // 拦截 2：协议层拦截回声测试 PING (标准 RESP 格式)
+            // =========================================================================
+            if (req.argc > 0 && strcasecmp(req.argv[0], "PING") == 0) {
+                resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0};
+                if (req.argc == 1) {
+                    // 无参数 PING，直接回复 +PONG
+                    reply.status = KVS_RESP_PONG;
+                } else if (req.argc == 2) {
+                    // 带参数 PING (如 PING "hello")，原样回显参数
+                    reply.status = KVS_RESP_GET_OK;
+                    reply.body = (char *)kvs_malloc(req.argv_len[1]);
+                    memcpy(reply.body, req.argv[1], req.argv_len[1]);
+                    reply.body_len = req.argv_len[1];
+                } else {
+                    reply.status = KVS_RESP_PARSE_ERROR;
+                }
+
+                if (wbuf && wcap && wlen) {
+                    resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
+                }
+
+                free_resp_request(&req);
+                kvs_free(saved_resp_cmd);
+                if (reply.body) {
+                    kvs_free(reply.body);
+                }
+                
+                processed += single_cmd_len;
+                continue; // 执行 pipeline 继续往后解析下一条命令
             }
     
             // 进入业务层处理普通命令

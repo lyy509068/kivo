@@ -15,6 +15,7 @@ int g_enable_ttl         = 0;
 int g_enable_mempool     = 0;
 int g_enable_repl_master = 0;
 int g_enable_repl_slave  = 0;
+int g_use_tcp_sync = 0;
 
 #ifndef RDMA_DEV_NAME
 #define RDMA_DEV_NAME "rxe0"
@@ -89,7 +90,7 @@ int init_kvengine(void) {
         if (expire_thread_init() != 0) return -1;
     }
 
-    if (g_enable_repl_master || g_enable_repl_slave) {
+    if ( !g_use_tcp_sync && (g_enable_repl_master || g_enable_repl_slave)) {
         const char *rdma_dev = RDMA_DEV_NAME;
         if (repl_init(rdma_dev) != 0) return -1;
         if (g_enable_repl_slave) {
@@ -101,7 +102,7 @@ int init_kvengine(void) {
 }
 
 void dest_kvengine(void) {
-    if (g_enable_repl_master || g_enable_repl_slave) {
+    if (!g_use_tcp_sync && (g_enable_repl_master || g_enable_repl_slave)) {
         if (g_enable_repl_slave) {
             g_running = 0;
             repl_destroy();
@@ -158,6 +159,7 @@ int main(int argc, char *argv[]) {
     g_enable_mempool     = cfg.mempool;
     g_enable_repl_master = (cfg.replication == 1);
     g_enable_repl_slave  = (cfg.replication == 2);
+    g_use_tcp_sync       = (cfg.transport == 1);
 
     protocol_set_command_handler(kvs_execute_command);
     init_kvengine();

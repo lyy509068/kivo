@@ -150,29 +150,29 @@ void write_header_if_needed(const char *filename, long total_ops) {
     if (!fp) return;
     
     fprintf(fp, "# MEMORY POOL 3-PHASE BENCHMARK RESULTS\n");
-    fprintf(fp, "# Test: SET:60%% GET:15%% DEL:10%% MOD:15%%\n");
+    fprintf(fp, "# Test: SET:60%% GET:15%% DEL:10%% MOD:15%% (All Engines Mixed)\n");
     fprintf(fp, "# Legend: 1=Initial  2=Peak  3=Clean\n");
     fprintf(fp, "#\n");
-    fprintf(fp, "%-14s | %-10s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n",
-            "Strategy", "Engine", 
+    fprintf(fp, "%-14s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s | %8s\n",
+            "Strategy", 
             "VmSz1", "VmSz2", "VmSz3",
             "VmRSS1", "VmRSS2", "VmRSS3",
             "Time_ms", "QPS", "Ops");
-    fprintf(fp, "----------------|------------|----------|----------|----------|----------|----------|----------|----------|----------|----------\n");
+    fprintf(fp, "----------------|----------|----------|----------|----------|----------|----------|----------|----------|----------\n");
     
     fclose(fp);
 }
 
 // 追加测试结果
-void append_result(const char *filename, int strategy, int engine_type,
+void append_result(const char *filename, int strategy,
                    long vmsize1, long vmsize2, long vmsize3,
                    long vmrss1, long vmrss2, long vmrss3,
                    long time_ms, long qps, long total_ops) {
     FILE *fp = fopen(filename, "a");  // "a" = append mode
     if (!fp) return;
     
-    fprintf(fp, "%-14s | %-10s | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld\n",
-            STRATEGY_NAMES[strategy], ENGINE_NAMES[engine_type],
+    fprintf(fp, "%-14s | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld | %8ld\n",
+            STRATEGY_NAMES[strategy],
             vmsize1, vmsize2, vmsize3,
             vmrss1, vmrss2, vmrss3,
             time_ms, qps, total_ops);
@@ -180,8 +180,20 @@ void append_result(const char *filename, int strategy, int engine_type,
     fclose(fp);
 }
 
-// 单次测试
-int run_single_test(int strategy, int engine_type, long total_ops, const char *log_filename) {
+// 生成带引擎前缀的key
+void make_key(char *key, size_t size, int engine_type, long index) {
+    const char *prefix = "";
+    switch (engine_type) {
+        case 1: prefix = "A"; break;   // Array
+        case 2: prefix = "R"; break;   // RBTree
+        case 3: prefix = "H"; break;   // Hash
+        case 4: prefix = "S"; break;   // SkipList
+    }
+    snprintf(key, size, "%s_key_%010ld", prefix, index);
+}
+
+// 单次测试（所有引擎混合）
+int run_single_test(int strategy, long total_ops, const char *log_filename) {
     pid_t server_pid = get_server_pid();
     if (server_pid <= 0) {
         printf("  [ERROR] Server not found\n");
@@ -198,12 +210,7 @@ int run_single_test(int strategy, int engine_type, long total_ops, const char *l
     struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(SERVER_PORT) };
     inet_pton(AF_INET, SERVER_IP, &addr.sin_addr);
     
-    int retry = 0;
-    while (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0 && retry < 10) {
-        usleep(100000);
-        retry++;
-    }
-    if (retry >= 10) {
+    if(connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         printf("  [ERROR] Connection failed\n");
         close(sock);
         return -1;
@@ -224,9 +231,11 @@ int run_single_test(int strategy, int engine_type, long total_ops, const char *l
     }
     
     int batch_len = 0, batch_count = 0, stream_len = 0;
-    long max_key_index = 0;
     
-    // 阶段2: 执行操作并计时
+    // 每个引擎的key计数器
+    long max_key_index[5] = {0, 0, 0, 0, 0};  // 索引1-4对应引擎1-4
+    
+    // 阶段2: 执行操作并计时（所有引擎混合）
     printf("  Phase2 Load:   ");
     fflush(stdout);
     struct timeval tv_begin, tv_end;
@@ -234,30 +243,41 @@ int run_single_test(int strategy, int engine_type, long total_ops, const char *l
 
     for (long i = 0; i < total_ops; i++) {
         int prob = rand() % 100;
+        int engine_type;
+        int eng_rand = rand() % 100;
+        if (eng_rand < 2) {
+            engine_type = 1;        // Array: 1%
+        } else if (eng_rand < 35) {
+            engine_type = 2;        // RBTree: 33%
+        } else if (eng_rand < 68) {
+            engine_type = 3;        // Hash: 33%
+        } else {
+            engine_type = 4;        // SkipList: 33%
+        }
         char send_buf[512], key[MAX_KEY_LEN], val[MAX_VAL_LEN];
         int len = 0;
 
         if (prob < 60) { // SET 60%
-            max_key_index++;
-            sprintf(key, "key_%010ld", max_key_index);
+            max_key_index[engine_type]++;
+            make_key(key, sizeof(key), engine_type, max_key_index[engine_type]);
             sprintf(val, "val_%010d_%04d", rand() % 100000, rand() % 10000);
             len = build_resp_cmd(send_buf, SET_CMDS[engine_type], key, val);
         } 
         else if (prob < 75) { // GET 15%
-            if (max_key_index > 0) {
-                sprintf(key, "key_%010ld", (rand() % max_key_index) + 1);
+            if (max_key_index[engine_type] > 0) {
+                make_key(key, sizeof(key), engine_type, (rand() % max_key_index[engine_type]) + 1);
                 len = build_resp_cmd(send_buf, GET_CMDS[engine_type], key, NULL);
             } else { i--; continue; }
         } 
         else if (prob < 85) { // DEL 10%
-            if (max_key_index > 0) {
-                sprintf(key, "key_%010ld", (rand() % max_key_index) + 1);
+            if (max_key_index[engine_type] > 0) {
+                make_key(key, sizeof(key), engine_type, (rand() % max_key_index[engine_type]) + 1);
                 len = build_resp_cmd(send_buf, DEL_CMDS[engine_type], key, NULL);
             } else { i--; continue; }
         } 
         else { // MOD 15%
-            if (max_key_index > 0) {
-                sprintf(key, "key_%010ld", (rand() % max_key_index) + 1);
+            if (max_key_index[engine_type] > 0) {
+                make_key(key, sizeof(key), engine_type, (rand() % max_key_index[engine_type]) + 1);
                 sprintf(val, "mod_%010d_%04d", rand() % 100000, rand() % 10000);
                 len = build_resp_cmd(send_buf, SET_CMDS[engine_type], key, val);
             } else { i--; continue; }
@@ -293,41 +313,47 @@ int run_single_test(int strategy, int engine_type, long total_ops, const char *l
     get_server_memory(server_pid, &peak_vmsize, &peak_vmrss);
     printf("  Phase2 Peak:   VmSize=%ld KB, VmRSS=%ld KB\n", peak_vmsize, peak_vmrss);
 
-    // 阶段3: 清空所有数据
+    // 阶段3: 清空所有引擎的数据
     printf("  Phase3 Clean:  ");
     fflush(stdout);
     batch_len = 0;
     batch_count = 0;
-    for (long i = 1; i <= max_key_index; i++) {
-        char send_buf[512], key[MAX_KEY_LEN];
-        sprintf(key, "key_%010ld", i);
-        int len = build_resp_cmd(send_buf, DEL_CMDS[engine_type], key, NULL);
-        
-        memcpy(batch_buf + batch_len, send_buf, len);
-        batch_len += len;
-        batch_count++;
-        
-        if (batch_count >= BATCH_SIZE || i == max_key_index) {
-            send_and_receive_batch(sock, batch_buf, batch_len, batch_count,
-                                  stream_buf, &stream_len);
-            batch_len = 0;
-            batch_count = 0;
+    
+    for (int eng = 1; eng <= 4; eng++) {
+        for (long i = 1; i <= max_key_index[eng]; i++) {
+            char send_buf[512], key[MAX_KEY_LEN];
+            make_key(key, sizeof(key), eng, i);
+            int len = build_resp_cmd(send_buf, DEL_CMDS[eng], key, NULL);
+            
+            memcpy(batch_buf + batch_len, send_buf, len);
+            batch_len += len;
+            batch_count++;
+            
+            if (batch_count >= BATCH_SIZE || (eng == 4 && i == max_key_index[eng])) {
+                send_and_receive_batch(sock, batch_buf, batch_len, batch_count,
+                                      stream_buf, &stream_len);
+                batch_len = 0;
+                batch_count = 0;
+            }
         }
-
-        if (i % (max_key_index / 10) == 0) {
-            printf(".");
-            fflush(stdout);
-        }
+        
+        // 每个引擎清理完输出一个点
+        printf(".");
+        fflush(stdout);
     }
     printf(" done\n");
     
     // 等待内存回收
-    sleep(2);
+    sleep(10);
     
     // 清理后内存
     long clean_vmsize, clean_vmrss;
     get_server_memory(server_pid, &clean_vmsize, &clean_vmrss);
     printf("  Phase3 Clean:  VmSize=%ld KB, VmRSS=%ld KB\n", clean_vmsize, clean_vmrss);
+
+    // 打印统计信息
+    printf("  Key distribution: Array=%ld, RBTree=%ld, Hash=%ld, SkipList=%ld\n",
+           max_key_index[1], max_key_index[2], max_key_index[3], max_key_index[4]);
 
     // 计算指标
     long time_ms = (tv_end.tv_sec - tv_begin.tv_sec) * 1000 + 
@@ -337,7 +363,7 @@ int run_single_test(int strategy, int engine_type, long total_ops, const char *l
     printf("  Result:        Time=%ld ms, QPS=%ld\n\n", time_ms, qps);
 
     // 追加结果到文件
-    append_result(log_filename, strategy, engine_type,
+    append_result(log_filename, strategy,
                   init_vmsize, peak_vmsize, clean_vmsize,
                   init_vmrss, peak_vmrss, clean_vmrss,
                   time_ms, qps, total_ops);
@@ -351,18 +377,18 @@ int run_single_test(int strategy, int engine_type, long total_ops, const char *l
 int main(int argc, char *argv[]) {
     srand(time(NULL));
     
-    if (argc < 3) {
-        printf("Usage: %s <strategy> <engine> [ops]\n", argv[0]);
+    if (argc < 2) {
+        printf("Usage: %s <strategy> [ops]\n", argv[0]);
         printf("  strategy: 0=Glibc  1=Jemalloc  2=Mempool  (or 'all')\n");
-        printf("  engine:   1=Array  2=RBTree    3=Hash  4=SkipList  (or 'all')\n");
         printf("  ops:      total operations (default: 1000000)\n");
         printf("\nExamples:\n");
-        printf("  %s 2 3            # Mempool + Hash, 1M ops\n", argv[0]);
-        printf("  %s all all        # All 12 combinations\n", argv[0]);
+        printf("  %s 2              # Mempool, 1M ops mixed\n", argv[0]);
+        printf("  %s all            # All 3 strategies\n", argv[0]);
+        printf("  %s 1 500000       # Jemalloc, 500K ops\n", argv[0]);
         return 1;
     }
 
-    long total_ops = (argc >= 4) ? atol(argv[3]) : 1000000;
+    long total_ops = (argc >= 3) ? atol(argv[2]) : 1000000;
     
     // 固定日志文件名
     const char *log_filename = "benchmark_results.txt";
@@ -372,42 +398,32 @@ int main(int argc, char *argv[]) {
 
     // 解析参数
     int strategies[3] = {0, 1, 2};
-    int engines[4] = {1, 2, 3, 4};
     int strat_count = 3;
-    int eng_count = 4;
 
     if (strcmp(argv[1], "all") != 0) {
         strategies[0] = atoi(argv[1]);
         strat_count = 1;
     }
-    if (strcmp(argv[2], "all") != 0) {
-        engines[0] = atoi(argv[2]);
-        eng_count = 1;
-    }
 
     // 运行测试
-    int total_tests = strat_count * eng_count;
-    int current_test = 0;
-
     printf("\n");
     printf("========================================\n");
-    printf("  Memory Pool Benchmark\n");
-    printf("  Total tests: %d\n", total_tests);
+    printf("  Memory Pool Benchmark (Mixed Engines)\n");
+    printf("  Total tests: %d\n", strat_count);
     printf("  Log file: %s\n", log_filename);
     printf("========================================\n\n");
 
     for (int s = 0; s < strat_count; s++) {
-        for (int e = 0; e < eng_count; e++) {
-            current_test++;
-            printf("[%d/%d] %s + %s\n", 
-                   current_test, total_tests,
-                   STRATEGY_NAMES[strategies[s]], ENGINE_NAMES[engines[e]]);
-            
-            int ret = run_single_test(strategies[s], engines[e], total_ops, log_filename);
-            if (ret < 0) {
-                printf("  *** TEST FAILED ***\n\n");
-            }
-            
+        printf("[%d/%d] %s (All Engines Mixed)\n", 
+               s + 1, strat_count,
+               STRATEGY_NAMES[strategies[s]]);
+        
+        int ret = run_single_test(strategies[s], total_ops, log_filename);
+        if (ret < 0) {
+            printf("  *** TEST FAILED ***\n\n");
+        }
+        
+        if (s < strat_count - 1) {
             sleep(1);
         }
     }

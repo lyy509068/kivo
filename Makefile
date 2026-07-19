@@ -20,7 +20,7 @@ BPF_KERN_OBJ = sync_filter.bpf.o
 
 TESTCASES = test_fullpersistence1 test_fullpersistence2 test_incrementpersistence1 \
             test_incrementpersistence2 test_mempool test_master test_slave test_TTL \
-            test_batchcommand test_specialchars
+            test_batchcommand test_specialchars test_save
 
 SUBDIR = ./NtyCo/
 

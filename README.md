@@ -14,6 +14,10 @@ redis文件模式：
 
 ./test_batchcommand 一次性插入100条命令并验证回复，然后获取，重复1000次
 
+# Redis pipeline 测试（160条一批）
+redis-benchmark -h 127.0.0.1 -p 6379 -t set -n 100000 -P 160 -q
+
+
 ./test_specialchars 四种数据结构都插入5个特殊字符串，由本地五个文件作为value构建resp命令，先插入并验证回复，然后获取并逐字对比和本地文件是否相同
 
 # 压力测试：-p 端口，-c 50个并发连接，-n 总共发送10000条命令，-t 只测试 set和get命令
@@ -72,6 +76,8 @@ array数据恢复时间较长，等待数据恢复完成后再获取数据
 
 # 内存池测试
 ./test_mempool (0 1 2) (1 2 3 4) 100000  选择内存管理方式(不使用内存池 jemalloc mempool) 数据结构(array rbtree hash skiptable) 插入10w条数据
+
+sudo LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server config.conf
                 
 # 主从同步测试
 
@@ -82,6 +88,11 @@ array数据恢复时间较长，等待数据恢复完成后再获取数据
 发送日志期间，如果有新的命令，就放进临时缓冲区中，发完日志再发一次
 继续向主端插入5w条数据 ./test_master (1 2 3 4) 2
 从端同步完第二轮的5w条数据后，通过客户端验证 ./test_slave (1 2 3 4)
+
+# 带宽测试
+服务端（接收方）：iperf3 -s
+客户端（发送方）：iperf3 -c 192.168.1.100 -t 10
+
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？

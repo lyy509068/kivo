@@ -18,6 +18,12 @@ static int parse_replication(const char *val) {
     return 0;
 }
 
+static int parse_transport(const char *val) {
+    if (strcmp(val, "TCP") == 0)   return 1;
+    if (strcmp(val, "RDMA") == 0)  return 0;
+    return 0;  
+}
+
 int load_config(const char *filename, server_config_t *cfg) {
     cfg->port = 2000;
     cfg->persistence = 0;
@@ -25,6 +31,7 @@ int load_config(const char *filename, server_config_t *cfg) {
     cfg->expire = 0;
     cfg->mempool = 0;
     cfg->replication = 0;
+    cfg->transport = 0;
 
     FILE *fp = fopen(filename, "r");
     if (!fp) {
@@ -44,11 +51,12 @@ int load_config(const char *filename, server_config_t *cfg) {
             if (strcmp(key, "expire") == 0)        cfg->expire = parse_onoff(val);
             if (strcmp(key, "mempool") == 0)       cfg->mempool = parse_onoff(val);
             if (strcmp(key, "replication") == 0)   cfg->replication = parse_replication(val);
+            if (strcmp(key, "transport") == 0)     cfg->transport = parse_transport(val);
         }
     }
     fclose(fp);
 
-    printf("[Config] port=%d persistence=%d snapshot=%d expire=%d mempool=%d replication=%d\n",
-           cfg->port, cfg->persistence, cfg->snapshot, cfg->expire, cfg->mempool, cfg->replication);
+    printf("[Config] port=%d persistence=%d snapshot=%d expire=%d mempool=%d replication=%d transport=%d\n",
+           cfg->port, cfg->persistence, cfg->snapshot, cfg->expire, cfg->mempool, cfg->replication, cfg->transport);
     return 0;
 }
