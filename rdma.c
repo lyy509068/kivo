@@ -14,16 +14,13 @@
 // 内部辅助函数：动态获取指定网卡上的 RoCEv2 IPv4 GID 索引，彻底消灭 Hardcode 22 错误
 static int rdma_get_local_rocev2_gid_index(struct ibv_context *ctx, int port_num) {
     union ibv_gid tg;
-    // 优先寻找符合 RoCEv2 IPv4 特征的 GID 槽位 (::ffff:x.x.x.x)
     for (int i = 0; i < 16; i++) {
         if (ibv_query_gid(ctx, port_num, i, &tg) != 0) break;
         if (tg.global.interface_id == 0 && tg.global.subnet_prefix == 0) continue;
-
         if (tg.raw[10] == 0xff && tg.raw[11] == 0xff) {
-            return i; // 精准匹配到 RoCEv2 IPv4 索引
+            return i;
         }
     }
-    // 次级备选：寻找任何一个非空的有效的本地 GID
     for (int i = 0; i < 16; i++) {
         if (ibv_query_gid(ctx, port_num, i, &tg) == 0) {
             if (tg.global.interface_id != 0 || tg.global.subnet_prefix != 0) {
@@ -31,7 +28,7 @@ static int rdma_get_local_rocev2_gid_index(struct ibv_context *ctx, int port_num
             }
         }
     }
-    return 0; // 保底
+    return 0;
 }
 
 struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
@@ -222,8 +219,6 @@ void rdma_ring_destroy(struct rdma_ring_ctx *rctx) {
     free(rctx);
 }
 
-extern struct rdma_ring_ctx *g_rdma_ctx; 
-
 int rdma_master_write_log_imm(struct rdma_ring_ctx *rctx, uint32_t log_size) {
     if (!rctx || log_size == 0) return -1;
 
@@ -234,13 +229,13 @@ int rdma_master_write_log_imm(struct rdma_ring_ctx *rctx, uint32_t log_size) {
     };
 
     struct ibv_send_wr wr = {
-        .wr_id      = 99, 
+        .wr_id      = 99,
         .next       = NULL,
         .sg_list    = &sge,
         .num_sge    = 1,
         .opcode     = IBV_WR_RDMA_WRITE_WITH_IMM,
         .send_flags = IBV_SEND_SIGNALED,
-        .imm_data   = htonl(log_size), 
+        .imm_data   = htonl(log_size),
         .wr.rdma = {
             .remote_addr = rctx->remote_meta.buf_va,
             .rkey        = rctx->remote_meta.rkey
@@ -249,27 +244,27 @@ int rdma_master_write_log_imm(struct rdma_ring_ctx *rctx, uint32_t log_size) {
 
     struct ibv_send_wr *bad_wr = NULL;
     if (ibv_post_send(rctx->qp, &wr, &bad_wr) != 0) {
-        perror("[RDMA Master] ibv_post_send failed");
+        fprintf(stderr, "[RDMA Master] ibv_post_send failed\n");
         return -2;
     }
 
     struct ibv_wc wc;
-    int poll_result;
     while (1) {
-        poll_result = ibv_poll_cq(rctx->cq, 1, &wc);
+        int poll_result = ibv_poll_cq(rctx->cq, 1, &wc);
         if (poll_result > 0) {
             if (wc.wr_id == 99) break;
         } else if (poll_result < 0) {
+            fprintf(stderr, "[RDMA Master] ibv_poll_cq failed\n");
             return -3;
         }
     }
 
     if (wc.status != IBV_WC_SUCCESS) {
-        fprintf(stderr, "[RDMA Master Error] Send CQE unsuccessful: %s\n", ibv_wc_status_str(wc.status));
+        fprintf(stderr, "[RDMA Master] Send CQE error: %s\n", ibv_wc_status_str(wc.status));
         return -4;
     }
 
-    return 0; 
+    return 0;
 }
 
 int rdma_slave_post_recv_envelope(struct rdma_ring_ctx *rctx, uint64_t wr_id) {
@@ -292,12 +287,13 @@ int rdma_slave_block_and_get_imm(struct rdma_ring_ctx *rctx, uint32_t *out_log_s
     }
 
     ibv_ack_cq_events(cq, 1);
-    ibv_req_notify_cq(cq, 0); 
+    ibv_req_notify_cq(cq, 0);
 
     struct ibv_wc wc;
     int num_completions = ibv_poll_cq(cq, 1, &wc);
     if (num_completions <= 0) {
-        return 0; 
+        if (out_log_size) *out_log_size = 0;
+        return 0;
     }
 
     if (wc.status != IBV_WC_SUCCESS) {
@@ -305,12 +301,12 @@ int rdma_slave_block_and_get_imm(struct rdma_ring_ctx *rctx, uint32_t *out_log_s
         return -2;
     }
 
-    // 采用精准的 verbs 枚举匹配
     if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-        *out_log_size = ntohl(wc.imm_data); 
+        if (out_log_size) *out_log_size = ntohl(wc.imm_data);
         rdma_slave_post_recv_envelope(rctx, wc.wr_id);
-        return 1; 
+        return 1;
     }
 
+    if (out_log_size) *out_log_size = 0;
     return 0;
 }

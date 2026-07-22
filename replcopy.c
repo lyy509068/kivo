@@ -439,19 +439,19 @@ void* tcp_sendfile_recv_thread(void *arg) {
     ssize_t n = recv(fd, &net_size, sizeof(net_size), MSG_WAITALL);
     if (n != sizeof(net_size)) {
         printf("[Repl Slave] Failed to receive file size\n");
-        close(fd);
         return NULL;
     }
+    
     size_t file_size = be64toh(net_size);
 
     int local_fd = open(PERSISTENCE_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (local_fd < 0) {
         perror("[Repl Slave] open AOF file failed");
-        close(fd);
         return NULL;
     }
 
-    char *buf = kvs_malloc(65536);
+    int pipefd[2];
+    pipe(pipefd);
 
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
@@ -459,23 +459,33 @@ void* tcp_sendfile_recv_thread(void *arg) {
     size_t remaining = file_size;
     while (remaining > 0) {
         size_t chunk = remaining > 65536 ? 65536 : remaining;
-        ssize_t nr = read(fd, buf, chunk);
-        if (nr <= 0) break;
-        write(local_fd, buf, nr);
-        remaining -= nr;
+        
+        ssize_t spliced = splice(fd, NULL, pipefd[1], NULL, chunk, SPLICE_F_MOVE);
+        if (spliced <= 0) {
+            printf("[Repl Slave] splice failed: %s\n", strerror(errno));
+            break;
+        }
+        
+        ssize_t written = splice(pipefd[0], NULL, local_fd, NULL, spliced, SPLICE_F_MOVE);
+        if (written != spliced) {
+            printf("[Repl Slave] splice to file failed\n");
+            break;
+        }
+        
+        remaining -= spliced;
     }
 
     clock_gettime(CLOCK_MONOTONIC, &t_end);
+    double elapsed = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
 
-    kvs_free(buf);
+    close(pipefd[0]);
+    close(pipefd[1]);
     fsync(local_fd);
     close(local_fd);
 
     size_t received = file_size - remaining;
-    double elapsed = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
-    double throughput = received / elapsed / (1024.0 * 1024.0);
-    printf("[Perf TCP] Received %zu bytes in %.3f seconds, throughput: %.2f MB/s\n",
-           received, elapsed, throughput);
+    double throughput = received / elapsed / (1024.0 * 1024.0);  
+    printf("[Perf TCP] Received %zu bytes in %.3f seconds, throughput: %.2f MB/s\n", received, elapsed, throughput);
 
     kvs_persistence_recover();
     printf("[Repl Slave] AOF reload successfully!\n");

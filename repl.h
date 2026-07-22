@@ -45,6 +45,7 @@ void handle_slave_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int 
 int repl_sync_log_via_rdma(void);
 int repl_flush_backlog_via_rdma(void);
 int repl_sync_log_via_tcp(void);
+int repl_flush_backlog_via_tcp(void);
 void repl_push_cmd(const char *cmd, void *key, int key_len, void *value, int value_len);
 
 #endif

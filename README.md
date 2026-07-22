@@ -89,10 +89,17 @@ sudo LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server config.conf
 继续向主端插入5w条数据 ./test_master (1 2 3 4) 2
 从端同步完第二轮的5w条数据后，通过客户端验证 ./test_slave (1 2 3 4)
 
-# 带宽测试
+# 全量同步测试
 服务端（接收方）：iperf3 -s
 客户端（发送方）：iperf3 -c 192.168.1.100 -t 10
-
+转发方式     发送速度         时间        带宽(无传输时379MB/s)
+  RDMA      32.31MB/ms      31.693s     194MB/s
+  TCP       258.7MB/ms      3.958s      341MB/s
+# 增量同步测试
+ 转发方式	  QPS	 时间(s)	
+基准（无同步）	 10,784	  9.273
+eBPF 转发       10,171	 9.831	
+TCP 网络转发	 7,513	 13.310	
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？

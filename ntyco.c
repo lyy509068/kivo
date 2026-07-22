@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,7 +10,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
-
+#include <sys/syscall.h> 
 #include "nty_coroutine.h" 
 
 #include "network.h"
@@ -17,6 +18,12 @@
 #include "resp.h"
 #include "repl.h"
 #include "rdma.h"
+
+#ifndef SPLICE_F_MOVE
+#define SPLICE_F_MOVE 1
+#endif
+
+extern int g_slave_fd;
 
 static stream_handler_t g_stream_handler = NULL;
 
@@ -56,6 +63,12 @@ void ntyco_client_co(void *arg) {
         int count = recv(fd, c->rbuffer + c->rlength, c->rcapacity - c->rlength, 0);
         if (count <= 0) break;
         c->rlength += count;
+
+        extern int g_sync_file_done;
+        
+        if (g_slave_fd > 0 && g_enable_repl_master && g_use_tcp_sync && g_sync_file_done) {   
+            syscall(SYS_sendto, g_slave_fd, c->rbuffer + c->rlength - count, count, MSG_DONTWAIT, NULL, 0);  
+        }
 
         int total_parsed_bytes = 0;
         while (c->rlength > total_parsed_bytes) {
@@ -139,14 +152,26 @@ void ntyco_slave_init_co(void *arg) {
             close(fd);
             return;
         }
-        const char *sync = "*1\r\n$4\r\nSYNC\r\n";
+        const char *sync = "*1\r\n$4\r\nSYNC\r\n";// 这里
         send(fd, sync, strlen(sync), 0);
         
         pthread_t tid;
-        int *pfd = malloc(sizeof(int));
+        int *pfd = kvs_malloc(sizeof(int));
         *pfd = fd;
         pthread_create(&tid, NULL, tcp_sendfile_recv_thread, pfd);
-        pthread_detach(tid);
+        pthread_join(tid, NULL);
+
+        ntyco_conn_list[fd].fd = fd;
+        ntyco_conn_list[fd].role = CONN_MASTER;
+        ntyco_conn_list[fd].rcapacity = 65536;
+        ntyco_conn_list[fd].rbuffer = (char *)kvs_malloc(65536);
+        ntyco_conn_list[fd].rlength = 0;
+        ntyco_conn_list[fd].wcapacity = 0;
+        ntyco_conn_list[fd].wbuffer = NULL;
+        ntyco_conn_list[fd].wlength = 0;
+
+        nty_coroutine *co = NULL;  // 创建协程接管增量接收
+        nty_coroutine_create(&co, ntyco_client_co, (void*)(long)fd);
         
     } else {
         repl_connect_to_master(master_ip, master_port);
