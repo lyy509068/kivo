@@ -6,6 +6,12 @@
 #include "network.h"
 #include "repl.h"
 #include "rdma.h"
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#ifndef SYS_write
+#define SYS_write 1
+#endif
 
 /* 
 * 内部辅助函数：在指定长度内安全寻找 \r\n 
@@ -161,41 +167,12 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
 
     // 探测首字节
     char first_byte = in_buf[0];
-
-    // =========================================================================
-    // 拦截 1：处理 redis-benchmark 等客户端可能会发送的内联 PING 命令（无 * 号）
-    // =========================================================================
-    if (first_byte != '*') {
-        const char *crlf = find_crlf(in_buf, in_len);
-        if (crlf) {
-            int cmd_len = crlf - in_buf;
-            // 匹配到内联的 "PING\r\n"
-            if (cmd_len == 4 && strncasecmp(in_buf, "PING", 4) == 0) {
-                resp_reply_t reply = {KVS_RESP_PONG, NULL, 0};
-                if (wbuf && wcap && wlen) {
-                    resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
-                }
-                *parsed = cmd_len + 2; // "PING" 长度为4，加上 "\r\n" 长度为2
-                return 0;
-            }
-        } 
-        
-        // 如果未遇到换行，且数据不够长，可能是半包；否则直接视为非法的非 RESP 请求拒绝
-        if (!crlf && in_len < 100) {
-            *parsed = 0; 
-            return 0; // 等待拼包
-        }
-        return -1; // 不受支持的数据，交还给网络层进行断开
-    }
-
-    // =========================================================================
-    // 处理 标准 RESP 协议命令
-    // =========================================================================
     if (first_byte == '*') {
         int processed = 0;
 
         while (processed < in_len) {
             int single_cmd_len = 0;
+            
             
             // 探测是否有完整 RESP 请求
             if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
@@ -209,35 +186,32 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
             resp_request_t req;
             resp_unpack(in_buf, in_buf + processed, &req);
 
+            // 握手命令处理，不用通过协议层回复
             if (g_enable_repl_master){
                 extern struct conn conn_list[]; 
                 struct conn *c = &conn_list[fd];
                 extern int g_slave_fd;
 
                 if (req.argc > 0) {
-                    if (strcmp(req.argv[0], "RDMA_CONNECT") == 0) {
+                    if (strcmp(req.argv[0], "RDMA_CONNECT") == 0) { // QP连接，不进业务层
                         c->role = CONN_SLAVE;
                         handle_slave_rdma_connect(&req, wbuf, wcap, wlen, fd);//收到 RDMA_CONNECT 握手命令，不经过网络层，直接回复一个RDMA_CONNECT_ACK
                         free_resp_request(&req);
                         kvs_free(saved_resp_cmd); // 释放保存的命令
                         processed += single_cmd_len;
-                        continue; 
-                    }else if (g_use_tcp_sync && strcmp(req.argv[0], "SYNC") == 0) {// 保存从端连接 fd，供 sendfile 使用
-                        g_slave_fd = fd;  
+                        continue; // 跳过后续代码
+                    }else if (g_use_tcp_sync && strcmp(req.argv[0], "SYNC") == 0) { // TCP连接，需要进业务层
+                        g_slave_fd = fd;  // 保存从端连接 fd
                     }
                 }
             }
 
-            // =========================================================================
-            // 拦截 2：协议层拦截回声测试 PING (标准 RESP 格式)
-            // =========================================================================
+            // 回声测试处理，在协议层生成回复，不进业务层
             if (req.argc > 0 && strcasecmp(req.argv[0], "PING") == 0) {
                 resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0};
                 if (req.argc == 1) {
-                    // 无参数 PING，直接回复 +PONG
                     reply.status = KVS_RESP_PONG;
                 } else if (req.argc == 2) {
-                    // 带参数 PING (如 PING "hello")，原样回显参数
                     reply.status = KVS_RESP_GET_OK;
                     reply.body = (char *)kvs_malloc(req.argv_len[1]);
                     memcpy(reply.body, req.argv[1], req.argv_len[1]);
@@ -257,30 +231,35 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                 }
                 
                 processed += single_cmd_len;
-                continue; // 执行 pipeline 继续往后解析下一条命令
+                continue; // 跳过后续代码
             }
-    
+
             // 进入业务层处理普通命令
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
             if (g_command_handler) {
                 g_command_handler(&req, &reply); 
             }
 
-            // 只要回复码是 OK 就要写日志
+            // 写日志
             if (reply.status == KVS_RESP_OK) {
                 if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) kvs_persistence_write(saved_resp_cmd, single_cmd_len);
             }
 
-            // 如果 wbuf 非空，还要打包回复给客户端
-            if (wbuf && wcap && wlen) {
-                if (reply.status == KVS_RESP_OK && g_enable_repl_master && g_repl_backlog_enabled && g_repl_backlog_count < REPL_BACKLOG_MAX) {
-                    g_repl_backlog[g_repl_backlog_count].data = kvs_malloc(single_cmd_len);
-                    memcpy(g_repl_backlog[g_repl_backlog_count].data, saved_resp_cmd, single_cmd_len);
-                    g_repl_backlog[g_repl_backlog_count].len = single_cmd_len;
+           // 转发增量
+            extern int g_sync_file_done, g_slave_fd;
+            if (g_slave_fd > 0 && reply.status == KVS_RESP_OK && g_enable_repl_master &&  ( (g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled) ) {
+                if (g_repl_backlog_count < REPL_BACKLOG_MAX) {
+                    int index = g_repl_backlog_tail; 
+                    g_repl_backlog[index].data = kvs_malloc(single_cmd_len);
+                    memcpy(g_repl_backlog[index].data, saved_resp_cmd, single_cmd_len);
+                    g_repl_backlog[index].len = single_cmd_len;
+                    g_repl_backlog_tail = (g_repl_backlog_tail + 1) % REPL_BACKLOG_MAX;
                     g_repl_backlog_count++;
                 }
-                resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
             }
+
+            // 打包回复
+            if (wbuf && wcap && wlen) resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
             
             // 释放保存的完整命令
             kvs_free(saved_resp_cmd);

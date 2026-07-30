@@ -13,46 +13,58 @@ redis文件模式：
         redis-cli -p 2000 < test_cmd.txt 
 
 ./test_batchcommand 一次性插入100条命令并验证回复，然后获取，重复1000次
-
-# Redis pipeline 测试（160条一批）
-redis-benchmark -h 127.0.0.1 -p 6379 -t set -n 100000 -P 160 -q
-
-
 ./test_specialchars 四种数据结构都插入5个特殊字符串，由本地五个文件作为value构建resp命令，先插入并验证回复，然后获取并逐字对比和本地文件是否相同
 
-# 压力测试：-p 端口，-c 50个并发连接，-n 总共发送10000条命令，-t 只测试 set和get命令
-redis-benchmark -p 2000 -c 50 -n 10000 -t set,get
+Redis                                                                                              
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 1  -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 10 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 20 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 40 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 80 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 160 -q SET key:__rand_int__ value:__rand_int__   
 
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 SET key:__rand_int__ value:__rand_int__
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 GET key:__rand_int__ value:__rand_int__
+KVstore                                                                                              
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 1  -q SET key:__rand_int__ value:__rand_int__     
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 10 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 20 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 40 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 80 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 160 -q SET key:__rand_int__ value:__rand_int__   
 
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 RSET key:__rand_int__ value:__rand_int__
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 RGET key:__rand_int__ value:__rand_int__
+========================================================================================================
+Pipeline   | Redis (SET)    | KV (Array)     | KV (RBTree)     | KV (Hash)      | KV (SkipList)   
+--------------------------------------------------------------------------------------------------------
+-P 1       | 21929          | 11904          | 91743           | 106382         | 86206           
+-P 10      | 67382          | 5497           | 256410          | 384615         | 120481          
+-P 20      | 75522          | 3256           | 303030          | 217391         | 250000          
+-P 40      | 79062          | 2359           | 206792          | 526315         | 285714          
+-P 80      | 75000          | 1755           | 400000          | 769230         | 312500          
+-P 160     | 56373          | 1344           | 403200          | 840000         | 98823           
+========================================================================================================    
 
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 HSET key:__rand_int__ value:__rand_int__
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 HGET key:__rand_int__ value:__rand_int__
-
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 SSET key:__rand_int__ value:__rand_int__
-redis-benchmark -p 2000 -c 50 -n 10000 -r 10000 SGET key:__rand_int__ value:__rand_int__
-
-# 测试结果
-  数据结构	命令	  QPS (请求/秒)	 
-Array (基础)	SET	  21k ops/sec	
-RBTREE (红黑树)	RSET	  108k ops/sec	
-HASH (哈希表)	HSET	  121k ops/sec	
-SKIPLIST (跳表)	SSET	  101k ops/sec	
-
-# 全量持久化测试 test_fullpersistence
+# 全量持久化功能测试
 ./test_fullpersistence1 插入10w条数据    
 ./test_fullpersistence2 获得10w条数据
 手动打开服务器
 客户端：连接服务器->插入10w条数据->SAVE保存快照->断开连接
 手动关闭服务器再重新打开
 客户端：重新连接服务器->获取10w条数据并校验->清除日志文件（不影响下次测试）->断开连接
-
 每条日志：4字节引擎标志+8字节过期时间+4字节key长度+10字节key（可变）+4字节value长度+10字节value（可变）
+# 性能测试：save指令的性能影响
+===============================================================================
+触发间隔(条) QPS (条/秒) 总耗时(s) SAVE次数   末次SAVE耗时
+-------------------------------------------------------------------------------
+每 1000000 条  15443        64.75      1            1.88 ms
+每 100000 条   15371        65.05      10           1.13 ms
+每 10000 条    15368        65.07      100          1.15 ms
+每 1000 条     13806        72.43      1000         1.12 ms
+-------------------------------------------------------------------------------
+[✓] 测试完成！详细数据已追加保存至: save_test_results.txt
+===============================================================================
 
-# 增量持久化测试
+
+
+# 增量持久化功能测试
 ./test_incrementpersistence1 插入10w条数据
 array数据恢复时间较长，等待数据恢复完成后再获取数据
 ./test_incrementpersistence2 获得10w条数据
@@ -60,8 +72,34 @@ array数据恢复时间较长，等待数据恢复完成后再获取数据
 客户端：连接服务器->插入10w条数据->断开连接
 手动关闭服务器再重新打开
 客户端：重新连接服务器->获取10w条数据并校验->清除日志文件（不影响下次测试）->断开连接
+每条日志：*3\r\n$3\r\nSET\r\n$10\r\nkey_015000\r\n$12\r\nvalue_015000\r\n
+# 性能测试
+redis测试命令                                                                                                 
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -q PING                                                        
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                      
 
-每条日志：4字节命令长度+4字节命令+8字节过期时间+4字节key长度+10字节key（可变）+4字节value长度+10字节value（可变）
+KVstore测试命令
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -q PING                                                         
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                                 
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -q RSET key:__rand_int__ value:__rand_int__                      
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -q HSET key:__rand_int__ value:__rand_int__                      
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SSET key:__rand_int__ value:__rand_int__      
+
+=========================================================================
+                     日志开关性能影响对比测试汇总                       
+=========================================================================
+测试命令 / 数据结构         | 关闭日志 QPS | 打开日志 QPS
+------------------------------------------------------------------------- 
+Redis PING                          | 99009           | 119047         
+Redis SET                           | 66225           | 48543          
+KVstore PING                        | 109890          | 105263         
+KVstore SET (Array)                 | 11261           | 11415          
+KVstore RSET (Red-Black)            | 100000          | 79365          
+KVstore HSET (Hash)                 | 107526          | 98039          
+KVstore SSET (SkipList)             | 92592           | 57471          
+=========================================================================
+
+
 
 # 超时功能测试
 ./test_TTL a b 插入as超时的数据->立即读取，此时数据都存在->等待bs读取数据全部被删掉
@@ -74,32 +112,33 @@ array数据恢复时间较长，等待数据恢复完成后再获取数据
 一种数据结构用同一套读写锁，对这个数据结构在一个时间只能进行增删改查的一种操作，增删改加写锁，查加读锁；
 对哈希表来说，有多个哈希桶，只要不是在同一个桶中的操作可以同时进行，就可以每个桶一套锁，提升操作效率；
 
+
 # 内存池测试
-./test_mempool (0 1 2) (1 2 3 4) 100000  选择内存管理方式(不使用内存池 jemalloc mempool) 数据结构(array rbtree hash skiptable) 插入10w条数据
+./test_mempool (0 1 2)  100000  选择内存管理方式(不使用内存池 jemalloc mempool) 插入10w条数据
 
 sudo LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server config.conf
                 
 # 主从同步测试
 
-打开主端服务器./server 2000 插入5w条数据 ./test_master (1 2 3 4) 1
+打开主端服务器./server 2000 插入5w条数据 ./test_master  1
 打开从端服务器,.server 2000 reactor_start启动后，从端服务器主动连接主端服务器，向主端发送获取日志命令
 主端服务器收到获取日志命令后，把日志文件发过去
 从端收到日志文件后，在从端恢复日志
 发送日志期间，如果有新的命令，就放进临时缓冲区中，发完日志再发一次
-继续向主端插入5w条数据 ./test_master (1 2 3 4) 2
-从端同步完第二轮的5w条数据后，通过客户端验证 ./test_slave (1 2 3 4)
+继续向主端插入5w条数据 ./test_master  2
+从端同步完第二轮的5w条数据后，通过客户端验证 ./test_slave 
 
-# 全量同步测试
+# 全量同步性能测试
 服务端（接收方）：iperf3 -s
-客户端（发送方）：iperf3 -c 192.168.1.100 -t 10
-转发方式     发送速度         时间        带宽(无传输时379MB/s)
-  RDMA      32.31MB/ms      31.693s     194MB/s
-  TCP       258.7MB/ms      3.958s      341MB/s
-# 增量同步测试
- 转发方式	  QPS	 时间(s)	
-基准（无同步）	 10,784	  9.273
-eBPF 转发       10,171	 9.831	
-TCP 网络转发	 7,513	 13.310	
+客户端（发送方）：iperf3 -c 192.168.37.129 -t 10
+[Perf RDMA] Received 1073745114 bytes in 20.923 seconds, throughput: 48.94 MB/s
+[Perf TCP] Received 1073748861 bytes in 7.506 seconds, throughput: 136.43 MB/s
+
+# 增量同步性能测试
+ 转发方式	  QPS	    	
+基准（无同步）	 250419	 
+eBPF 转发       286856 	 	
+TCP 网络转发	222193 
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？

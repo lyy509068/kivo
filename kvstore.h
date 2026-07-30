@@ -52,6 +52,8 @@ void kvs_free(void *ptr);
 
 int kvs_persistence_init(void);
 void kvs_persistence_write(const void *data, int len);
+void kvs_persistence_flush_pending(void);
+void kvs_persistence_force_flush(void);
 void kvs_persistence_recover(void);
 void kvs_persistence_close(void);
 

@@ -30,7 +30,7 @@ void expire_thread_resume(void) {
     printf("[Expire] All expire threads resumed.\n");
 }
 
-extern int BEGIN_IN;
+extern int g_sync_file_done;
 
 #if ENABLE_ARRAY
 extern kvs_array_t   global_array;
@@ -104,7 +104,7 @@ void* kvs_array_expire_worker(void* arg) {
                     write_del_log("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len);
                 }
                 if (g_enable_repl_master){
-                if(BEGIN_IN){
+                if(g_sync_file_done){
                     repl_push_cmd("DEL", global_array.table[i].key.data, (int)global_array.table[i].key.len, NULL, 0);
                 }
                 }
@@ -171,7 +171,7 @@ void* kvs_hash_expire_worker(void* arg) {
                         write_del_log("HDEL", curr->key.data, (int)curr->key.len);
                     }
                     if (g_enable_repl_master){
-                    if(BEGIN_IN){
+                    if(g_sync_file_done){
                         repl_push_cmd("HDEL", curr->key.data, (int)curr->key.len, NULL, 0);
                     }
                     }
@@ -251,7 +251,7 @@ void* kvs_rbtree_expire_worker(void* arg) {
                     write_del_log("RDEL", expired_batch[i].data, (int)expired_batch[i].len);
                 }
                 if (g_enable_repl_master){
-                if(BEGIN_IN){
+                if(g_sync_file_done){
                     repl_push_cmd("RDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 }
                 }
@@ -305,7 +305,7 @@ void* kvs_skiplist_expire_worker(void* arg) {
                     write_del_log("SDEL", expired_batch[i].data, (int)expired_batch[i].len);
                 }
                 if (g_enable_repl_master){
-                if(BEGIN_IN){
+                if(g_sync_file_done){
                     repl_push_cmd("SDEL", expired_batch[i].data, (int)expired_batch[i].len, NULL, 0);
                 }
                 }

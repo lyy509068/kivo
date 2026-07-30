@@ -391,7 +391,7 @@ int main(int argc, char *argv[]) {
     long total_ops = (argc >= 3) ? atol(argv[2]) : 1000000;
     
     // 固定日志文件名
-    const char *log_filename = "benchmark_results.txt";
+    const char *log_filename = "mempool_results.txt";
     
     // 如果是新文件，先写表头
     write_header_if_needed(log_filename, total_ops);

@@ -79,6 +79,41 @@ unload_bpf:
 	sudo rm -rf /sys/fs/bpf/* 2>/dev/null || true
 	@echo "内核环境已恢复"
 
+batchcommand:
+	@if [ -f "./batchcommand.sh" ]; then \
+		chmod +x ./batchcommand.sh; \
+		./batchcommand.sh; \
+	else \
+		echo "❌ 错误: 当前目录下未找到 batchcommand.sh 脚本！"; \
+	fi
+
+incrementpersistence:
+	@if [ -f "./incrementpersistence.sh" ]; then \
+		chmod +x ./incrementpersistence.sh; \
+		./incrementpersistence.sh; \
+	else \
+		echo "❌ 错误: 当前目录下未找到 incrementpersistence.sh 脚本！"; \
+	fi
+
+save:
+	@if [ -f "./save.sh" ]; then \
+		chmod +x ./save.sh; \
+		./save.sh; \
+	else \
+		echo "❌ 错误: 当前目录下未找到 save.sh 脚本！"; \
+	fi
+
+auto_test:
+	@if [ -f "./auto_test.sh" ]; then \
+		chmod +x ./auto_test.sh; \
+		./auto_test.sh; \
+	else \
+		echo "❌ 错误: 当前目录下未找到 auto_test.sh 脚本！"; \
+	fi
+
 clean: 
-	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o config.o rdma.o repl.o expire_thread.o
+	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o  \
+												  reactor.o proactor.o ntyco.o resp.o \
+												  kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
+												  config.o rdma.o repl.o expire_thread.o
 	make -C $(SUBDIR) clean

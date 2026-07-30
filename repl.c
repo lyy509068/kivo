@@ -32,12 +32,13 @@ static pthread_t repl_slave_tid;
 static bool g_repl_ctx_ready = false;
 static struct repl_context g_repl_ctx = { .fd = -1, .wbuffer = NULL, .wcapacity = 0, .wlength = 0 };
 
-// 全量同步期间的增量命令处理
-repl_backlog_item_t g_repl_backlog[REPL_BACKLOG_MAX];
-int g_repl_backlog_count;
-volatile int g_repl_backlog_enabled;
-
 struct rdma_ring_ctx *g_rdma_ctx = NULL; 
+
+repl_backlog_node_t g_repl_backlog[REPL_BACKLOG_MAX];
+int g_repl_backlog_head = 0;
+int g_repl_backlog_tail = 0;
+int g_repl_backlog_count = 0;
+volatile int g_repl_backlog_enabled = 0;
 
 // 动态嗅探 RoCEv2 IPv4 GID
 static int get_rocev2_ipv4_gid(struct ibv_context *ctx, int port_num, union ibv_gid *out_gid, int *out_index) {
@@ -336,38 +337,6 @@ void* pure_rdma_repl_slave_thread(void *arg) {
     return NULL;
 }
 
-// 主端RDMA专用：补发缓冲区
-int repl_flush_backlog_via_rdma(void) {
-    if (!g_rdma_ctx) {
-        fprintf(stderr, "[Repl Error] g_rdma_ctx is NULL\n");
-        return -1;
-    }
-
-    size_t total = 0;
-    for (int i = 0; i < g_repl_backlog_count; i++) {
-        if (total + g_repl_backlog[i].len > RING_BUFFER_SIZE) {
-            fprintf(stderr, "[Repl Error] Backlog overflow\n");
-            break;
-        }
-        memcpy(g_rdma_ctx->buffer + total, g_repl_backlog[i].data, g_repl_backlog[i].len);
-        total += g_repl_backlog[i].len;
-        kvs_free(g_repl_backlog[i].data);
-    }
-    g_repl_backlog_count = 0;
-    g_repl_backlog_enabled = 0;
-
-    if (total == 0) return 0;
-
-    int ret = rdma_master_write_log_imm(g_rdma_ctx, (uint32_t)total);
-    if (ret != 0) {
-        fprintf(stderr, "[Repl Error] Backlog RDMA send failed\n");
-        return -1;
-    }
-
-    printf("Master: Backlog flushed %zu bytes to slave via RDMA.\n", total);
-    return 0;
-}
-
 // 主端专用：TCP 传输
 int repl_sync_log_via_tcp(void) {
     if (g_slave_fd < 0) {
@@ -487,74 +456,6 @@ void* tcp_sendfile_recv_thread(void *arg) {
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     
     return NULL;
-}
-
-
-int repl_flush_backlog_via_tcp(void) {
-    if (g_slave_fd < 0) {
-        fprintf(stderr, "[Repl Error] No slave connection fd for TCP backlog flush\n");
-        return -1;
-    }
-
-    size_t total = 0;
-    for (int i = 0; i < g_repl_backlog_count; i++) {
-        if (total + g_repl_backlog[i].len > 1024 * 1024 * 1024) {
-            fprintf(stderr, "[Repl Error] Backlog overflow, truncated\n");
-            break;
-        }
-        total += g_repl_backlog[i].len;
-    }
-
-    if (total == 0) {
-        fprintf(stderr, "[TCP Sync] Backlog flushed 0 bytes to slave.\n");
-        g_repl_backlog_count = 0;
-        g_repl_backlog_enabled = 0;
-        return 0;
-    }
-
-    struct timeval tv = {.tv_sec = 10, .tv_usec = 0};
-    setsockopt(g_slave_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    uint64_t net_size = htobe64((uint64_t)total);
-    ssize_t sent = send(g_slave_fd, &net_size, sizeof(net_size), MSG_NOSIGNAL);
-    if (sent != sizeof(net_size)) {
-        perror("[Repl Error] Failed to send backlog size header");
-        return -1;
-    }
-
-    size_t sent_total = 0;
-    for (int i = 0; i < g_repl_backlog_count; i++) {
-        size_t remaining = g_repl_backlog[i].len;
-        char *data = g_repl_backlog[i].data;
-        
-        while (remaining > 0) {
-            ssize_t n = send(g_slave_fd, data, remaining, MSG_NOSIGNAL);
-            if (n < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    usleep(1000);
-                    continue;
-                }
-                printf("[Repl Error] Backlog send failed: %s\n", strerror(errno));
-                for (int j = i; j < g_repl_backlog_count; j++) {
-                    kvs_free(g_repl_backlog[j].data);
-                }
-                g_repl_backlog_count = 0;
-                g_repl_backlog_enabled = 0;
-                return -1;
-            }
-            data += n;
-            remaining -= n;
-            sent_total += n;
-        }
-        
-        kvs_free(g_repl_backlog[i].data);
-    }
-
-    g_repl_backlog_count = 0;
-    g_repl_backlog_enabled = 0;
-
-    printf("[TCP Sync] Backlog flushed %zu bytes to slave.\n", sent_total);
-    return 0;
 }
 
 // 通用函数

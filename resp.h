@@ -53,5 +53,4 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
 int protocol_process_recover(const char *in_buf, int in_len);
 int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply);
 
-
 #endif 

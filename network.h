@@ -70,6 +70,19 @@ struct conn {
     io_ctx_t send_ctx;
 };
 
+// 积压环形缓冲区
+#define REPL_BACKLOG_MAX 100000
+typedef struct {
+    char *data;
+    size_t len;
+} repl_backlog_node_t;
+
+extern repl_backlog_node_t g_repl_backlog[REPL_BACKLOG_MAX];
+extern int g_repl_backlog_head;
+extern int g_repl_backlog_tail;
+extern int g_repl_backlog_count;
+extern volatile int g_repl_backlog_enabled;
+
 #if (NETWORK_SELECT == NETWORK_REACTOR)
 extern struct conn reactor_conn_list[];
 #elif (NETWORK_SELECT == NETWORK_PROACTOR)

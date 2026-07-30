@@ -12,21 +12,13 @@
 #include <errno.h>
 #include "kvstore.h"
 
-#if ENABLE_ARRAY
-extern kvs_array_t global_array;
-#endif
-#if ENABLE_RBTREE
-extern kvs_rbtree_t global_rbtree;
-#endif
-#if ENABLE_HASH
-extern kvs_hash_t global_hash;
-#endif
-#if ENABLE_SKIPLIST
-extern kvs_skip_t global_skip;
-#endif
+#define AOF_BUF_SIZE        (64 * 1024 * 1024)     // 64MB 异步双缓冲区
+#define IO_URING_QUEUE_DEPTH 128                   // SQ 队列深度，应对高并发批处理
+#define AOF_MIN_FLUSH_SIZE  (64 * 1024)            // 64KB 批处理阈值
+#define AOF_FLUSH_TIMEOUT_MS 20                    // 超时刷盘控制
 
-// AOF 配置宏
-#define AOF_BUF_SIZE        (4 * 1024 * 1024)     // 4MB 异步缓冲区
+static uint64_t g_last_flush_time_ms = 0; // 上次提交刷盘的时间戳
+
 
 typedef struct {
     char *buf;
@@ -49,7 +41,7 @@ static off_t aof_file_offset = 0;
 static void aof_trigger_flush_nolock(void);
 static void aof_check_cqe_nonblock(void);
 
-// 初始化
+// AOF 初始化
 int kvs_persistence_init(void) {
     aof_fd = open(PERSISTENCE_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (aof_fd < 0) {
@@ -67,9 +59,9 @@ int kvs_persistence_init(void) {
     is_io_uring_busy = 0;
 
     // 分配双缓冲区内存
-    aof_buf_active.buf = kvs_malloc(AOF_BUF_SIZE);
+    aof_buf_active.buf = (char *)kvs_malloc(AOF_BUF_SIZE);
     aof_buf_active.len = 0;
-    aof_buf_flush.buf = kvs_malloc(AOF_BUF_SIZE);
+    aof_buf_flush.buf = (char *)kvs_malloc(AOF_BUF_SIZE);
     aof_buf_flush.len = 0;
 
     if (!aof_buf_active.buf || !aof_buf_flush.buf) {
@@ -81,7 +73,7 @@ int kvs_persistence_init(void) {
     }
 
     // 初始化 io_uring 内核异步队列
-    if (io_uring_queue_init(4, &aof_ring, 0) < 0) {
+    if (io_uring_queue_init(IO_URING_QUEUE_DEPTH, &aof_ring, 0) < 0) {
         fprintf(stderr, "[AOF ERROR] Failed to init io_uring: %s\n", strerror(errno));
         kvs_free(aof_buf_active.buf);
         kvs_free(aof_buf_flush.buf);
@@ -94,26 +86,22 @@ int kvs_persistence_init(void) {
 
 // 触发双缓冲交换与 io_uring 刷盘（调用时须持有 aof_mutex）
 static void aof_trigger_flush_nolock(void) {
-    if (aof_buf_active.len == 0) {
+    if (aof_buf_active.len == 0 || is_io_uring_busy) {
         return;
     }
 
-    if (is_io_uring_busy) {
-        return;
-    }
-
-    // 原子交换双缓冲区 (Swap)
+    // 1. 原子交换双缓冲区 (Swap)
     aof_buffer_t temp = aof_buf_active;
     aof_buf_active = aof_buf_flush;
     aof_buf_flush = temp;
 
     size_t flush_len = aof_buf_flush.len;
-    aof_buf_active.len = 0; // 重置 active 缓冲区接收新写入
+    aof_buf_active.len = 0; // 重置 active 缓冲区以接收新日志
 
-    // 设置独占 busy 标志锁
+    // 2. 设置 busy 标志位
     __sync_lock_test_and_set(&is_io_uring_busy, 1);
 
-    // 获取内核 SQE 槽位投递异步追加任务
+    // 3. 获取内核 SQE 槽位投递异步追加任务
     struct io_uring_sqe *sqe = io_uring_get_sqe(&aof_ring);
     if (sqe) {
         io_uring_prep_write(sqe, aof_fd, aof_buf_flush.buf, flush_len, aof_file_offset);
@@ -121,20 +109,12 @@ static void aof_trigger_flush_nolock(void) {
         aof_file_offset += flush_len; // 提前推进文件偏移
         io_uring_submit(&aof_ring);
     } else {
-        // SQE 满时降级同步写入，防止数据丢失
-        ssize_t written = pwrite(aof_fd, aof_buf_flush.buf, flush_len, aof_file_offset);
-        if (written < 0) {
-            fprintf(stderr, "[AOF ERROR] Sync write fallback failed: %s\n", strerror(errno));
-        } else {
-            aof_file_offset += written;
-        }
-        aof_buf_flush.len = 0;
+        // SQE 满时清除 busy 标志，留在下一个 epoll 周期再次尝试提交，绝不在 worker 线程中同步 pwrite 阻塞网络
         __sync_lock_release(&is_io_uring_busy);
-        pthread_cond_signal(&aof_cond);
     }
 }
 
-// 非阻塞收割 CQE 结果（调用时须持有 aof_mutex）
+// 收割 CQE 后顺延刷盘，64KB 阀值控制
 static void aof_check_cqe_nonblock(void) {
     if (!is_io_uring_busy) return;
 
@@ -149,76 +129,65 @@ static void aof_check_cqe_nonblock(void) {
     }
 
     if (found) {
-        // 清洗标志位
         __sync_lock_release(&is_io_uring_busy);
         aof_buf_flush.len = 0;
-        
-        // 通知等待的写线程
         pthread_cond_signal(&aof_cond);
 
-        // 检查在 io_uring 忙碌期间，是否有新的活跃日志堆积，有则顺延刷出
-        if (aof_buf_active.len > 0) {
+        // 增加阀值判断，防止 CQE 完成后立刻平刷几字节的 active 数据
+        if (aof_buf_active.len >= AOF_MIN_FLUSH_SIZE) {
             aof_trigger_flush_nolock();
         }
     }
 }
 
-// 核心命令追加写入接口 
+// 写日志函数：纯内存追加，极速释放锁
 void kvs_persistence_write(const void *data, int len) {
     if (aof_fd < 0 || !data || len <= 0) return;
 
     pthread_mutex_lock(&aof_mutex);
 
-    // 1. 非阻塞收割已处理完毕的内核请求
-    aof_check_cqe_nonblock();
-
-    // 2. 处理缓冲区空间不足的情况
+    // 如果 active 缓冲区装满了，尝试触发一次刷盘
     if (aof_buf_active.len + len > AOF_BUF_SIZE) {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 50 * 1000000; // 50ms 超时保护
-
-        // 等待 io_uring 完成，腾出空间
-        while (is_io_uring_busy) {
-            int ret = pthread_cond_timedwait(&aof_cond, &aof_mutex, &ts);
-            if (ret == ETIMEDOUT) {
-                // 超时：强制同步写入 flush 缓冲区
-                if (aof_buf_flush.len > 0) {
-                    ssize_t written = pwrite(aof_fd, aof_buf_flush.buf, 
-                                             aof_buf_flush.len, 
-                                             aof_file_offset - aof_buf_flush.len);
-                    if (written < 0) {
-                        fprintf(stderr, "[AOF ERROR] Force sync write failed: %s\n", 
-                                strerror(errno));
-                    }
-                    aof_buf_flush.len = 0;
-                }
-                __sync_lock_release(&is_io_uring_busy);
-                break;
-            }
-            aof_check_cqe_nonblock();
+        aof_check_cqe_nonblock();
+        if (!is_io_uring_busy) {
+            aof_trigger_flush_nolock();
         }
-        // 强制刷出当前 active
-        aof_trigger_flush_nolock();
     }
 
-    // 3. 追加数据到活跃内存缓冲中
+    // 纯内存拷贝，耗时小于 50ns
     memcpy(aof_buf_active.buf + aof_buf_active.len, data, len);
     aof_buf_active.len += len;
 
-    // 4. 如果 io_uring 空闲，立即提交刷盘
-    if (!is_io_uring_busy && aof_buf_active.len > 0) {
+    pthread_mutex_unlock(&aof_mutex);
+}
+
+// 批量刷盘（容量 + 超时双控制）
+void kvs_persistence_flush_pending(void) {
+    if (aof_fd < 0) return;
+
+    pthread_mutex_lock(&aof_mutex);
+
+    // 1. 先收割可能完成的 CQE
+    aof_check_cqe_nonblock();
+
+    uint64_t now = get_current_ms();
+
+    // 2. 判断触发刷盘的条件：
+    // 条件 A：积攒数据超过 64KB (高并发场景)
+    // 条件 B：当前有数据，且距离上次刷盘已经超过 10ms (低并发或压测尾部场景)
+    int need_flush_by_size = (aof_buf_active.len >= AOF_MIN_FLUSH_SIZE);
+    int need_flush_by_time = (aof_buf_active.len > 0 && (now - g_last_flush_time_ms >= AOF_FLUSH_TIMEOUT_MS));
+
+    if (!is_io_uring_busy && (need_flush_by_size || need_flush_by_time)) {
         aof_trigger_flush_nolock();
-    } else if (is_io_uring_busy && aof_buf_active.len > 0) {
-        pwrite(aof_fd, aof_buf_active.buf, aof_buf_active.len, aof_file_offset);
-        aof_file_offset += aof_buf_active.len;
-        aof_buf_active.len = 0;
+        g_last_flush_time_ms = now; // 更新刷盘时间
     }
 
     pthread_mutex_unlock(&aof_mutex);
 }
 
 // 增量日志加载与零拷贝内存映射重放
+
 void kvs_persistence_recover(void) {
     if (aof_fd < 0) {
         aof_fd = open(PERSISTENCE_FILE, O_RDONLY);
@@ -226,8 +195,6 @@ void kvs_persistence_recover(void) {
             return;
         }
     }
-
-    pthread_mutex_lock(&aof_mutex);
 
     struct stat st;
     if (fstat(aof_fd, &st) < 0 || st.st_size <= 0) {
@@ -238,7 +205,7 @@ void kvs_persistence_recover(void) {
     size_t file_size = st.st_size;
 
     // mmap 共享映射
-    unsigned char *data = mmap(NULL, file_size, PROT_READ, MAP_SHARED, aof_fd, 0);
+    unsigned char *data = (unsigned char *)mmap(NULL, file_size, PROT_READ, MAP_SHARED, aof_fd, 0);
     if (data == MAP_FAILED) {
         fprintf(stderr, "[AOF ERROR] mmap failed during recovery: %s\n", strerror(errno));
         pthread_mutex_unlock(&aof_mutex);
@@ -262,6 +229,19 @@ void kvs_persistence_recover(void) {
                 strerror(errno));
     }
 
+}
+
+// 强制刷盘
+void kvs_persistence_force_flush(void) {
+    if (aof_fd < 0) return;
+
+    pthread_mutex_lock(&aof_mutex);
+    aof_check_cqe_nonblock();
+
+    if (!is_io_uring_busy && aof_buf_active.len > 0) {
+        aof_trigger_flush_nolock();
+        g_last_flush_time_ms = get_current_ms();
+    }
     pthread_mutex_unlock(&aof_mutex);
 }
 
@@ -269,15 +249,15 @@ void kvs_persistence_recover(void) {
 void kvs_persistence_close(void) {
     pthread_mutex_lock(&aof_mutex);
 
-    // 步骤1：收割所有已完成的 CQE
+    // 步骤 1：收割所有已完成的 CQE
     aof_check_cqe_nonblock();
 
-    // 步骤2：如果 io_uring 空闲且 active 有数据，触发交换
+    // 步骤 2：如果 io_uring 空闲且 active 有数据，触发交换
     if (!is_io_uring_busy && aof_buf_active.len > 0) {
         aof_trigger_flush_nolock();
     }
 
-    // 步骤3：等待所有正在进行的 io_uring 操作完成
+    // 步骤 3：等待所有正在进行的 io_uring 操作完成
     while (is_io_uring_busy) {
         struct io_uring_cqe *cqe;
         int ret = io_uring_wait_cqe(&aof_ring, &cqe);
@@ -294,7 +274,7 @@ void kvs_persistence_close(void) {
     is_io_uring_busy = 0;
     aof_buf_flush.len = 0;
 
-    // 步骤4：处理 active 缓冲区中的剩余数据
+    // 步骤 4：处理 active 缓冲区中的剩余数据
     if (aof_buf_active.len > 0) {
         struct io_uring_sqe *sqe = io_uring_get_sqe(&aof_ring);
         if (sqe) {
@@ -332,14 +312,14 @@ void kvs_persistence_close(void) {
         aof_buf_active.len = 0;
     }
 
-    // 步骤5：强制同步到磁盘
+    // 步骤 5：强制同步到磁盘
     if (aof_fd >= 0) {
         if (fdatasync(aof_fd) < 0) {
             fprintf(stderr, "[AOF ERROR] fdatasync failed: %s\n", strerror(errno));
         }
     }
 
-    // 步骤6：资源清理
+    // 步骤 6：资源清理
     if (aof_buf_active.buf) {
         kvs_free(aof_buf_active.buf);
         aof_buf_active.buf = NULL;

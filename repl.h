@@ -12,20 +12,6 @@ extern int g_enable_repl_master;
 extern int g_enable_repl_slave;
 extern int g_use_tcp_sync;
 
-#define ENABLE_REPLICATION_MASTER 1
-#define ENABLE_REPLICATION_SLAVE  0
-
-#define REPL_BACKLOG_MAX 1024  // 最多缓存 1024 条命令
-
-typedef struct {
-    char *data;      
-    int len;
-} repl_backlog_item_t;
-
-extern repl_backlog_item_t g_repl_backlog[REPL_BACKLOG_MAX];
-extern int g_repl_backlog_count;
-extern volatile int g_repl_backlog_enabled;
-
 struct repl_context {
     int fd;
     char *wbuffer;

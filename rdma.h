@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <infiniband/verbs.h>
-#define RING_BUFFER_SIZE (2ULL * 1024 * 1024 * 1024) // 16MB 环形缓冲区，足够支撑高频增量命令
+#define RING_BUFFER_SIZE (64ULL * 1024 * 1024) // 16MB 环形缓冲区，足够支撑高频增量命令
 
 struct conn;
 

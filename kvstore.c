@@ -581,8 +581,11 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
             fflush(stdout);
 
             if(g_enable_ttl) expire_thread_pause();// 暂停超时删除线程
-            g_repl_backlog_enabled = 1;  // 告诉协议层可以把新的增量命令写进缓冲区
-            g_repl_backlog_count = 0;    // 缓冲区命令条数限制
+
+            extern volatile int g_repl_backlog_enabled;
+            extern int g_repl_backlog_count;
+            g_repl_backlog_enabled = 1;  // 开始暂存增量
+            g_repl_backlog_count = 0;    
 
             if (g_use_tcp_sync) {// TCP 传输文件
                 if (repl_sync_log_via_tcp() != 0) {
@@ -603,26 +606,16 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
         }
         case CMD_REPL_SYNC_DONE: {
             printf("[Master] Received SYNC_DONE from slave.\n");
-            if (g_use_tcp_sync) {
-                if (repl_flush_backlog_via_tcp() != 0) {
-                    fprintf(stderr, "[Repl Error] Failed to flush backlog via TCP!\n");
-                }
-            } else {
-                if (repl_flush_backlog_via_rdma() != 0) {
-                    fprintf(stderr, "[Repl Error] Failed to flush backlog via RDMA!\n");
-                }
-            }
             
-            repl_destroy(); // 用完立刻释放 RDMA 资源
+            repl_destroy(); // 释放 RDMA 资源
 
-            extern int g_sync_file_done;
-            g_sync_file_done = 1;// 这里才可以开始接收增量命令
+            extern int g_sync_file_done;// 全量结束，增量开始
+            g_sync_file_done = 1;
 
-            if(g_enable_ttl){
-                extern int BEGIN_IN;
-                BEGIN_IN = 1; //增量持久化开始标志
-                expire_thread_resume();// 恢复超时删除线程
-            }
+            extern volatile int g_repl_backlog_enabled;// 结束暂存增量
+            g_repl_backlog_enabled = 0;
+
+            if(g_enable_ttl) expire_thread_resume();// 恢复超时删除线程
 
             break;
         }
