@@ -48,18 +48,7 @@ int init_kvengine(void) {
     }
 
     if (g_enable_mempool) {
-        #if ENABLE_ARRAY
-        array_item_pool = mem_pool_create(sizeof(kvs_array_item_t));
-        #endif
-        #if ENABLE_RBTREE
-        rbtree_node_pool = mem_pool_create(sizeof(rbtree_node_binary_t));
-        #endif
-        #if ENABLE_HASH
-        hash_node_pool = mem_pool_create(sizeof(hashnode_t));
-        #endif
-        #if ENABLE_SKIPLIST
-        skip_node_pool = mem_pool_create(sizeof(skipnode_binary_t));
-        #endif
+        kvs_mempool_init();
     }
 
     #if ENABLE_ARRAY
@@ -131,20 +120,6 @@ void dest_kvengine(void) {
     kvs_skip_destroy(&global_skip);
     #endif
 
-    if (g_enable_mempool) {
-        #if ENABLE_ARRAY
-        if (array_item_pool) mem_pool_destroy(array_item_pool);
-        #endif
-        #if ENABLE_RBTREE
-        if (rbtree_node_pool) mem_pool_destroy(rbtree_node_pool);
-        #endif
-        #if ENABLE_HASH
-        if (hash_node_pool) mem_pool_destroy(hash_node_pool);
-        #endif
-        #if ENABLE_SKIPLIST
-        if (skip_node_pool) mem_pool_destroy(skip_node_pool);
-        #endif
-    }
     if (g_enable_ttl) kvs_destroy_locks();
 }
 

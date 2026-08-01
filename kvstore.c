@@ -13,6 +13,7 @@
 #include "resp.h" 
 #include "repl.h"
 #include "rdma.h"
+#include <ctype.h>
 
 extern struct rdma_ring_ctx *g_rdma_ctx;
 
@@ -83,54 +84,71 @@ void expire_thread_destroy(void) {
 
 
 //内存池
-extern mem_pool_t *array_item_pool;
-extern mem_pool_t *rbtree_node_pool;
-extern mem_pool_t *hash_node_pool;
-extern mem_pool_t *skip_node_pool;
+mem_pool_t *array_item_pool;
+mem_pool_t *rbtree_node_pool;
+mem_pool_t *hash_node_pool;
+mem_pool_t *skip_node_pool;
+
+typedef struct {
+    size_t size;
+    void *owner; 
+} fallback_header_t;
+
+void *kvs_malloc_type(kvs_obj_type_t type, size_t size) {
+    if (g_enable_mempool && type < OBJ_MAX) {
+        if (!g_typed_pools[type]) kvs_mempool_init(); 
+        return mem_pool_alloc(g_typed_pools[type]);
+    }
+    return malloc(size); 
+}
+
+void kvs_free_type(kvs_obj_type_t type, void *ptr) {
+    if (!ptr) return;
+    if (g_enable_mempool && type < OBJ_MAX) {
+        if (g_typed_pools[type]) {
+            mem_pool_free(g_typed_pools[type], ptr);
+            return;
+        }
+    }
+    free(ptr);
+}
 
 void *kvs_malloc(size_t size) {
     if (size == 0) return NULL;
+    if (!g_enable_mempool) return malloc(size);
 
-    if (g_enable_mempool) {
-        if (size == sizeof(kvs_array_item_t) && array_item_pool) {
-            void *ptr = mem_pool_alloc(array_item_pool);
-            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = array_item_pool; h->size = size; }
-            return ptr;
+    if (size <= MAX_SLAB_SIZE) {
+        if (!g_size_map[size]) kvs_mempool_init();
+        mem_pool_t *pool = g_size_map[size];
+        if (pool) {
+            void **ptr = (void **)mem_pool_alloc(pool);
+            if (ptr) {
+                *ptr = pool;        
+                return ptr + 1;    
+            }
         }
-        if (size == sizeof(rbtree_node_binary_t) && rbtree_node_pool) {
-            void *ptr = mem_pool_alloc(rbtree_node_pool);
-            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = rbtree_node_pool; h->size = size; }
-            return ptr;
-        }
-        if (size == sizeof(hashnode_t) && hash_node_pool) {
-            void *ptr = mem_pool_alloc(hash_node_pool);
-            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = hash_node_pool; h->size = size; }
-            return ptr;
-        }
-        if (size == sizeof(skipnode_binary_t) && skip_node_pool) {
-            void *ptr = mem_pool_alloc(skip_node_pool);
-            if (ptr) { mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t)); h->owner = skip_node_pool; h->size = size; }
-            return ptr;
-        }
-        size_t chunk_size = sizeof(mem_header_t) + size;
-        void *chunk = malloc(chunk_size);
-        if (!chunk) return NULL;
-        mem_header_t *h = (mem_header_t *)chunk;
-        h->owner = NULL; h->size = size;
-        return (void *)((char *)chunk + sizeof(mem_header_t));
     }
 
-    return malloc(size);
+    fallback_header_t *fh = (fallback_header_t *)malloc(sizeof(fallback_header_t) + size);
+    if (!fh) return NULL;
+    fh->owner = NULL;
+    fh->size = size;
+    return fh + 1;
 }
 
 void kvs_free(void *ptr) {
     if (!ptr) return;
-    if (g_enable_mempool) {
-        mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-        if (h->owner) { mem_pool_free((mem_pool_t *)h->owner, ptr); return; }
-        free(h); return;
+    if (!g_enable_mempool) { free(ptr); return; }
+
+    void **base = (void **)ptr - 1;       
+    mem_pool_t *pool = (mem_pool_t *)*base; 
+
+    if (pool != NULL) {
+        mem_pool_free(pool, base);
+    } else {
+        fallback_header_t *fh = (fallback_header_t *)ptr - 1;
+        free(fh);
     }
-    free(ptr);
 }
 
 void *kvs_calloc(size_t nmemb, size_t size) {
@@ -143,25 +161,30 @@ void *kvs_calloc(size_t nmemb, size_t size) {
 void *kvs_realloc(void *ptr, size_t size) {
     if (!ptr) return kvs_malloc(size);
     if (size == 0) { kvs_free(ptr); return NULL; }
-    if (g_enable_mempool) {
-        mem_header_t *h = (mem_header_t *)((char *)ptr - sizeof(mem_header_t));
-        if (h->owner) {
-            void *new_ptr = kvs_malloc(size);
-            if (new_ptr) {
-                size_t copy_size = (size < h->size) ? size : h->size;
-                memcpy(new_ptr, ptr, copy_size);
-                kvs_free(ptr);
-            }
-            return new_ptr;
-        }
-        void *new_chunk = realloc(h, sizeof(mem_header_t) + size);
-        if (!new_chunk) return NULL;
-        ((mem_header_t *)new_chunk)->size = size;
-        return (void *)((char *)new_chunk + sizeof(mem_header_t));
-    }
-    return realloc(ptr, size);
-}
+    if (!g_enable_mempool) return realloc(ptr, size);
 
+    void **base = (void **)ptr - 1;
+    mem_pool_t *pool = (mem_pool_t *)*base;
+    size_t old_size;
+
+    if (pool != NULL) {
+        old_size = pool->chunk_size - sizeof(void *);
+    } else {
+        fallback_header_t *fh = (fallback_header_t *)ptr - 1;
+        old_size = fh->size;
+    }
+
+    if (size <= old_size) {
+        return ptr;
+    }
+
+    void *new_ptr = kvs_malloc(size);
+    if (new_ptr) {
+        memcpy(new_ptr, ptr, old_size);
+        kvs_free(ptr);
+    }
+    return new_ptr;
+}
 
 typedef struct {
     const char *cmd_name;
@@ -194,6 +217,60 @@ const kvs_cmd_map_t kvs_cmd_list[] = {
 
 #define KVS_CMD_LIST_SIZE (sizeof(kvs_cmd_list) / sizeof(kvs_cmd_list[0]))//命令总数
 
+// ================= 哈希表命令路由优化 O(1) =================
+#define CMD_HASH_SIZE 64
+static kvs_cmd_map_t g_cmd_hash_table[CMD_HASH_SIZE];
+static int g_cmd_table_inited = 0;
+
+static inline uint32_t kvs_cmd_hash(const char *cmd, int len) {
+    if (!cmd || len <= 0) return 0;
+    uint32_t hash = 5381;
+    for (int i = 0; i < len; i++) {
+        hash = ((hash << 5) + hash) + (unsigned char)toupper((unsigned char)cmd[i]);
+    }
+    return hash;
+}
+
+void kvs_init_cmd_table(void) {
+    if (g_cmd_table_inited) return;
+    memset(g_cmd_hash_table, 0, sizeof(g_cmd_hash_table));
+
+    for (size_t i = 0; i < KVS_CMD_LIST_SIZE; i++) {
+        if (kvs_cmd_list[i].cmd_enum == CMD_UNKNOWN) continue;
+
+        uint32_t hash = kvs_cmd_hash(kvs_cmd_list[i].cmd_name, kvs_cmd_list[i].cmd_len);
+        uint32_t idx = hash & (CMD_HASH_SIZE - 1);
+
+        while (g_cmd_hash_table[idx].cmd_name != NULL) {
+            idx = (idx + 1) & (CMD_HASH_SIZE - 1);
+        }
+        g_cmd_hash_table[idx] = kvs_cmd_list[i];
+    }
+    g_cmd_table_inited = 1;
+}
+
+static inline int kvs_lookup_cmd(const char *cmd_str, int cmd_len) {
+    if (!cmd_str || cmd_len <= 0) return CMD_UNKNOWN;
+
+    if (!g_cmd_table_inited) {
+        kvs_init_cmd_table();
+    }
+
+    uint32_t hash = kvs_cmd_hash(cmd_str, cmd_len);
+    uint32_t idx = hash & (CMD_HASH_SIZE - 1);
+
+    while (g_cmd_hash_table[idx].cmd_name != NULL) {
+        if (g_cmd_hash_table[idx].cmd_len == cmd_len &&
+            strncasecmp(g_cmd_hash_table[idx].cmd_name, cmd_str, cmd_len) == 0) {
+            return g_cmd_hash_table[idx].cmd_enum;
+        }
+        idx = (idx + 1) & (CMD_HASH_SIZE - 1);
+    }
+
+    return CMD_UNKNOWN;
+}
+// ==========================================================
+
 int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     if (!req || req->argc == 0 || !reply) {
         fprintf(stderr, "[EXEC DEBUG] Invalid params: req=%p, argc=%d, reply=%p\n", 
@@ -209,16 +286,9 @@ int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply) {
     // 提取命令字符串和长度
     char *cmd_str = req->argv[0];
     int cmd_len = req->argv_len[0];
-    int target_cmd = CMD_UNKNOWN;
-
-    // 匹配字符串命令类型
-    for (int i = 0; i < KVS_CMD_LIST_SIZE; i++) {
-        if (cmd_len == kvs_cmd_list[i].cmd_len && 
-            strncasecmp(cmd_str, kvs_cmd_list[i].cmd_name, cmd_len) == 0) {
-            target_cmd = kvs_cmd_list[i].cmd_enum;
-            break;
-        }
-    }
+    
+    // O(1) 哈希查找命令类型
+    int target_cmd = kvs_lookup_cmd(cmd_str, cmd_len);
 
     // 提取 Key 和 Value 
     // RESP 协议层已经帮我们切分好了，直接拿来用

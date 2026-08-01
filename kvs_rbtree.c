@@ -287,7 +287,7 @@ static rbtree_node_binary_t* rbtree_search(rbtree_binary_t *T, kv_data_t *key) {
 int kvs_rbtree_create(kvs_rbtree_t *inst) {
     if (!inst) return -1;
     
-    inst->nil = (rbtree_node_binary_t*)kvs_malloc(sizeof(rbtree_node_binary_t));
+    inst->nil = (rbtree_node_binary_t*)kvs_malloc_type(OBJ_RBTREE, sizeof(rbtree_node_binary_t));
     if (!inst->nil) return -1;
     
     inst->nil->color = BLACK;
@@ -313,7 +313,7 @@ static void rbtree_free_node(rbtree_binary_t *T, rbtree_node_binary_t *node) {
     
     kv_data_destroy(&node->key);
     kv_data_destroy(&node->value);
-    kvs_free(node);
+    kvs_free_type(OBJ_RBTREE, node);
 }
 
 // 原样输出
@@ -324,7 +324,7 @@ void kvs_rbtree_destroy(kvs_rbtree_t *inst) {
         rbtree_free_node(T, T->root); // 递归释放整棵树的所有节点
     }
     if (T->nil) {
-        kvs_free(T->nil);
+        kvs_free_type(OBJ_RBTREE, T->nil);
         T->nil = NULL;
     }
     T->root = NULL;
@@ -353,16 +353,16 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t
     }
     
     // 创建新节点逻辑保持不变...
-    rbtree_node_binary_t *node = (rbtree_node_binary_t*)kvs_malloc(sizeof(rbtree_node_binary_t));
+    rbtree_node_binary_t *node = (rbtree_node_binary_t*)kvs_malloc_type(OBJ_RBTREE, sizeof(rbtree_node_binary_t));
     if (!node) return -2;
     
     if (kv_data_dup(&node->key, key) != 0) {
-        kvs_free(node);
+        kvs_free_type(OBJ_RBTREE, node);
         return -2;
     }
     if (kv_data_dup(&node->value, value) != 0) {
         kv_data_destroy(&node->key);
-        kvs_free(node);
+        kvs_free_type(OBJ_RBTREE, node);
         return -2;
     }
     
@@ -409,7 +409,7 @@ int kvs_rbtree_del(kvs_rbtree_t *inst, kv_data_t *key) {
         // 如果 cur 内部还有残留数据，则正常销毁
         kv_data_destroy(&cur->key);
         kv_data_destroy(&cur->value);
-        kvs_free(cur);
+        kvs_free_type(OBJ_RBTREE, cur);
     }
     
     return 0;

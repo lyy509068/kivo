@@ -143,6 +143,10 @@ int kvs_snapshot_save(void) {
         return -1;
     }
 
+    for (int i = 0; i < LOCK_SEGMENTS; i++) {
+        pthread_rwlock_wrlock(&seg_locks[i]);
+    }
+
     #if ENABLE_ARRAY
     extern kvs_array_t global_array;
     if (global_array.total > 0 && global_array.table != NULL) {
@@ -183,6 +187,10 @@ int kvs_snapshot_save(void) {
     }
     memcpy(snap_buf.data + snap_buf.offset, &calc_crc, sizeof(uint64_t));
     snap_buf.offset += sizeof(uint64_t);
+
+    for (int i = 0; i < LOCK_SEGMENTS; i++) {
+        pthread_rwlock_unlock(&seg_locks[i]);
+    }
 
     // 2. 将计算结果放入堆栈临时变量，彻底杜绝 io_uring 异步期间原 Buffer 被销毁或踩内存
     size_t total_write_bytes = snap_buf.offset;

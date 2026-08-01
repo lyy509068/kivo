@@ -2,7 +2,6 @@
 
 # ============================================
 # SAVE 持久化性能自动化测试脚本
-# 执行要求: sudo bash save.sh 或通过 make save 调用
 # ============================================
 
 set -e
@@ -11,7 +10,7 @@ SERVER_PORT=2000
 SNAPSHOT_FILE="kvstore.snap"
 SERVER_BIN="./server"
 SERVER_CONF="config.conf"
-CLIENT_BIN="./bench_save"
+CLIENT_BIN="./test_save"
 RESULT_FILE="save_test_results.txt"
 
 # 检查依赖程序是否存在

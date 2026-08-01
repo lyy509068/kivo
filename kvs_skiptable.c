@@ -29,7 +29,7 @@ static int random_level(void) {
 }
 
 static skipnode_binary_t* skipnode_create(int level, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
-    skipnode_binary_t *node = (skipnode_binary_t*)kvs_malloc(sizeof(skipnode_binary_t));
+    skipnode_binary_t *node = (skipnode_binary_t*)kvs_malloc_type(OBJ_SKIP, sizeof(skipnode_binary_t));
     if (!node) {
         printf("ERROR: skipnode_create - kvs_malloc node failed, size=%zu\n", sizeof(skipnode_binary_t));
         return NULL;
@@ -37,14 +37,14 @@ static skipnode_binary_t* skipnode_create(int level, kv_data_t *key, kv_data_t *
     
     // 深拷贝 key
     if (kv_data_dup(&node->key, key) != 0) {
-        kvs_free(node);
+        kvs_free_type(OBJ_SKIP, node);
         return NULL;
     }
     
     // 深拷贝 value
     if (kv_data_dup(&node->value, value) != 0) {
         kv_data_destroy(&node->key);
-        kvs_free(node);
+        kvs_free_type(OBJ_SKIP, node);
         return NULL;
     }
     
@@ -55,7 +55,7 @@ static skipnode_binary_t* skipnode_create(int level, kv_data_t *key, kv_data_t *
     if (!node->forward) {
         kv_data_destroy(&node->key);
         kv_data_destroy(&node->value);
-        kvs_free(node);
+        kvs_free_type(OBJ_SKIP, node);
         return NULL;
     }
     
@@ -105,7 +105,7 @@ static void skipnode_destroy(skipnode_binary_t *node) {
     if (node->forward) {
         kvs_free(node->forward);
     }
-    kvs_free(node);
+    kvs_free_type(OBJ_SKIP, node);
 }
 
 void kvs_skip_destroy(kvs_skip_t *skip) {

@@ -41,7 +41,7 @@ void kvs_hash_destroy(kvs_hash_t *hash) {
             // 使用辅助函数释放内部数据内存
             kv_data_destroy(&node->key);
             kv_data_destroy(&node->value);
-            kvs_free(node);
+            kvs_free_type(OBJ_HASH, node);
             node = next;
         }
     }
@@ -74,7 +74,7 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     }
 
     // 创建新节点
-    hashnode_t *new_node = (hashnode_t *)kvs_malloc(sizeof(hashnode_t));
+    hashnode_t *new_node = (hashnode_t *)kvs_malloc_type(OBJ_HASH, sizeof(hashnode_t));
     if (!new_node) return -1;
 
     memset(new_node, 0, sizeof(hashnode_t));
@@ -82,7 +82,7 @@ int kvs_hash_set(kvs_hash_t *hash, kv_data_t *key, kv_data_t *value, int64_t exp
     if (kv_data_dup(&new_node->key, key) != 0 || 
         kv_data_dup(&new_node->value, value) != 0) {
         kv_data_destroy(&new_node->key);
-        kvs_free(new_node);
+        kvs_free_type(OBJ_HASH, new_node);
         return -1;
     }
 
@@ -153,7 +153,7 @@ int kvs_hash_del(kvs_hash_t *hash, kv_data_t *key) {
             
             kv_data_destroy(&node->key);
             kv_data_destroy(&node->value);
-            kvs_free(node);
+            kvs_free_type(OBJ_HASH, node);
             hash->count--;
             return 0; // 成功
         }
@@ -212,7 +212,7 @@ void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data
                 // 2. 释放物理内存
                 kv_data_destroy(&node->key);
                 kv_data_destroy(&node->value);
-                kvs_free(node);
+                kvs_free_type(OBJ_HASH, node);
                 hash->count--;
 
                 // 3. 转向下一个节点，不更新 prev

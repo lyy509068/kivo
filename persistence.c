@@ -213,7 +213,7 @@ void kvs_persistence_recover(void) {
     }
 
     // 透传给上层协议解析模块进行反序列化重播
-    int processed = protocol_process_recover((const char *)data, file_size);
+    int processed = protocol_process_recover((char *)data, file_size);
 
     munmap(data, file_size);
     aof_file_offset = file_size;

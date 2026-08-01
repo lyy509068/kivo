@@ -18,7 +18,7 @@
 
 typedef void (*RCALLBACK)(int fd);// 回调函数recv accept send
 
-typedef int (*stream_handler_t)(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);// 操作协议层的句柄
+typedef int (*stream_handler_t)(char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);// 操作协议层的句柄
 // 连接身份标志
 typedef enum {
     CONN_CLIENT = 0, // 普通客户端

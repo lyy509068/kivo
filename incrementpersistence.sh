@@ -6,7 +6,7 @@
 
 REDIS_PORT=6379
 KV_PORT=2000
-TOTAL_REQUESTS=10000
+TOTAL_REQUESTS=1000000
 RAND_RANGE=100000000
 
 declare -A LOG_OFF_RESULTS
@@ -54,7 +54,7 @@ run_benchmarks() {
 
     # 4. KVstore SET (Array)
     echo -n "  [4/7] KVstore SET (数组) ... "
-    qps=$(parse_qps "redis-benchmark -p $KV_PORT -n $TOTAL_REQUESTS -r $RAND_RANGE -q SET key:__rand_int__ value:__rand_int__")
+    qps=$(parse_qps "redis-benchmark -p $KV_PORT -n 10000 -r $RAND_RANGE -q SET key:__rand_int__ value:__rand_int__")
     eval "${mode_name}_RESULTS['KV_SET']=\$qps"
     echo "$qps QPS"
 

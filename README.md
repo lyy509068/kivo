@@ -58,11 +58,7 @@ Pipeline   | Redis (SET)    | KV (Array)     | KV (RBTree)     | KV (Hash)      
 每 100000 条   15371        65.05      10           1.13 ms
 每 10000 条    15368        65.07      100          1.15 ms
 每 1000 条     13806        72.43      1000         1.12 ms
--------------------------------------------------------------------------------
-[✓] 测试完成！详细数据已追加保存至: save_test_results.txt
 ===============================================================================
-
-
 
 # 增量持久化功能测试
 ./test_incrementpersistence1 插入10w条数据
@@ -74,7 +70,16 @@ array数据恢复时间较长，等待数据恢复完成后再获取数据
 客户端：重新连接服务器->获取10w条数据并校验->清除日志文件（不影响下次测试）->断开连接
 每条日志：*3\r\n$3\r\nSET\r\n$10\r\nkey_015000\r\n$12\r\nvalue_015000\r\n
 # 性能测试
-redis测试命令                                                                                                 
+redis测试命令   
+sudo systemctl stop redis-server
+sudo rm -f /var/lib/redis/appendonly.aof
+sudo rm -f /var/lib/redis/dump.rdb
+sudo systemctl restart redis-server
+redis-cli -p 6379 CONFIG SET appendonly yes 
+redis-cli -p 6379 CONFIG SET appendfsync everysec 
+redis-cli -p 6379 CONFIG SET appendonly no
+redis-benchmark -p 6379 -t ping -n 100000 -q
+
 redis-benchmark -p 6379 -n 1000000 -r 100000000 -q PING                                                        
 redis-benchmark -p 6379 -n 1000000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                      
 
@@ -83,7 +88,7 @@ redis-benchmark -p 2000 -n 1000000 -r 100000000 -q PING
 redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                                 
 redis-benchmark -p 2000 -n 1000000 -r 100000000 -q RSET key:__rand_int__ value:__rand_int__                      
 redis-benchmark -p 2000 -n 1000000 -r 100000000 -q HSET key:__rand_int__ value:__rand_int__                      
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SSET key:__rand_int__ value:__rand_int__      
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SSET key:__rand_int__ value:__rand_int__ 
 
 =========================================================================
                      日志开关性能影响对比测试汇总                       
@@ -99,8 +104,6 @@ KVstore HSET (Hash)                 | 107526          | 98039
 KVstore SSET (SkipList)             | 92592           | 57471          
 =========================================================================
 
-
-
 # 超时功能测试
 ./test_TTL a b 插入as超时的数据->立即读取，此时数据都存在->等待bs读取数据全部被删掉
 
@@ -112,11 +115,17 @@ KVstore SSET (SkipList)             | 92592           | 57471
 一种数据结构用同一套读写锁，对这个数据结构在一个时间只能进行增删改查的一种操作，增删改加写锁，查加读锁；
 对哈希表来说，有多个哈希桶，只要不是在同一个桶中的操作可以同时进行，就可以每个桶一套锁，提升操作效率；
 
-
 # 内存池测试
-./test_mempool (0 1 2)  100000  选择内存管理方式(不使用内存池 jemalloc mempool) 插入10w条数据
+./test_mempool (0 1 2)  选择内存管理方式(不使用内存池 jemalloc mempool) 插入100w条数据
 
 sudo LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 ./server config.conf
+=================================================================================================================
+Strategy       |   VmSz1  |    VmSz2 |    VmSz3 |   VmRSS1 |   VmRSS2 |   VmRSS3 |  Time_ms |      QPS |      Ops
+---------------|----------|----------|----------|----------|----------|----------|----------|----------|----------
+Glibc_Malloc   |    23060 |    96716 |    96716 |     7336 |    81124 |    81124 |     6474 |   154464 |  1000000
+Jemalloc       |    43528 |   118280 |   118280 |     9708 |    75748 |    75720 |     6020 |   166112 |  1000000
+Custom_Mempool |    23252 |    90228 |    90228 |     7420 |    74340 |    74340 |     5802 |   172354 |  1000000
+=================================================================================================================
                 
 # 主从同步测试
 

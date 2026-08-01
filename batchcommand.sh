@@ -6,7 +6,7 @@
 
 REDIS_PORT=6379
 KV_PORT=2000
-TEST_N=10000  # 每种引擎统一测试 1万 条数据
+TEST_N=1000000  
 
 # Pipeline 梯度数组
 PIPELINES=(1 10 20 40 80 160)
@@ -45,7 +45,7 @@ for p in "${PIPELINES[@]}"; do
 
     # 2. 测试 KVstore Array (1W条)
     echo -n "  [2/5] KVstore Array (SET) ... "
-    qps_arr=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -P $p -q SET key:__rand_int__ value:__rand_int__")
+    qps_arr=$(parse_qps "redis-benchmark -p $KV_PORT -n 10000 -r 100000000 -P $p -q SET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_ARR_$p"]=$qps_arr
     echo "$qps_arr QPS"
 

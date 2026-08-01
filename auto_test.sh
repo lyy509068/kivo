@@ -23,7 +23,6 @@ SCP_OPTS="-o StrictHostKeyChecking=no"
 
 RESULT_DIR="./results_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$RESULT_DIR"
-# 所有结果只输出到这一个文件中
 RESULT_FILE="$RESULT_DIR/all_in_one_results.txt"
 
 # ==================== 工具函数 ====================
@@ -53,7 +52,7 @@ start_server() {
     echo "[启动] 正在启动 $role 服务器 (${user}@${ip})..."
     remote_exec "$user" "$ip" "cd $proj_dir && sudo -b nohup ./server config.conf </dev/null >/tmp/server_${role}.log 2>&1"
     
-    # 【健康检查】循环检测端口是否存活，防止因OOM直接Killed却盲目往下执行
+    # 健康检查：循环检测端口是否存活
     local retries=5
     local started=false
     while [ $retries -gt 0 ]; do
@@ -100,10 +99,9 @@ stop_ebpf_relay() {
     remote_exec "$MASTER_USER" "$MASTER_IP" "sudo pkill -9 ebpf_relay || true"
 }
 
-# 动作函数
 insert_full_data() {
     echo "[执行] 正在插入第一轮全量数据 (Localhost)..."
-    remote_exec "$MASTER_USER" "$MASTER_IP" "cd $MASTER_PROJ_DIR && ./test_1G > /dev/null 2>&1"
+    remote_exec "$MASTER_USER" "$MASTER_IP" "cd $MASTER_PROJ_DIR && ./test_transport > /dev/null 2>&1"
     echo "[完成] 全量数据插入完毕"
 }
 
@@ -124,11 +122,26 @@ wait_for_sync_done() {
             echo "[完成] 主端收到 SYNC_DONE，全量同步结束"
             break
         fi
-        [ $(( $(date +%s) - start_time )) -gt $timeout ] && echo "⚠️ 全量同步等待超时！" && break
-        sleep 2
+        [ $(( $(date +%s) - start_time )) -gt $timeout ] && echo "⚠️ 全量同步等待超时！" && break     改成30s就超时！！！
+        sleep 2     
     done
 }
 
+# 收集从端全量同步性能数据（Perf RDMA / Perf TCP）
+collect_full_sync_perf() {
+    local label="$1"   # "RDMA" 或 "TCP"
+    echo "--- 2. ${label}全量同步性能数据 ---" >> "$RESULT_FILE"
+    remote_exec "$SLAVE_USER" "$SLAVE_IP" "grep 'Perf ${label}' /tmp/server_SLAVE.log 2>/dev/null" >> "$RESULT_FILE" || echo "(未找到性能数据)" >> "$RESULT_FILE"
+}
+
+# 运行增量测试并收集客户端 QPS 数据
+run_incremental_test() {
+    local label="$1"   # "基准" / "eBPF" / "TCP"
+    echo "--- ${label}增量 QPS 结果 ---" >> "$RESULT_FILE"
+    echo "[执行] 正在客户端(130)插入第二波增量数据..."
+    remote_exec "$CLIENT_USER" "$CLIENT_IP" "cd $CLIENT_PROJ_DIR && ./test_transport $MASTER_IP $MASTER_PORT" >> "$RESULT_FILE"
+    echo "" >> "$RESULT_FILE"
+}
 
 # ==================== 三轮核心逻辑 ====================
 
@@ -139,14 +152,11 @@ run_round_1() {
     echo -e "\n=================== 第一轮：基准测试 ===================" >> "$RESULT_FILE"
     clean_aof
     
-    # 1. 打开主机
     set_config "$MASTER_USER" "$MASTER_IP" "$MASTER_PROJ_DIR" "MASTER" "RDMA"
     start_server "$MASTER_USER" "$MASTER_IP" "MASTER" "$MASTER_PROJ_DIR"
-    
-    # 2. 回环地址插入第一轮数据
     insert_full_data
 
-    # 3. 测试空闲时带宽 (从机尚未启动KVStore)
+    # 空闲带宽测试 (从机尚未启动 KVstore)
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "pkill -9 iperf3 || true"
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "nohup iperf3 -s </dev/null >/dev/null 2>&1 &"
     sleep 1
@@ -154,10 +164,8 @@ run_round_1() {
     run_iperf3_client
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "pkill -9 iperf3 || true"
 
-    # 4. 130插入第二波数据 (记录QPS)
-    echo "--- 2. 基准增量 QPS (无从机负担) ---" >> "$RESULT_FILE"
-    echo "[执行] 正在客户端(130)插入第二波增量数据..."
-    remote_exec "$CLIENT_USER" "$CLIENT_IP" "cd $CLIENT_PROJ_DIR && ./test_transport $MASTER_IP $MASTER_PORT" >> "$RESULT_FILE"
+    # 基准 QPS (无从机负担)
+    run_incremental_test "基准"
     
     stop_server "$MASTER_USER" "$MASTER_IP"
 }
@@ -169,35 +177,25 @@ run_round_2() {
     echo -e "\n=================== 第二轮：RDMA + eBPF ===================" >> "$RESULT_FILE"
     clean_aof
     
-    # 1. 打开主机，回环插入数据
     set_config "$MASTER_USER" "$MASTER_IP" "$MASTER_PROJ_DIR" "MASTER" "RDMA"
     start_server "$MASTER_USER" "$MASTER_IP" "MASTER" "$MASTER_PROJ_DIR"
     insert_full_data
 
-    # 2. 准备 iperf3 服务器和从机配置
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "pkill -9 iperf3 || true"
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "nohup iperf3 -s </dev/null >/dev/null 2>&1 &"
     set_config "$SLAVE_USER" "$SLAVE_IP" "$SLAVE_PROJ_DIR" "SLAVE" "RDMA"
     
-    # 3. 打开从机 (触发 RDMA 全量同步) 并立刻测带宽
     start_server "$SLAVE_USER" "$SLAVE_IP" "SLAVE" "$SLAVE_PROJ_DIR"
     echo "--- 1. RDMA全量同步期间带宽 ---" >> "$RESULT_FILE"
     run_iperf3_client
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "pkill -9 iperf3 || true"
 
-    # 4. 等待全量同步完成，记录性能
     wait_for_sync_done
-    echo "--- 2. RDMA全量同步性能数据 ---" >> "$RESULT_FILE"
-    remote_exec "$SLAVE_USER" "$SLAVE_IP" "grep 'Perf RDMA' /tmp/server_SLAVE.log 2>/dev/null" >> "$RESULT_FILE" || true
+    collect_full_sync_perf "RDMA"
 
-    # 5. 加载 eBPF 准备转发增量
     load_ebpf
     start_ebpf_relay
-
-    # 6. 130 插入第二波数据 (记录QPS)
-    echo "--- 3. eBPF 增量转发 QPS ---" >> "$RESULT_FILE"
-    echo "[执行] 正在客户端(130)插入第二波增量数据..."
-    remote_exec "$CLIENT_USER" "$CLIENT_IP" "cd $CLIENT_PROJ_DIR && ./test_transport $MASTER_IP $MASTER_PORT" >> "$RESULT_FILE"
+    run_incremental_test "eBPF "
 
     stop_ebpf_relay
     unload_ebpf
@@ -212,31 +210,23 @@ run_round_3() {
     echo -e "\n=================== 第三轮：TCP ===================" >> "$RESULT_FILE"
     clean_aof
     
-    # 1. 打开主机，回环插入数据
     set_config "$MASTER_USER" "$MASTER_IP" "$MASTER_PROJ_DIR" "MASTER" "TCP"
     start_server "$MASTER_USER" "$MASTER_IP" "MASTER" "$MASTER_PROJ_DIR"
     insert_full_data
 
-    # 2. 准备 iperf3 服务器和从机配置
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "pkill -9 iperf3 || true"
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "nohup iperf3 -s </dev/null >/dev/null 2>&1 &"
     set_config "$SLAVE_USER" "$SLAVE_IP" "$SLAVE_PROJ_DIR" "SLAVE" "TCP"
     
-    # 3. 打开从机 (触发 TCP 全量同步) 并立刻测带宽
     start_server "$SLAVE_USER" "$SLAVE_IP" "SLAVE" "$SLAVE_PROJ_DIR"
     echo "--- 1. TCP全量同步期间带宽 ---" >> "$RESULT_FILE"
     run_iperf3_client
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "pkill -9 iperf3 || true"
 
-    # 4. 等待全量同步完成，记录性能
     wait_for_sync_done
-    echo "--- 2. TCP全量同步性能数据 ---" >> "$RESULT_FILE"
-    remote_exec "$SLAVE_USER" "$SLAVE_IP" "grep 'Perf TCP' /tmp/server_SLAVE.log 2>/dev/null" >> "$RESULT_FILE" || true
+    collect_full_sync_perf "TCP"
 
-    # 5. TCP模式下服务器自动处理转发，直接让 130 插入第二波数据
-    echo "--- 3. TCP 增量转发 QPS ---" >> "$RESULT_FILE"
-    echo "[执行] 正在客户端(130)插入第二波增量数据..."
-    remote_exec "$CLIENT_USER" "$CLIENT_IP" "cd $CLIENT_PROJ_DIR && ./test_transport $MASTER_IP $MASTER_PORT" >> "$RESULT_FILE"
+    run_incremental_test "TCP "
 
     stop_server "$SLAVE_USER" "$SLAVE_IP"
     stop_server "$MASTER_USER" "$MASTER_IP"
@@ -251,7 +241,6 @@ echo " 报告路径: $RESULT_FILE"
 echo "=============================================="
 echo "生成时间: $(date '+%Y-%m-%d %H:%M:%S')" > "$RESULT_FILE"
 
-# 依次执行三轮测试
 run_round_1
 sleep 3
 run_round_2

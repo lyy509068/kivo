@@ -1,21 +1,21 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #include "resp.h"
 #include "kvstore.h"      
 #include "network.h"
 #include "repl.h"
 #include "rdma.h"
-#include <sys/syscall.h>
-#include <unistd.h>
 
 #ifndef SYS_write
 #define SYS_write 1
 #endif
 
 /* 
-* 内部辅助函数：在指定长度内安全寻找 \r\n 
-*/
+ * 内部辅助函数：在指定长度内安全寻找 \r\n 
+ */
 static const char *find_crlf(const char *buf, int len) {
     for (int i = 0; i < len - 1; i++) {
         if (buf[i] == '\r' && buf[i+1] == '\n') {
@@ -47,7 +47,6 @@ static int has_complete_resp_command(const char *buf, int buf_len, int *out_cmd_
         int arg_len = atoi(p + 1);
         p = crlf + 2;
         
-        // 检查数据实体 + 末尾 \r\n 的长度是否足够
         if (p - buf + arg_len + 2 > buf_len) return 0; 
         if (p[arg_len] != '\r' || p[arg_len+1] != '\n') return 0;
         
@@ -59,41 +58,51 @@ static int has_complete_resp_command(const char *buf, int buf_len, int *out_cmd_
 }
 
 /*
- * 解包函数：将缓冲区文本切分成干净的 argv 数组
+ * 【核心修改 1】：零拷贝解包函数
+ * 直接指向 req_buf，并在 \r\n 处替换 \r 为 \0，避免任何字符串拷贝和内存分配
  */
-static void resp_unpack(const char *buf, const char *req_buf, resp_request_t *req) {
-    const char *p = req_buf;
+static void resp_unpack(char *req_buf, resp_request_t *req) {
+    char *p = req_buf;
     const char *crlf = find_crlf(p, 100); 
     
     req->argc = atoi(p + 1);
-    req->argv = (char **)kvs_malloc(sizeof(char *) * req->argc);
-    req->argv_len = (int *)kvs_malloc(sizeof(int) * req->argc);
     
-    p = crlf + 2;
+    // 1. 设置 argv / argv_len 数组指针（小命令完全不需要 malloc）
+    if (req->argc <= RESP_STATIC_ARGC) {
+        req->argv = req->buf_argv;
+        req->argv_len = req->buf_argv_len;
+    } else {
+        // 超过 16 个参数的大命令，一次性连续分配两个数组
+        req->argv = (char **)kvs_malloc(sizeof(char *) * req->argc);
+        req->argv_len = (int *)kvs_malloc(sizeof(int) * req->argc);
+    }
     
+    p = (char *)(crlf + 2);
+    
+    // 2. 零拷贝提取参数：指针指向原缓冲区并原地写 '\0'
     for (int i = 0; i < req->argc; i++) {
         crlf = find_crlf(p, 128);
         int arg_len = atoi(p + 1);
-        p = crlf + 2;
+        p = (char *)(crlf + 2);
         
         req->argv_len[i] = arg_len;
-        req->argv[i] = (char *)kvs_malloc(arg_len + 1);
-        memcpy(req->argv[i], p, arg_len);
-        req->argv[i][arg_len] = '\0'; // 补上 \0 方便业务层用 strcmp，业务层核心应使用 argv_len
+        req->argv[i] = p;          // 零拷贝：直接指向输入缓冲区！
+        p[arg_len] = '\0';         // 原地将 '\r' 替换为 '\0'，形成标准 C 字符串
         
-        p += arg_len + 2;
+        p += arg_len + 2;          // 跳到下一个参数开头
     }
 }
 
 /*
- * 释放解包时分配的内存
+ * 【核心修改 2】：极简释放函数
+ * argv[i] 指向原缓冲区，无需 free！
  */
 static void free_resp_request(resp_request_t *req) {
-    if (req->argv) {
-        for (int i = 0; i < req->argc; i++) kvs_free(req->argv[i]);
-        kvs_free(req->argv);
+    // 只有超大命令（argc > 16）才释放外置分配的数组头
+    if (req->argc > RESP_STATIC_ARGC) {
+        if (req->argv) kvs_free(req->argv);
+        if (req->argv_len) kvs_free(req->argv_len);
     }
-    if (req->argv_len) kvs_free(req->argv_len);
 }
 
 /*
@@ -104,17 +113,17 @@ static void resp_pack(char *send_buf, int *send_len, resp_reply_t *reply) {
         *send_len += sprintf(send_buf + *send_len, "+OK\r\n");
     } else if (reply->status == KVS_RESP_PONG) {
         *send_len += sprintf(send_buf + *send_len, "+PONG\r\n");
-    }else if (reply->status == KVS_RESP_SUCCESS) {
+    } else if (reply->status == KVS_RESP_SUCCESS) {
         *send_len += sprintf(send_buf + *send_len, "+OK\r\n");
-    }else if (reply->status == KVS_RESP_ERR) {
+    } else if (reply->status == KVS_RESP_ERR) {
         *send_len += sprintf(send_buf + *send_len, "-ERR save snapshot failed\r\n");
-    }else if (reply->status == KVS_RESP_GET_OK && reply->body) {
+    } else if (reply->status == KVS_RESP_GET_OK && reply->body) {
         *send_len += sprintf(send_buf + *send_len, "$%d\r\n", reply->body_len);
         memcpy(send_buf + *send_len, reply->body, reply->body_len);
         *send_len += reply->body_len;
         memcpy(send_buf + *send_len, "\r\n", 2);
         *send_len += 2;
-        kvs_free(reply->body); // 清理业务层 malloc 出来的数据副本
+        kvs_free(reply->body); 
         reply->body = NULL;
     } else if (reply->status == KVS_RESP_NO_EXISTS) {
         *send_len += sprintf(send_buf + *send_len, "$-1\r\n"); 
@@ -122,7 +131,7 @@ static void resp_pack(char *send_buf, int *send_len, resp_reply_t *reply) {
         *send_len += sprintf(send_buf + *send_len, "-ERR key already exists\r\n");
     } else if (reply->status == KVS_RESP_UNKNOWN) {
         *send_len += sprintf(send_buf + *send_len, "-ERR unknown command\r\n");
-    }else if (reply->status == KVS_RESP_PARSE_ERROR) {
+    } else if (reply->status == KVS_RESP_PARSE_ERROR) {
         *send_len += sprintf(send_buf + *send_len, "-ERR syntax error\r\n");
     }
 }
@@ -133,13 +142,11 @@ void protocol_set_command_handler(cmd_handler_t handler) {
 }
 
 /*
- * 打包并自动扩容函数：把业务层的回复格式化并追加到网络层的写缓冲区中
+ * 打包并自动扩容函数
  */
 void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *reply) {
-    // 估算这次打包大概需要多少安全空间：当前已用长度 + RESP基础协议头尾(1K足够) + body长度
     int needed = *wlen + 1024 + (reply->body_len > 0 ? reply->body_len : 0);
     
-    // 动态扩容：如果空间不够，进行翻倍扩容
     if (needed > *wcap) {
         int new_cap = *wcap * 2;
         if (new_cap < needed) new_cap = needed;
@@ -147,7 +154,7 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
         char *new_buf = (char *)kvs_realloc(*wbuf, new_cap);
         if (!new_buf) {
             perror("kvs_realloc wbuf failed in protocol tier");
-            return; // 扩容失败及时拦截，防止后续越界
+            return;
         }
         *wbuf = new_buf;
         *wcap = new_cap;
@@ -157,15 +164,19 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
 }
 
 /*
- * 协议层入口，支持：1.处理客户端命令  2.处理主端同步回复
+ * 【核心修改 3】：协议层流处理入口
+ * in_buf 从 const char* 改为 char*，去掉了 saved_resp_cmd 频繁 malloc/free
  */
-int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd) {
+/*
+ * 协议层流处理入口（零拷贝版）
+ * 注意：in_buf 为接收缓冲区指针，允许原地替换 '\r' -> '\0'
+ */
+int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd) {
     if (in_len <= 0) {
         *parsed = 0;
         return 0;
     }
 
-    // 探测首字节
     char first_byte = in_buf[0];
     if (first_byte == '*') {
         int processed = 0;
@@ -173,40 +184,54 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
         while (processed < in_len) {
             int single_cmd_len = 0;
             
-            
-            // 探测是否有完整 RESP 请求
+            // 1. 探测是否有完整 RESP 请求（纯读取，不修改缓冲区）
             if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
-                break; // 半包，跳出循环等下一次
+                break; // 半包，跳出循环等待后续数据
             }
-            
-            // 保存完整的 RESP 命令数据
-            char *saved_resp_cmd = (char *)kvs_malloc(single_cmd_len);
-            memcpy(saved_resp_cmd, in_buf + processed, single_cmd_len);
-            
-            resp_request_t req;
-            resp_unpack(in_buf, in_buf + processed, &req);
 
-            // 握手命令处理，不用通过协议层回复
-            if (g_enable_repl_master){
-                extern struct conn conn_list[]; 
-                struct conn *c = &conn_list[fd];
-                extern int g_slave_fd;
+            char *cmd_raw_ptr = in_buf + processed; // 当前完整命令的起始指针
+
+            // 2. WAL 原则：在原地修改字符前，直接将原始 RESP 报文写入磁盘
+            if (g_enable_persistence) {
+                kvs_persistence_write(cmd_raw_ptr, single_cmd_len);
+            }
+
+            // 3. 主从复制 Backlog：在原地修改前，直接复制原始 RESP 报文入队
+            extern int g_sync_file_done, g_slave_fd;
+            if (g_slave_fd > 0 && g_enable_repl_master && 
+                ((g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled)) {
+                if (g_repl_backlog_count < REPL_BACKLOG_MAX) {
+                    int index = g_repl_backlog_tail; 
+                    g_repl_backlog[index].data = kvs_malloc(single_cmd_len);
+                    memcpy(g_repl_backlog[index].data, cmd_raw_ptr, single_cmd_len); // 纯净的原始 RESP 数据
+                    g_repl_backlog[index].len = single_cmd_len;
+                    g_repl_backlog_tail = (g_repl_backlog_tail + 1) % REPL_BACKLOG_MAX;
+                    g_repl_backlog_count++;
+                }
+            }
+
+            // 4. 零拷贝解包：此时才将 '\r' 替换为 '\0'，req.argv[i] 直接指向 in_buf 内部
+            resp_request_t req;
+            resp_unpack(cmd_raw_ptr, &req);
+
+            // 5. 握手与特例处理 (RDMA / SYNC / PING)
+            if (g_enable_repl_master) {
+                extern struct conn ntyco_conn_list[]; 
+                struct conn *c = &ntyco_conn_list[fd];
 
                 if (req.argc > 0) {
-                    if (strcmp(req.argv[0], "RDMA_CONNECT") == 0) { // QP连接，不进业务层
+                    if (strcmp(req.argv[0], "RDMA_CONNECT") == 0) {
                         c->role = CONN_SLAVE;
-                        handle_slave_rdma_connect(&req, wbuf, wcap, wlen, fd);//收到 RDMA_CONNECT 握手命令，不经过网络层，直接回复一个RDMA_CONNECT_ACK
+                        handle_slave_rdma_connect(&req, wbuf, wcap, wlen, fd);
                         free_resp_request(&req);
-                        kvs_free(saved_resp_cmd); // 释放保存的命令
                         processed += single_cmd_len;
-                        continue; // 跳过后续代码
-                    }else if (g_use_tcp_sync && strcmp(req.argv[0], "SYNC") == 0) { // TCP连接，需要进业务层
-                        g_slave_fd = fd;  // 保存从端连接 fd
+                        continue; 
+                    } else if (g_use_tcp_sync && strcmp(req.argv[0], "SYNC") == 0) {
+                        g_slave_fd = fd; 
                     }
                 }
             }
 
-            // 回声测试处理，在协议层生成回复，不进业务层
             if (req.argc > 0 && strcasecmp(req.argv[0], "PING") == 0) {
                 resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0};
                 if (req.argc == 1) {
@@ -225,45 +250,23 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
                 }
 
                 free_resp_request(&req);
-                kvs_free(saved_resp_cmd);
-                if (reply.body) {
-                    kvs_free(reply.body);
-                }
-                
+                if (reply.body) kvs_free(reply.body);
                 processed += single_cmd_len;
-                continue; // 跳过后续代码
+                continue; 
             }
 
-            // 进入业务层处理普通命令
+            // 6. 进入业务层处理普通命令
             resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
             if (g_command_handler) {
-                g_command_handler(&req, &reply); 
+                g_command_handler(&req, &reply); // 注意：如果 handler 要存 key/value 到哈希表，存储引擎内部需自行 strdup/kvs_malloc
             }
 
-            // 写日志
-            if (reply.status == KVS_RESP_OK) {
-                if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) kvs_persistence_write(saved_resp_cmd, single_cmd_len);
+            // 7. 打包回复
+            if (wbuf && wcap && wlen) {
+                resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
             }
-
-           // 转发增量
-            extern int g_sync_file_done, g_slave_fd;
-            if (g_slave_fd > 0 && reply.status == KVS_RESP_OK && g_enable_repl_master &&  ( (g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled) ) {
-                if (g_repl_backlog_count < REPL_BACKLOG_MAX) {
-                    int index = g_repl_backlog_tail; 
-                    g_repl_backlog[index].data = kvs_malloc(single_cmd_len);
-                    memcpy(g_repl_backlog[index].data, saved_resp_cmd, single_cmd_len);
-                    g_repl_backlog[index].len = single_cmd_len;
-                    g_repl_backlog_tail = (g_repl_backlog_tail + 1) % REPL_BACKLOG_MAX;
-                    g_repl_backlog_count++;
-                }
-            }
-
-            // 打包回复
-            if (wbuf && wcap && wlen) resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
             
-            // 释放保存的完整命令
-            kvs_free(saved_resp_cmd);
-            
+            // 8. 释放 request 结构（如果 argc <= 16，内部零开销；> 16 则仅 free 数组头）
             free_resp_request(&req); 
             if (reply.body) {
                 kvs_free(reply.body);
@@ -281,10 +284,9 @@ int protocol_process_stream(const char *in_buf, int in_len, int *parsed, char **
 }
 
 /*
- * 协议层恢复函数：从 AOF 文件中恢复命令
- * 与正常请求处理流程一致，但不返回回复给客户端
+ * 【核心修改 4】：AOF 恢复处理入口
  */
-int protocol_process_recover(const char *in_buf, int in_len) {
+int protocol_process_recover(char *in_buf, int in_len) {
     if (in_buf == NULL || in_len <= 0) {
         return 0;
     }
@@ -296,31 +298,27 @@ int protocol_process_recover(const char *in_buf, int in_len) {
     while (processed < in_len) {
         int single_cmd_len = 0;
         
-        // 探测是否有完整 RESP 请求
         if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
             printf("[Recover] Incomplete command at offset %d, stop.\n", processed);
-            break; // 半包或格式错误，停止恢复
+            break; 
         }
         
         resp_request_t req;
         memset(&req, 0, sizeof(resp_request_t));
-        resp_unpack(in_buf, in_buf + processed, &req);
+        resp_unpack(in_buf + processed, &req);
 
-        // 进入业务层处理命令
         resp_reply_t reply = {KVS_RESP_ERROR, NULL, 0}; 
         
         if (g_command_handler) {
             g_command_handler(&req, &reply); 
         }
         
-        // 统计恢复结果 
         if (reply.status == KVS_RESP_OK) {
             recovered_count++;
-        }else{
+        } else {
             skipped_count++;
         }
         
-        // 清理回复中的 body
         if (reply.body) {
             kvs_free(reply.body);
             reply.body = NULL;
@@ -329,8 +327,6 @@ int protocol_process_recover(const char *in_buf, int in_len) {
         free_resp_request(&req); 
         processed += single_cmd_len; 
     }
-
-    // printf("[Recover] Recovery stats: %d commands replayed.\n", recovered_count);
     
-    return processed; // 返回处理的字节数
+    return processed; 
 }
