@@ -30,38 +30,38 @@ parse_qps() {
 }
 
 echo "=================================================="
-echo "    开始测试 Redis vs KVstore (各引擎独立 1W条)    "
+echo "    开始测试 Redis vs KVstore (各引擎独立 100w条)    "
 echo "=================================================="
 
 for p in "${PIPELINES[@]}"; do
     echo "--------------------------------------------------"
     echo ">>> 正在测试 Pipeline -P $p ..."
 
-    # 1. 测试 Redis SET (1W条)
+    # 1. 测试 Redis SET (1w条)
     echo -n "  [1/5] Redis SET ... "
     qps_redis=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TEST_N -r 100000000 -P $p -q SET key:__rand_int__ value:__rand_int__")
     RESULTS["REDIS_$p"]=$qps_redis
     echo "$qps_redis QPS"
 
-    # 2. 测试 KVstore Array (1W条)
+    # 2. 测试 KVstore Array (100w条)
     echo -n "  [2/5] KVstore Array (SET) ... "
     qps_arr=$(parse_qps "redis-benchmark -p $KV_PORT -n 10000 -r 100000000 -P $p -q SET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_ARR_$p"]=$qps_arr
     echo "$qps_arr QPS"
 
-    # 3. 测试 KVstore RBTree (1W条)
+    # 3. 测试 KVstore RBTree (100w条)
     echo -n "  [3/5] KVstore RBTree (RSET) ... "
     qps_rbt=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -P $p -q RSET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_RBT_$p"]=$qps_rbt
     echo "$qps_rbt QPS"
 
-    # 4. 测试 KVstore Hash (1W条)
+    # 4. 测试 KVstore Hash (100w条)
     echo -n "  [4/5] KVstore Hash (HSET) ... "
     qps_hsh=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -P $p -q HSET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_HSH_$p"]=$qps_hsh
     echo "$qps_hsh QPS"
 
-    # 5. 测试 KVstore SkipList (1W条)
+    # 5. 测试 KVstore SkipList (100w条)
     echo -n "  [5/5] KVstore SkipList (SSET) ... "
     qps_skl=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -P $p -q SSET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_SKL_$p"]=$qps_skl
@@ -76,7 +76,7 @@ OUTPUT_FILE="batchcommand_result.txt"
 {
     echo ""
     echo "========================================================================================================"
-    echo "                              Redis vs KVstore 四大引擎独立测试 (1W条)                                  "
+    echo "                              Redis vs KVstore 四大引擎独立测试 (100w条)                                  "
     echo "========================================================================================================"
     printf "%-10s | %-14s | %-14s | %-15s | %-14s | %-16s\n" \
         "Pipeline" "Redis (SET)" "KV (Array)" "KV (RBTree)" "KV (Hash)" "KV (SkipList)"

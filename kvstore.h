@@ -11,6 +11,7 @@
 #include <pthread.h> 
 #include "mempool.h"
 #include "repl.h"
+#include "resp.h"
 
 
 extern int g_enable_persistence;
@@ -20,23 +21,12 @@ extern int g_enable_mempool;
 extern int g_enable_repl_master;
 extern int g_enable_repl_slave;
 
-//超时删除
-#define LOCK_SEGMENTS 32
-extern pthread_rwlock_t seg_locks[LOCK_SEGMENTS];
-
-void expire_thread_pause(void);
-void expire_thread_resume(void);
-int kvs_expire_thread_start(void);
-int64_t get_current_ms(void);
-int kvs_init_locks(void);
-void kvs_destroy_locks(void);
-int expire_thread_init(void);
-void expire_thread_destroy(void);
-
+command_t *lookup_command(const char *name);
+int kvs_execute_batch(parsed_cmd_t *cmds, resp_reply_t *replies, int cmd_num);
+typedef int (*cmd_handler_t)(parsed_cmd_t *cmds, resp_reply_t *replies, int cmd_num);
 
 
 //内存池
-
 extern mem_pool_t *array_item_pool;
 extern mem_pool_t *rbtree_node_pool;
 extern mem_pool_t *hash_node_pool;
@@ -78,8 +68,8 @@ int kv_data_dup(kv_data_t *dst, kv_data_t *src);
 void kv_data_free(kv_data_t *data);
 int kv_data_create(kv_data_t *data, void *src, size_t len);// 创建 kv_data_t
 void kv_data_destroy(kv_data_t *data);// 释放 kv_data_t
-int kv_data_compare(const kv_data_t *a, const kv_data_t *b);// 比较两个 kv_data_t
-unsigned long kv_data_hash_func(kv_data_t *key, int size);// 哈希计算
+int kv_data_compare(kv_data_t *a, kv_data_t *b);// 比较两个 kv_data_t
+unsigned long kv_data_hash(kv_data_t *key, int size);// 哈希计算
 
 
 
@@ -114,7 +104,7 @@ int kvs_array_mod(kvs_array_t *inst, kv_data_t *key, kv_data_t *value, int64_t e
 int kvs_array_exist(kvs_array_t *inst, kv_data_t *key);//操作之前会检查是否过期
 void kvs_array_foreach(kvs_array_t *inst, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);//操作之前会检查是否过期，重点检查这个函数
 int kvs_array_get_value_len(char *key_ptr, int key_len);
-
+int kvs_array_del_if_expired(kvs_array_t *inst, kv_data_t *key, int64_t expected_expire);
 #endif
 
 #if ENABLE_RBTREE
@@ -153,7 +143,7 @@ int kvs_rbtree_mod(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t
 int kvs_rbtree_exist(kvs_rbtree_t *inst, kv_data_t *key);
 void kvs_rbtree_foreach(kvs_rbtree_t *inst,void (*callback)(kv_data_t *key, kv_data_t *value, void *arg),void *arg);
 int kvs_rbtree_get_value_len(char *key_ptr, int key_len);
-
+int kvs_rbtree_del_if_expired(kvs_rbtree_t *inst, kv_data_t *key, int64_t expected_expire);
 #endif
 
 #if ENABLE_HASH
@@ -183,7 +173,7 @@ int  kvs_hash_del(kvs_hash_t *hash, kv_data_t *key);
 int  kvs_hash_exist(kvs_hash_t *hash, kv_data_t *key);
 int  kvs_hash_get_value_len(kvs_hash_t *hash, kv_data_t *key);
 void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);
-
+int kvs_hash_del_if_expired(kvs_hash_t *hash, kv_data_t *key, int64_t expected_expire);
 #endif
 
 
@@ -193,10 +183,10 @@ void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data
 
 // 二进制安全跳表节点
 typedef struct skipnode_binary_s {
-    kv_data_t key;                     // 二进制安全键
-    kv_data_t value;                   // 二进制安全值
-    int64_t expire_time;               // 绝对过期时间戳(ms)，0表示不过期
-    struct skipnode_binary_s **forward; // 向前指针数组
+    kv_data_t key;
+    kv_data_t value;
+    int64_t expire_time;
+    struct skipnode_binary_s *forward[]; // 柔性数组！！！
 } skipnode_binary_t;
 
 // 跳表结构体
@@ -222,7 +212,7 @@ int kvs_skip_exist(kvs_skip_t *skip, kv_data_t *key);
 
 void kvs_skip_foreach(kvs_skip_t *skip, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);
 int kvs_skip_get_value_len(kvs_skip_t *skip, kv_data_t *key);
-
+int kvs_skip_del_if_expired(kvs_skip_t *skip, kv_data_t *key, int64_t expected_expire);
 #endif
 
 void *kvs_malloc(size_t size);

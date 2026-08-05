@@ -7,6 +7,7 @@
 #include "repl.h"  
 #include "rdma.h"
 #include "config.h"
+#include "expire.h"
 
 // 全局配置变量
 int g_enable_persistence = 0;
@@ -43,9 +44,6 @@ extern kvs_skip_t global_skip;
 #endif
 
 int init_kvengine(void) {
-    if (g_enable_ttl) {
-        if (kvs_init_locks() != 0) { printf("Failed to init locks\n"); return -1; }
-    }
 
     if (g_enable_mempool) {
         kvs_mempool_init();
@@ -76,7 +74,7 @@ int init_kvengine(void) {
     }
 
     if (g_enable_ttl) {
-        if (expire_thread_init() != 0) return -1;
+        if (expire_system_init() != 0) return -1;
     }
 
     if ( !g_use_tcp_sync && (g_enable_repl_master || g_enable_repl_slave)) {
@@ -84,7 +82,7 @@ int init_kvengine(void) {
         if (repl_init(rdma_dev) != 0) return -1;
         if (g_enable_repl_slave) {
             g_running = 1;
-            pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL);
+            pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL);// 这里和同步层重复了！！！！
         }
     }
     return 0;
@@ -101,7 +99,7 @@ void dest_kvengine(void) {
         }
     }
 
-    if (g_enable_ttl) expire_thread_destroy();
+    if (g_enable_ttl) expire_system_destroy();
 
     if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) kvs_persistence_close();
 
@@ -120,7 +118,6 @@ void dest_kvengine(void) {
     kvs_skip_destroy(&global_skip);
     #endif
 
-    if (g_enable_ttl) kvs_destroy_locks();
 }
 
 int main(int argc, char *argv[]) {
@@ -136,7 +133,7 @@ int main(int argc, char *argv[]) {
     g_enable_repl_slave  = (cfg.replication == 2);
     g_use_tcp_sync       = (cfg.transport == 1);
 
-    protocol_set_command_handler(kvs_execute_command);
+    protocol_set_command_handler(kvs_execute_batch);
     init_kvengine();
 
     #if (NETWORK_SELECT == NETWORK_REACTOR)

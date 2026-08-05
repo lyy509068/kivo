@@ -54,39 +54,17 @@ int kv_data_dup(kv_data_t *dst, kv_data_t *src) {
     return kv_data_create(dst, src->data, src->len);
 }
 
-int kv_data_compare(const kv_data_t *a, const kv_data_t *b) {
-    // 1. 安全拦截
-    if (!a || !b) {
-        return (a == b) ? 0 : (!a ? -1 : 1);
-    }
-    
-    //printf("[CMP_TRACE] Comparing A: %.*s (len:%zu) with B: %.*s (len:%zu)\n", (int)a->len, (char *)a->data, a->len, (int)b->len, (char *)b->data, b->len);
-
-    if (!a->data && !b->data) return 0;
-    if (!a->data) return -1;
-    if (!b->data) return 1;
-
-    // 2. 取两个 Key 的最小共同长度进行 memcmp 比较
+int kv_data_compare(kv_data_t *a, kv_data_t *b) {
     size_t min_len = (a->len < b->len) ? a->len : b->len;
     int cmp = memcmp(a->data, b->data, min_len);
-    
-    // 3. 如果在共同长度内内容就已经不同，直接返回相对大小
-    if (cmp != 0) {
-        return cmp; 
-    }
-    
-    // 4. 如果共同前缀完全一致，谁短谁小
-    if (a->len < b->len) return -1;
-    if (a->len > b->len) return 1;
-    
-    // 5. 长度和内容完全一致，返回 0
-    return 0;
+    if (cmp != 0) return cmp;
+    return (a->len < b->len) ? -1 : (a->len > b->len) ? 1 : 0;
 }
 
 
 
 // 哈希计算（DJB2 算法，支持二进制数据）
-unsigned long kv_data_hash_func(kv_data_t *key, int size) {
+unsigned long kv_data_hash(kv_data_t *key, int size) {
     if (!key || !key->data || size <= 0) return 0;
     unsigned long hash = 5381;
     unsigned char *p = (unsigned char*)key->data;
@@ -95,15 +73,6 @@ unsigned long kv_data_hash_func(kv_data_t *key, int size) {
         hash = ((hash << 5) + hash) + p[i];
     }
     return hash % size;
-}
-
-// 兼容旧命名的包裹函数 
-int kv_data_cmp(kv_data_t *a, kv_data_t *b) {
-    return kv_data_compare(a, b);
-}
-
-unsigned long kv_data_hash(kv_data_t *key, int size) {
-    return kv_data_hash_func(key, size);
 }
 
 void kv_data_free(kv_data_t *data) {

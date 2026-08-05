@@ -11,6 +11,7 @@
 #include <liburing.h>
 #include <errno.h>
 #include "kvstore.h"
+#include "expire.h"
 
 #define AOF_BUF_SIZE        (64 * 1024 * 1024)     // 64MB 异步双缓冲区
 #define IO_URING_QUEUE_DEPTH 128                   // SQ 队列深度，应对高并发批处理

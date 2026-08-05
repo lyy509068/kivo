@@ -12,8 +12,8 @@
 // 全局红黑树实例
 kvs_rbtree_t global_rbtree = {0};
 
-
-static int64_t get_current_ms_rbtree(void) {
+static inline int64_t rbtree_now_if_ttl(void) {
+    if (!g_enable_ttl) return 0;
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
@@ -337,25 +337,15 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t
     rbtree_node_binary_t *existing = rbtree_search(T, key);
     
     if (existing != inst->nil) {
-        // 【修改点】：如果 key 存在但其实已经过期了
-        if (existing->expire_time > 0 && get_current_ms_rbtree() > existing->expire_time) {
-            // 物理删除这个风化了的僵尸节点，后面会顺理成章地创建全新节点插入
-            kvs_rbtree_del(inst, key); 
-        } else {
-            // 只有当 key 真正健康存活时，才执行覆盖更新逻辑
-            kv_data_destroy(&existing->value);
-            if (kv_data_dup(&existing->value, value) != 0) {
-                return -2;
-            }
-            existing->expire_time = expire_time; // 更新过期时间
-            return 0;  
-        }
+        // 直接覆盖 value，不检查是否过期
+        kv_data_destroy(&existing->value);
+        if (kv_data_dup(&existing->value, value) != 0) return -2;
+        existing->expire_time = expire_time;
+        return 0;
     }
     
-    // 创建新节点逻辑保持不变...
     rbtree_node_binary_t *node = (rbtree_node_binary_t*)kvs_malloc_type(OBJ_RBTREE, sizeof(rbtree_node_binary_t));
     if (!node) return -2;
-    
     if (kv_data_dup(&node->key, key) != 0) {
         kvs_free_type(OBJ_RBTREE, node);
         return -2;
@@ -365,15 +355,12 @@ int kvs_rbtree_set(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t
         kvs_free_type(OBJ_RBTREE, node);
         return -2;
     }
-    
     node->color = RED;
     node->left = inst->nil;
     node->right = inst->nil;
     node->parent = inst->nil;
     node->expire_time = expire_time; 
-    
     rbtree_insert((rbtree_binary_t*)inst, node);
-    
     return 0;
 }
 
@@ -383,17 +370,15 @@ kv_data_t* kvs_rbtree_get(kvs_rbtree_t *inst, kv_data_t *key) {
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
     rbtree_node_binary_t *node = rbtree_search(T, key);
     
-    // 如果找不到，或者返回了哨兵，或者返回了 NULL
-    if (node == NULL || node == T->nil) {
-        return NULL;
-    }
+    if (node == NULL || node == T->nil) return NULL;
     
-    if (node->expire_time > 0 && get_current_ms_rbtree() > node->expire_time) {
-        //printf("[EXPIRE_DEBUG] RBTREE Lazy Delete Triggered for Key: %.*s!\n", (int)node->key.len, (char*)node->key.data);
-        kvs_rbtree_del(inst, key); // 惰性删除：将其从树中剔除并释放
-        return NULL;               // 返回空
+    if (g_enable_ttl && node->expire_time > 0) {
+        int64_t now = rbtree_now_if_ttl();
+        if (now > node->expire_time) {
+            kvs_rbtree_del(inst, key);
+            return NULL;
+        }
     }
-    
     return &node->value;
 }
 
@@ -415,26 +400,30 @@ int kvs_rbtree_del(kvs_rbtree_t *inst, kv_data_t *key) {
     return 0;
 }
 
-int kvs_rbtree_mod(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
-    if (!inst || !key || !value) return -1;
+/**
+ * 条件删除：只有当 key 存在且节点的 expire_time 等于 expected_expire 时才删除
+ * 返回 1 表示已删除，0 表示未删除（key 不存在或时间不匹配）
+ */
+int kvs_rbtree_del_if_expired(kvs_rbtree_t *inst, kv_data_t *key, int64_t expected_expire) {
+    if (!inst || !key) return 0;
     
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
     rbtree_node_binary_t *node = rbtree_search(T, key);
-    if (node == inst->nil) return 1;  // 不存在
     
-    // 若试图修改一个虽然在树中但逻辑上已过期的数据
-    if (node->expire_time > 0 && get_current_ms_rbtree() > node->expire_time) {
-        kvs_rbtree_del(inst, key); // 抹除死节点
-        return 1;                  // 告诉上层“没有找到这个 key”
-    }
+    // 找不到或返回哨兵
+    if (node == NULL || node == T->nil) return 0;
     
-    // 释放旧 value，拷贝新 value
-    kv_data_destroy(&node->value);
-    if (kv_data_dup(&node->value, value) != 0) return -2;
+    // 检查过期时间是否完全匹配
+    if (node->expire_time != expected_expire) return 0;
     
-    node->expire_time = expire_time;
-    
-    return 0;
+    // 匹配，执行物理删除
+    kvs_rbtree_del(inst, key);
+    return 1;
+}
+
+int kvs_rbtree_mod(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
+    // MOD 合并为 SET，无需单独实现
+    return kvs_rbtree_set(inst, key, value, expire_time);
 }
 
 
@@ -447,21 +436,28 @@ int kvs_rbtree_exist(kvs_rbtree_t *inst, kv_data_t *key) {
 }
 
 
-static void rbtree_foreach_node(rbtree_binary_t *T, rbtree_node_binary_t *node, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
+static void rbtree_foreach_node(rbtree_binary_t *T, rbtree_node_binary_t *node, 
+                                int64_t now, int check_expire,
+                                void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (node == T->nil) return;
-    rbtree_foreach_node(T, node->left, callback, arg);
-    int64_t now = get_current_ms_rbtree();
-    if (!(node->expire_time > 0 && now > node->expire_time)) {//跳过过期节点
+    rbtree_foreach_node(T, node->left, now, check_expire, callback, arg);
+    if (check_expire && node->expire_time > 0 && now > node->expire_time) {
+        // 跳过过期节点
+    } else {
         callback(&node->key, &node->value, arg);
     }
-    rbtree_foreach_node(T, node->right, callback, arg);
+    rbtree_foreach_node(T, node->right, now, check_expire, callback, arg);
 }
-
 
 void kvs_rbtree_foreach(kvs_rbtree_t *inst, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (!inst || !callback) return;
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
-    rbtree_foreach_node(T, T->root, callback, arg);
+    int64_t now = 0;
+    int check_expire = g_enable_ttl;
+    if (check_expire) {
+        now = rbtree_now_if_ttl();
+    }
+    rbtree_foreach_node(T, T->root, now, check_expire, callback, arg);
 }
 
 int kvs_rbtree_get_value_len(char *key_ptr, int key_len) {

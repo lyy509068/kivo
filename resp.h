@@ -5,55 +5,75 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+// 批量处理与命令查表支持
+#ifndef PIPELINE_MAX
+#define PIPELINE_MAX 512
+#endif
+
 struct conn;
 
 // 状态码枚举
 typedef enum {
-    KVS_RESP_OK = 0,          // 0: 执行成功 (返回 +OK)
-    KVS_RESP_ERROR = 1,       // 1: 一般执行错误 (返回 -ERR)
-    KVS_RESP_PARSE_ERROR = 2, // 2: 解析错误
-    KVS_RESP_GET_OK = 3,      // 3: GET 成功 (返回 $len\r\nbody\r\n)
-    KVS_RESP_UNKNOWN = 4,     // 4: 未知命令
-    
-    KVS_RESP_EXISTS = 5,       // 6: KEY 已存在 (对应 REXISTS 成功返回 1)
-    KVS_RESP_NO_EXISTS = 6,    // 7: KEY 不存在 (返回 $-1\r\n)
-    
-    KVS_RESP_PONG = 7,         // 8: PONG 回应
-    KVS_RESP_SUCCESS = 8, // 11: SAVE 快照保存成功 (返回 +OK)
-    KVS_RESP_ERR = 9,     // 9: SAVE 快照落盘失败 (返回 -ERR save failed)
-    KVS_RESP_SYNC_LOG = 10     // 10：请求同步日志状态码
+    KVS_RESP_OK,           // +OK\r\n
+    KVS_RESP_GET_OK,       // $len\r\n<body_data>\r\n
+    KVS_RESP_PONG,
+    KVS_RESP_NO_EXISTS,    // $-1\r\n (Redis 的 Key 不存在返回 nil)
+    KVS_RESP_EXISTS,       // :1\r\n  (Key 已存在)
+    KVS_RESP_SUCCESS,      // :1\r\n  (逻辑成功，如 SAVE/SYNC)
+    KVS_RESP_ERROR,        // -ERR execution error\r\n
+    KVS_RESP_PARSE_ERROR,  // -ERR wrong number of arguments\r\n
+    KVS_RESP_UNKNOWN,      // -ERR unknown command\r\n
+    KVS_RESP_ERR           // -ERR system error\r\n
 } kvs_status_t;
 
-// 请求结构体 (协议层解析后，传给业务层)
+// 请求结构体
 #define RESP_STATIC_ARGC 16
-typedef struct resp_request{
-    int argc;           // 命令的参数总数 (例如: SET key val，argc = 3)
-    char **argv;        // 参数字符串数组 (argv[0]="SET", argv[1]="key")
-    int *argv_len;      // 参数长度数组 (为了保证二进制安全，防止value里包含\0)
+typedef struct resp_request {
+    int argc;           // 命令的参数总数
+    char **argv;        // 参数字符串数组
+    int *argv_len;      // 参数长度数组
     char *buf_argv[RESP_STATIC_ARGC];
     int buf_argv_len[RESP_STATIC_ARGC];
     uint32_t socket_tcp_seq;
 } resp_request_t;
 
-// 响应结构体 (业务层执行完，传回给协议层)
+// 响应结构体
 typedef struct {
-    kvs_status_t status; // 业务层执行状态码
-    void *body;          // 查询到的值 (仅 GET 命令有效，需业务层 malloc，协议层负责 free)
-    int body_len;        // 查询到的值的长度
+    kvs_status_t status; 
+    void *body;          
+    int body_len;        
 } resp_reply_t;
 
+// 命令结构体 (由业务层定义具体实现)
+typedef struct command_s {
+    char *name;
+    int minargc;
+    void (*proc)(resp_request_t *req, resp_reply_t *reply);
+} command_t;
 
-typedef int (*cmd_handler_t)(const resp_request_t *req, resp_reply_t *reply);//协议层用来调用业务层
-typedef int (*stream_handler_t)(char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);//网络层用来调用协议层
-//网络传输函数
+// 经过协议层解析和查表后生成的 命令对象
+typedef struct parsed_cmd_s {
+    resp_request_t req;
+    command_t *cmd;      // 已通过 lookup_command 查到的业务指针
+} parsed_cmd_t;
+
+// 【核心修改】：协议层用来调用业务层的回调函数签名
+typedef int (*cmd_handler_t)(parsed_cmd_t *cmds, resp_reply_t *replies, int cmd_num);
+
+// 网络层用来调用协议层的回调函数签名
+typedef int (*stream_handler_t)(char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);
+
+// 网络传输函数
 extern int reactor_start(unsigned short port, stream_handler_t handler);
 extern int proactor_start(unsigned short port, stream_handler_t handler);
 extern int ntyco_start(unsigned short port, stream_handler_t handler);
 
-
+// 协议层接口
 void protocol_set_command_handler(cmd_handler_t handler);
 int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd);
 int protocol_process_recover(char *in_buf, int in_len);
-int kvs_execute_command(const resp_request_t *req, resp_reply_t *reply);
 
-#endif 
+// 业务层入口声明（供注册使用）
+extern int kvs_execute_batch(parsed_cmd_t *cmds, resp_reply_t *replies, int cmd_num);
+
+#endif // KVS_PROTOCOL_H

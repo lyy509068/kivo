@@ -1,4 +1,3 @@
-#include "kvstore.h"
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
@@ -6,10 +5,11 @@
 #include <stdint.h>   
 #include <sys/time.h> 
 #include <stddef.h> 
-#include <liburing.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include "expire.h"
+#include "kvstore.h"
 
 // 用于二进制快照的引擎标识
 #define SNAP_TYPE_ARRAY    1
@@ -41,7 +41,7 @@ static void buffer_append(snapshot_buffer_t *buf, const void *ptr, size_t size) 
         while (buf->offset + size > buf->capacity) {
             buf->capacity *= 2;
         }
-        buf->data = kvs_realloc(buf->data, buf->capacity);
+        buf->data = realloc(buf->data, buf->capacity);
     }
     // 拷贝到缓冲区
     memcpy(buf->data + buf->offset, ptr, size);
@@ -122,29 +122,28 @@ static void snapshot_write_skip_cb(kv_data_t *key, kv_data_t *value, void *arg) 
 }
 #endif
 
-// 保存二进制快照：使用 io_uring 异步落盘 + 严格的同步防护
+// 保存二进制快照：完全适配 fork() 子进程架构
 int kvs_snapshot_save(void) {
-    // 1. 使用 O_TRUNC 且不使用任何可能带来脏写缓存的标志
-    int fd = open("kvstore.snap", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const char *tmp_filename = "kvstore.snap.tmp";
+    const char *final_filename = "kvstore.snap";
+
+    // 1. 打开临时文件 snapshot.tmp
+    int fd = open(tmp_filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) {
-        printf("Failed to open snapshot file for writing\n");
+        perror("[SNAP] Failed to open temp snapshot file");
         return -1;
     }
-    
     fchmod(fd, 0666);
 
     // 初始化内存 Buffer
     snapshot_buffer_t snap_buf;
     snap_buf.capacity = 4 * 1024 * 1024;
     snap_buf.offset = 0;
-    snap_buf.data = kvs_malloc(snap_buf.capacity);
+    snap_buf.data = malloc(snap_buf.capacity);
     if (!snap_buf.data) {
         close(fd);
+        unlink(tmp_filename);
         return -1;
-    }
-
-    for (int i = 0; i < LOCK_SEGMENTS; i++) {
-        pthread_rwlock_wrlock(&seg_locks[i]);
     }
 
     #if ENABLE_ARRAY
@@ -175,70 +174,32 @@ int kvs_snapshot_save(void) {
     }
     #endif
 
-    // 单次高效计算数据区的 CRC
+    // 单次计算 CRC 并追加到末尾
     uint64_t calc_crc = kvs_crc64(0, snap_buf.data, snap_buf.offset);
+    buffer_append(&snap_buf, &calc_crc, sizeof(uint64_t));
 
-    // 安全地追加 CRC 到缓冲区末尾
-    if (snap_buf.offset + sizeof(uint64_t) > snap_buf.capacity) {
-        while (snap_buf.offset + sizeof(uint64_t) > snap_buf.capacity) {
-            snap_buf.capacity *= 2;
-        }
-        snap_buf.data = kvs_realloc(snap_buf.data, snap_buf.capacity);
-    }
-    memcpy(snap_buf.data + snap_buf.offset, &calc_crc, sizeof(uint64_t));
-    snap_buf.offset += sizeof(uint64_t);
-
-    for (int i = 0; i < LOCK_SEGMENTS; i++) {
-        pthread_rwlock_unlock(&seg_locks[i]);
-    }
-
-    // 2. 将计算结果放入堆栈临时变量，彻底杜绝 io_uring 异步期间原 Buffer 被销毁或踩内存
-    size_t total_write_bytes = snap_buf.offset;
-
-    // io_uring 异步落盘
-    struct io_uring ring;
-    if (io_uring_queue_init(8, &ring, 0) < 0) {
-        kvs_free(snap_buf.data);
+    ssize_t written = write(fd, snap_buf.data, snap_buf.offset);
+    if (written < 0 || (size_t)written != snap_buf.offset) {
+        perror("[SNAP] Write snapshot data failed");
+        free(snap_buf.data);
         close(fd);
+        unlink(tmp_filename);
         return -1;
     }
 
-    struct io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-    if (!sqe) {
-        io_uring_queue_exit(&ring);
-        kvs_free(snap_buf.data);
-        close(fd);
-        return -1;
-    }
+    // 释放内存
+    free(snap_buf.data);
 
-    // 提交异步写请求
-    io_uring_prep_write(sqe, fd, snap_buf.data, total_write_bytes, 0);
-    io_uring_submit(&ring);
-
-    struct io_uring_cqe *cqe;
-    // int write_res = -1;
-    
-    // 挂起等待内核完全写完此段内存，此时 snap_buf.data 严禁被释放
-    if (io_uring_wait_cqe(&ring, &cqe) < 0 || cqe->res < 0) {
-        printf("[io_uring] Async write failed: %d\n", cqe ? cqe->res : -1);
-    } else {
-        // write_res = cqe->res;
-        // printf("[SAVE] io_uring safely dumped %d bytes. CRC64: %llu\n", write_res, (unsigned long long)calc_crc);
-    }
-
-    if (cqe) {
-        io_uring_cqe_seen(&ring, cqe);
-    }
-    
-    // printf("[DEBUG SAVE] Buffer Offset: %zu, io_uring Res: %d\n", total_write_bytes, write_res);
-
-    // 销毁异步队列
-    io_uring_queue_exit(&ring);
-    
-    // 3. 释放写完的内存，并调用 fsync 强刷文件系统缓存页到磁盘
-    kvs_free(snap_buf.data);
+    // 刷盘确保数据落入物理磁盘
     fsync(fd);
     close(fd);
+
+    // 【核心修改】：原子重命名覆盖正式快照文件 (Atomic Rename)
+    if (rename(tmp_filename, final_filename) < 0) {
+        perror("[SNAP] Rename snapshot file failed");
+        unlink(tmp_filename);
+        return -1;
+    }
 
     return 0;
 }

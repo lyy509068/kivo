@@ -1,8 +1,14 @@
 CC = gcc
 CLANG = clang
+
+# ========== ASAN 配置（只给 server 用） ==========
+ASAN_FLAGS = -fsanitize=address -fno-omit-frame-pointer -g
+
 CFLAGS = -Wall -g -I ./NtyCo/core/
+CFLAGS_ASAN = $(CFLAGS) $(ASAN_FLAGS)
 
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm
+LDFLAGS_ASAN = $(LDFLAGS) $(ASAN_FLAGS)
 
 BPF_LDFLAGS = -lbpf -lelf -lz
 
@@ -10,7 +16,7 @@ BPF_CFLAGS = -target bpf -D__TARGET_ARCH_x86 -I/usr/include/x86_64-linux-gnu -I/
 
 SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c proactor.c ntyco.c resp.c \
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c config.c\
-       rdma.c repl.c expire_thread.c
+       rdma.c repl.c expire.c
 
 TARGET = server
 
@@ -26,11 +32,19 @@ SUBDIR = ./NtyCo/
 
 OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o \
        kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o config.o\
-       rdma.o repl.o expire_thread.o
+       rdma.o repl.o expire.o
 
-.PHONY: all clean ECHO $(SUBDIR) load_bpf unload_bpf
+.PHONY: all clean ECHO $(SUBDIR) load_bpf unload_bpf asan
 
+# ========== 默认编译（不带 ASAN） ==========
 all: $(SUBDIR) $(BPF_KERN_OBJ) $(TARGET) $(RELAY_TARGET) $(TESTCASES)
+
+# ========== 带 ASAN 编译 ==========
+asan:
+	@echo "========================================="
+	@echo "  Compiling with AddressSanitizer (ASAN)"
+	@echo "========================================="
+	@$(MAKE) all CFLAGS="$(CFLAGS_ASAN)" LDFLAGS="$(LDFLAGS_ASAN)"
 
 $(SUBDIR): ECHO
 	make -C $@
@@ -47,14 +61,15 @@ $(BPF_KERN_OBJ): sync_filter.bpf.c
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
-# eBPF 用户态中继程序
+# eBPF 用户态中继程序（不用 ASAN）
 $(RELAY_TARGET): ebpf_relay.o
 	$(CC) -o $@ $< $(BPF_LDFLAGS)
 
+# ebpf_relay.o 永远不用 ASAN
 ebpf_relay.o: ebpf_relay.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# 测试用例
+# 测试用例（不用 ASAN）
 $(TESTCASES): %: %.c
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -112,7 +127,7 @@ auto_test:
 	fi
 
 clean: 
-	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o  \
+	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap kvstore.snap.tmp $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o  \
 												  reactor.o proactor.o ntyco.o resp.o \
 												  kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
 												  config.o rdma.o repl.o expire_thread.o

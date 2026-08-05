@@ -12,12 +12,14 @@
 #include <arpa/inet.h>
 #include <sys/syscall.h> 
 #include "nty_coroutine.h" 
+#include <errno.h>
 
 #include "network.h"
 #include "kvstore.h"
 #include "resp.h"
 #include "repl.h"
 #include "rdma.h"
+#include "expire.h"
 
 #ifndef SPLICE_F_MOVE
 #define SPLICE_F_MOVE 1
@@ -42,6 +44,22 @@ void ntyco_close_and_free_connection(int fd) {
     memset(&ntyco_conn_list[fd], 0, sizeof(struct conn));
 }
 
+void ntyco_expire_co(void *arg) {
+    while (1) {
+        expire_process_deletes();
+        nty_coroutine_sleep(100);
+    }
+}
+
+void ntyco_persistence_co(void *arg) {
+    while (1) {
+        if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
+            kvs_persistence_flush_pending();
+        }
+        nty_coroutine_sleep(10);
+    }
+}
+
 void ntyco_client_co(void *arg) {
     int fd = (int)(long)arg;
     struct conn *c = &ntyco_conn_list[fd];
@@ -58,7 +76,6 @@ void ntyco_client_co(void *arg) {
     if (!c->rbuffer || !c->wbuffer) { ntyco_close_and_free_connection(fd); return; }
 
     while (1) {
-        
         extern int g_sync_file_done;
         if (g_enable_repl_master && fd == g_slave_fd && g_sync_file_done) {// 协程控制权移交 
             if (c->rbuffer) { kvs_free(c->rbuffer); c->rbuffer = NULL; }
@@ -97,7 +114,7 @@ void ntyco_client_co(void *arg) {
                 is_master ? NULL : &c->wlength, 
                 fd 
             );
-
+            
             if (status == 1 || parsed_bytes == 0) break;
             if (status < 0) { ntyco_close_and_free_connection(fd); return; }
             total_parsed_bytes += parsed_bytes;
@@ -107,10 +124,6 @@ void ntyco_client_co(void *arg) {
             int remaining = c->rlength - total_parsed_bytes;
             if (remaining > 0) memmove(c->rbuffer, c->rbuffer + total_parsed_bytes, remaining);
             c->rlength = remaining;
-        }
-
-        if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
-            kvs_persistence_flush_pending();
         }
 
         if (c->wlength > 0) {
@@ -238,6 +251,16 @@ int ntyco_start(unsigned short port, stream_handler_t handler) {
     nty_coroutine *server_co = NULL;
     nty_coroutine_create(&server_co, ntyco_server_co, (void*)(long)listen_fd);
 
+    if (g_enable_ttl){
+        nty_coroutine *expire_co = NULL;
+        nty_coroutine_create(&expire_co, ntyco_expire_co, NULL);
+    }
+    
+    if(g_enable_repl_master || g_enable_repl_slave || g_enable_persistence){
+        nty_coroutine *persistence_co = NULL;
+        nty_coroutine_create(&persistence_co, ntyco_persistence_co, NULL);
+    }
+    
     if (g_enable_repl_master ) {
         nty_coroutine *send_co = NULL;
         nty_coroutine_create(&send_co, ntyco_master_repl_send_co, NULL);
