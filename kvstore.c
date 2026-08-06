@@ -136,6 +136,46 @@ void *kvs_realloc(void *ptr, size_t size) {
     return new_ptr;
 }
 
+/**
+ * 解析命令中的过期时间参数
+ * 支持格式：
+ *   - SET key value EX 10        (秒级相对)
+ *   - SET key value PX 10000     (毫秒级相对)
+ *   - SET key value 1234567890   (绝对时间戳，AOF恢复用)
+ *   - SET key value 10           (小数值当作相对秒数)
+ * 返回绝对过期时间戳(ms)，0 表示永不过期
+ */
+int64_t parse_ttl(resp_request_t *req) {
+    if (req->argc < 4) return 0;
+    if (!req->argv[3]) return 0;
+
+    // 格式1：SET key value EX 10 / PX 10000 (Redis 标准)
+    if (req->argc >= 5 && req->argv[4]) {
+        if (req->argv_len[3] == 2 && strncasecmp(req->argv[3], "EX", 2) == 0) {
+            long long sec = atoll(req->argv[4]);
+            if (sec > 0) return get_current_ms() + sec * 1000;
+            return 0;
+        }
+        if (req->argv_len[3] == 2 && strncasecmp(req->argv[3], "PX", 2) == 0) {
+            long long ms = atoll(req->argv[4]);
+            if (ms > 0) return get_current_ms() + ms;
+            return 0;
+        }
+    }
+
+    // 格式2：SET key value <timestamp> (AOF 恢复 / 直接传时间戳)
+    long long val = atoll(req->argv[3]);
+    if (val <= 0) return 0;
+
+    // 如果时间戳很小（小于 1000000000，约 2001年），当作相对秒数
+    if (val < 1000000000) {
+        return get_current_ms() + val * 1000;
+    }
+
+    // 否则当作绝对毫秒时间戳
+    return (int64_t)val;
+}
+
 // 命令处理函数
 
 static void kvs_set_reply_body(resp_reply_t *reply, kv_data_t *result) {
@@ -158,7 +198,10 @@ static void cmd_array_set(resp_request_t *req, resp_reply_t *reply) {
     if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; return; }
     kv_data_t k = {req->argv[1], (size_t)req->argv_len[1]};
     kv_data_t v = {req->argv[2], (size_t)req->argv_len[2]};
-    int ret = kvs_array_set(&global_array, &k, &v, 0);
+    int64_t expire=0;
+    if(g_enable_ttl)expire=parse_ttl(req);
+    int ret = kvs_array_set(&global_array, &k, &v, expire);
+    if(g_enable_ttl && ret == 0 ) expire_push_cmd(EXPIRE_TYPE_ARRAY, &k, expire, (uint64_t)expire);
     reply->status = (ret == 0) ? KVS_RESP_OK : KVS_RESP_ERROR;
 }
 
@@ -194,7 +237,10 @@ static void cmd_rbtree_set(resp_request_t *req, resp_reply_t *reply) {
     if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; return; }
     kv_data_t k = {req->argv[1], (size_t)req->argv_len[1]};
     kv_data_t v = {req->argv[2], (size_t)req->argv_len[2]};
-    int ret = kvs_rbtree_set(&global_rbtree, &k, &v, 0);
+    int64_t expire = 0;
+    if (g_enable_ttl) expire = parse_ttl(req);
+    int ret = kvs_rbtree_set(&global_rbtree, &k, &v, expire);
+    if (g_enable_ttl && ret == 0 && expire > 0) expire_push_cmd(EXPIRE_TYPE_RBTREE, &k, expire, (uint64_t)expire);
     reply->status = (ret == 0) ? KVS_RESP_OK : KVS_RESP_ERROR;
 }
 
@@ -230,7 +276,10 @@ static void cmd_hash_set(resp_request_t *req, resp_reply_t *reply) {
     if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; return; }
     kv_data_t k = {req->argv[1], (size_t)req->argv_len[1]};
     kv_data_t v = {req->argv[2], (size_t)req->argv_len[2]};
-    int ret = kvs_hash_set(&global_hash, &k, &v, 0);
+    int64_t expire = 0;
+    if (g_enable_ttl) expire = parse_ttl(req);
+    int ret = kvs_hash_set(&global_hash, &k, &v, expire);
+    if (g_enable_ttl && ret == 0 && expire > 0) expire_push_cmd(EXPIRE_TYPE_HASH, &k, expire, (uint64_t)expire);
     reply->status = (ret == 0) ? KVS_RESP_OK : KVS_RESP_ERROR;
 }
 
@@ -266,7 +315,10 @@ static void cmd_skip_set(resp_request_t *req, resp_reply_t *reply) {
     if (req->argc < 3) { reply->status = KVS_RESP_PARSE_ERROR; return; }
     kv_data_t k = {req->argv[1], (size_t)req->argv_len[1]};
     kv_data_t v = {req->argv[2], (size_t)req->argv_len[2]};
-    int ret = kvs_skip_set(&global_skip, &k, &v, 0);
+     int64_t expire = 0;
+    if (g_enable_ttl) expire = parse_ttl(req);
+    int ret = kvs_skip_set(&global_skip, &k, &v, expire);
+    if (g_enable_ttl && ret == 0 && expire > 0) expire_push_cmd(EXPIRE_TYPE_SKIPLIST, &k, expire, (uint64_t)expire);
     reply->status = (ret == 0) ? KVS_RESP_OK : KVS_RESP_ERROR;
 }
 

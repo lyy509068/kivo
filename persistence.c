@@ -187,33 +187,31 @@ void kvs_persistence_flush_pending(void) {
     pthread_mutex_unlock(&aof_mutex);
 }
 
-// 增量日志加载与零拷贝内存映射重放
 
 void kvs_persistence_recover(void) {
     if (aof_fd < 0) {
         aof_fd = open(PERSISTENCE_FILE, O_RDONLY);
         if (aof_fd < 0) {
+            printf("[AOF] No AOF file found, skip recovery\n");
             return;
         }
     }
 
     struct stat st;
     if (fstat(aof_fd, &st) < 0 || st.st_size <= 0) {
-        pthread_mutex_unlock(&aof_mutex);
+        printf("[AOF] AOF file empty (size=%ld), skip recovery\n", st.st_size);
         return;
     }
 
     size_t file_size = st.st_size;
+    printf("[AOF] AOF file size: %zu bytes\n", file_size);
 
-    // mmap 共享映射
-    unsigned char *data = (unsigned char *)mmap(NULL, file_size, PROT_READ, MAP_SHARED, aof_fd, 0);
+    unsigned char *data = (unsigned char *)mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, aof_fd, 0);
     if (data == MAP_FAILED) {
         fprintf(stderr, "[AOF ERROR] mmap failed during recovery: %s\n", strerror(errno));
-        pthread_mutex_unlock(&aof_mutex);
         return;
     }
 
-    // 透传给上层协议解析模块进行反序列化重播
     int processed = protocol_process_recover((char *)data, file_size);
 
     munmap(data, file_size);
@@ -222,15 +220,13 @@ void kvs_persistence_recover(void) {
     fprintf(stdout, "[AOF] Log recovery completed. Total processed: %d bytes\n", processed);
     fflush(stdout);
 
-    // 重播结束切回可读写模式
     close(aof_fd);
     aof_fd = open(PERSISTENCE_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
     if (aof_fd < 0) {
-        fprintf(stderr, "[AOF ERROR] Failed to reopen AOF file after recovery: %s\n", 
-                strerror(errno));
+        fprintf(stderr, "[AOF ERROR] Failed to reopen AOF file after recovery: %s\n", strerror(errno));
     }
-
 }
+
 
 // 强制刷盘
 void kvs_persistence_force_flush(void) {

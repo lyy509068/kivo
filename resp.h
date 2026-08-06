@@ -34,7 +34,6 @@ typedef struct resp_request {
     int *argv_len;      // 参数长度数组
     char *buf_argv[RESP_STATIC_ARGC];
     int buf_argv_len[RESP_STATIC_ARGC];
-    uint32_t socket_tcp_seq;
 } resp_request_t;
 
 // 响应结构体

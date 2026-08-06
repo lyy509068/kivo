@@ -76,14 +76,6 @@ void ntyco_client_co(void *arg) {
     if (!c->rbuffer || !c->wbuffer) { ntyco_close_and_free_connection(fd); return; }
 
     while (1) {
-        extern int g_sync_file_done;
-        if (g_enable_repl_master && fd == g_slave_fd && g_sync_file_done) {// 协程控制权移交 
-            if (c->rbuffer) { kvs_free(c->rbuffer); c->rbuffer = NULL; }
-            if (c->wbuffer) { kvs_free(c->wbuffer); c->wbuffer = NULL; }
-            memset(c, 0, sizeof(struct conn)); 
-            return; 
-        }
-
         if (c->rlength >= MAX_RBUFFER_SIZE) {// 背压逻辑
             nty_coroutine_sleep(100); 
             continue;
@@ -130,6 +122,8 @@ void ntyco_client_co(void *arg) {
             send(fd, c->wbuffer, c->wlength, 0);
             c->wlength = 0;
         }
+
+        nty_coroutine_sleep(0); 
     }
 
     if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {

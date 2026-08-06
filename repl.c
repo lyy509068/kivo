@@ -394,7 +394,7 @@ void* pure_rdma_repl_slave_thread(void *arg) {
 
     double elapsed = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
     double throughput = total_received / elapsed / (1024.0 * 1024.0);
-    printf("[Perf RDMA] Synchronized EXACT %zu / %u bytes in %.3f seconds, throughput: %.2f MB/s\n",
+    printf("[Repl RDMA] Synchronized EXACT %zu / %u bytes in %.3f seconds, throughput: %.2f MB/s\n",
            total_received, total_file_size, elapsed, throughput);
     fflush(stdout);
 

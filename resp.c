@@ -14,7 +14,24 @@
 #define SYS_write 1
 #endif
 
-// 需要在业务层实现并提供给协议层的查表函数
+// 判断是否是需要持久化的写命令
+static int is_write_command(const char *cmd, int len) {
+    if (len == 3 && strncasecmp(cmd, "SET", 3) == 0) return 1;
+    if (len == 3 && strncasecmp(cmd, "DEL", 3) == 0) return 1;
+    if (len == 3 && strncasecmp(cmd, "MOD", 3) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "RSET", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "RDEL", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "RMOD", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "HSET", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "HDEL", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "HMOD", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "SSET", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "SDEL", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "SMOD", 4) == 0) return 1;
+    return 0;
+}
+
+// 查表函数
 extern command_t *lookup_command(const char *name);
 
 // 全局批量处理函数指针
@@ -193,25 +210,6 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
 
         char *cmd_raw_ptr = in_buf + processed; 
 
-        // 写入 WAL (AOF)
-        if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
-            kvs_persistence_write(cmd_raw_ptr, single_cmd_len);
-        }
-
-        // 写入主从复制 Backlog
-        extern int g_sync_file_done, g_slave_fd;
-        if (g_slave_fd > 0 && g_enable_repl_master && 
-            ((g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled)) {
-            if (g_repl_backlog_count < REPL_BACKLOG_MAX) {
-                int index = g_repl_backlog_tail; 
-                g_repl_backlog[index].data = kvs_malloc(single_cmd_len);
-                memcpy(g_repl_backlog[index].data, cmd_raw_ptr, single_cmd_len);
-                g_repl_backlog[index].len = single_cmd_len;
-                g_repl_backlog_tail = (g_repl_backlog_tail + 1) % REPL_BACKLOG_MAX;
-                g_repl_backlog_count++;
-            }
-        }
-
         // 零拷贝解包
         resp_request_t temp_req;
         resp_unpack(cmd_raw_ptr, &temp_req);
@@ -228,6 +226,7 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
                 handle_slave_rdma_connect(&temp_req, wbuf, wcap, wlen, fd);
                 is_special_network_cmd = 1;
             } else if (g_use_tcp_sync && strcasecmp(temp_req.argv[0], "SYNC") == 0) {
+                extern volatile int g_slave_fd;
                 g_slave_fd = fd; 
             }
         }
@@ -267,6 +266,41 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         replies[cmd_num].status = KVS_RESP_ERROR;
         replies[cmd_num].body = NULL;
         replies[cmd_num].body_len = 0;
+
+        // 写入 WAL (AOF) - 只写修改数据的命令
+        int is_write = (temp_req.argc > 0 && is_write_command(temp_req.argv[0], temp_req.argv_len[0]));
+
+        if (is_write) {
+            // 1. 写入前临时将 \0 还原为 \r，保证 cmd_raw_ptr 为标准的 RESP 报文
+            for (int i = 0; i < temp_req.argc; i++) {
+                temp_req.argv[i][temp_req.argv_len[i]] = '\r';
+            }
+
+            // 2. 写入 WAL (AOF)
+            if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
+                kvs_persistence_write(cmd_raw_ptr, single_cmd_len);
+            }
+
+            // 3. 写入主从复制 Backlog
+            extern int g_sync_file_done;
+            extern volatile int g_slave_fd;
+            if (g_slave_fd > 0 && g_enable_repl_master && ((g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled)) {
+                if (g_repl_backlog_count < REPL_BACKLOG_MAX) {
+                    int index = g_repl_backlog_tail; 
+                    g_repl_backlog[index].data = kvs_malloc(single_cmd_len);
+                    memcpy(g_repl_backlog[index].data, cmd_raw_ptr, single_cmd_len);
+                    g_repl_backlog[index].len = single_cmd_len;
+                    g_repl_backlog_tail = (g_repl_backlog_tail + 1) % REPL_BACKLOG_MAX;
+                    g_repl_backlog_count++;
+                    if(g_repl_backlog_count % 10000 == 0)printf("====================backlog_count=%d=========================\n",g_repl_backlog_count);
+                }
+            }
+
+            // 4. 写完后重新变回 \0，保证后续业务层处理时仍是合法的 C 字符串
+            for (int i = 0; i < temp_req.argc; i++) {
+                temp_req.argv[i][temp_req.argv_len[i]] = '\0';
+            }
+        }
 
         processed += single_cmd_len;
         cmd_num++;
@@ -322,7 +356,8 @@ void protocol_handle_internal_del(const char *cmd, const void *key, int key_len)
 
     if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) kvs_persistence_write(resp_buf, total_len);
 
-    extern int g_sync_file_done, g_slave_fd;
+    extern int g_sync_file_done;
+    extern volatile int g_slave_fd;
     if (g_slave_fd > 0 && g_enable_repl_master &&
         ((g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled)) {
         if (g_repl_backlog_count < REPL_BACKLOG_MAX) {
@@ -337,12 +372,11 @@ void protocol_handle_internal_del(const char *cmd, const void *key, int key_len)
     kvs_free(resp_buf);
 }
 
-/*
- *  恢复处理入口 (AOF/快照恢复)
- * 【核心修改】：即便是单条命令恢复，也严格遵从“协议层不执行”的原则，组装成 batch 交给业务层。
- */
+
 int protocol_process_recover(char *in_buf, int in_len) {
-    if (in_buf == NULL || in_len <= 0) return 0;
+    if (in_buf == NULL || in_len <= 0) {
+        return 0;
+    }
 
     int processed = 0;
     int recovered_count = 0;
@@ -352,49 +386,39 @@ int protocol_process_recover(char *in_buf, int in_len) {
         int single_cmd_len = 0;
         
         if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
-            break; 
+            break;
         }
         
-        resp_request_t req;
-        memset(&req, 0, sizeof(resp_request_t));
-        resp_unpack(in_buf + processed, &req);
+        resp_request_t temp_req;
+        memset(&temp_req, 0, sizeof(resp_request_t));
+        resp_unpack(in_buf + processed, &temp_req);
 
-        // 构建一个大小为 1 的批处理数组
-        parsed_cmd_t cmd_batch[1];
-        resp_reply_t reply_batch[1];
+        parsed_cmd_t cmds[1];
+        resp_reply_t replies[1];
         
-        cmd_batch[0].req = req;
-        if (req.argc > 0) {
-            cmd_batch[0].cmd = lookup_command(req.argv[0]);
-        } else {
-            cmd_batch[0].cmd = NULL;
-        }
-        
-        reply_batch[0].status = KVS_RESP_ERROR;
-        reply_batch[0].body = NULL;
-        reply_batch[0].body_len = 0;
+        cmds[0].req = temp_req;
+        cmds[0].cmd = (temp_req.argc > 0) ? lookup_command(temp_req.argv[0]) : NULL;
+        replies[0].status = KVS_RESP_ERROR;
+        replies[0].body = NULL;
+        replies[0].body_len = 0;
 
-        // 【核心修改】：通过统一入口调用，绝不直接写 cmd->proc(...)
         if (g_command_handler) {
-            g_command_handler(cmd_batch, reply_batch, 1);
-        } else {
-            reply_batch[0].status = KVS_RESP_UNKNOWN;
+            g_command_handler(cmds, replies, 1);
         }
 
-        if (reply_batch[0].status == KVS_RESP_OK) {
+        if (replies[0].status == KVS_RESP_OK) {
             recovered_count++;
         } else {
             skipped_count++;
         }
-        
-        if (reply_batch[0].body) {
-            kvs_free(reply_batch[0].body);
-            reply_batch[0].body = NULL;
+
+        if (replies[0].body) {
+            kvs_free(replies[0].body);
         }
-        
-        free_resp_request(&req); 
-        processed += single_cmd_len; 
+        free_resp_request(&temp_req);
+        processed += single_cmd_len;
     }
     
-    return processed; 
+    return processed;
 }
+

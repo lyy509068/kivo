@@ -82,7 +82,7 @@ int init_kvengine(void) {
         if (repl_init(rdma_dev) != 0) return -1;
         if (g_enable_repl_slave) {
             g_running = 1;
-            pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL);// 这里和同步层重复了！！！！
+            pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL);// 这里和同步层重复
         }
     }
     return 0;

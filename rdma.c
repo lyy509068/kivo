@@ -1,4 +1,4 @@
-#include "rdma.h" // 根据你的实际文件名修改
+#include "rdma.h" 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +6,28 @@
 #include <arpa/inet.h>
 
 #define MAX_RECV_WR 16
+
+/* ================= 新增：动态探测 GID 索引函数 ================= */
+// 自动在网卡中寻找 IPv4 映射的 RoCEv2 GID (格式为 ::ffff:x.x.x.x)
+static int rdma_get_local_sgid_index(struct ibv_context *ctx, int port_num, union ibv_gid *out_gid) {
+    for (int i = 0; i < 16; i++) {
+        union ibv_gid tg;
+        if (ibv_query_gid(ctx, port_num, i, &tg) != 0) continue;
+        
+        // 跳过全 0 的无效 GID
+        if (tg.global.interface_id == 0 && tg.global.subnet_prefix == 0) continue;
+        
+        // 匹配 IPv4-mapped IPv6 格式 (第10和11字节为 0xff 代表是 IPv4)
+        if (tg.raw[10] == 0xff && tg.raw[11] == 0xff) {
+            if (out_gid) *out_gid = tg;
+            return i;
+        }
+    }
+    // 如果没找到，降级回退到索引 1（兜底方案）
+    if (out_gid) ibv_query_gid(ctx, port_num, 1, out_gid);
+    return 1;
+}
+/* =============================================================== */
 
 struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     struct rdma_ring_ctx *rctx = calloc(1, sizeof(*rctx));
@@ -32,23 +54,18 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     rctx->pd = ibv_alloc_pd(rctx->ctx);
     if (!rctx->pd) goto err;
 
-    // 只有 Recv 才需要使用 channel 进行事件阻塞唤醒
     rctx->channel = ibv_create_comp_channel(rctx->ctx);
     if (!rctx->channel) goto err;
 
-    /* 【核心修复1】分离 Send CQ 和 Recv CQ */
-    // send_cq: 不绑定 channel，直接无阻塞轮询，避免与事件机制冲突
     rctx->send_cq = ibv_create_cq(rctx->ctx, 128, NULL, NULL, 0);
-    // recv_cq: 绑定 channel，用于 block 等待对方的 imm
     rctx->recv_cq = ibv_create_cq(rctx->ctx, MAX_RECV_WR, NULL, rctx->channel, 0);
     if (!rctx->send_cq || !rctx->recv_cq) goto err;
 
-    // 预先向 recv_cq 申请事件通知 (仅关注 Recv)
     if (ibv_req_notify_cq(rctx->recv_cq, 0) != 0) goto err;
 
     struct ibv_qp_init_attr qp_attr = {
-        .send_cq = rctx->send_cq, // 绑定自己的发送队列
-        .recv_cq = rctx->recv_cq, // 绑定自己的接收队列
+        .send_cq = rctx->send_cq,
+        .recv_cq = rctx->recv_cq,
         .cap = {
             .max_send_wr = 128,
             .max_recv_wr = MAX_RECV_WR,
@@ -61,25 +78,22 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     rctx->qp = ibv_create_qp(rctx->pd, &qp_attr);
     if (!rctx->qp) goto err;
 
-    // 分配并注册大块 Ring Buffer
     posix_memalign((void**)&rctx->buffer, 4096, RING_BUFFER_SIZE);
     rctx->mr_buf = ibv_reg_mr(rctx->pd, rctx->buffer, RING_BUFFER_SIZE,
                               IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     
-    // 分配并注册 Meta 控制元数据
     posix_memalign((void**)&rctx->local_meta, 4096, sizeof(struct ring_meta));
     memset(rctx->local_meta, 0, sizeof(struct ring_meta));
     rctx->mr_meta = ibv_reg_mr(rctx->pd, rctx->local_meta, sizeof(struct ring_meta),
                                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
 
-    // 填充本地 meta 的信息以供交换
     rctx->local_meta->buf_va = (uint64_t)(uintptr_t)rctx->buffer;
     rctx->local_meta->rkey   = rctx->mr_buf->rkey;
     rctx->local_meta->qpn    = rctx->qp->qp_num;
 
-    // 我们可以直接获取 GID 给握手使用 (假设 GID index 为 1，取决于 RoCEv2 环境)
-    ibv_query_gid(rctx->ctx, 1, 1, &rctx->local_meta->gid);
-
+    /* 使用动态嗅探替代写死的 ibv_query_gid(..., 1, 1, ...) */
+    rdma_get_local_sgid_index(rctx->ctx, 1, &rctx->local_meta->gid);
+    
     return rctx;
 
 err:
@@ -88,7 +102,6 @@ err:
 }
 
 int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote) {
-    // 拷贝远端信息
     memcpy(&rctx->remote_meta, remote, sizeof(struct ring_meta));
 
     // INIT
@@ -116,13 +129,14 @@ int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote) {
     memcpy(&attr.ah_attr.grh.dgid, &remote->gid, 16);
     attr.ah_attr.grh.flow_label = 0;
     attr.ah_attr.grh.hop_limit = 255;
-    attr.ah_attr.grh.sgid_index = 1;
+    
+    /* 【核心修复】将原来写死的 attr.ah_attr.grh.sgid_index = 1; 替换为动态获取 */
+    attr.ah_attr.grh.sgid_index = rdma_get_local_sgid_index(rctx->ctx, 1, NULL);
 
     if (ibv_modify_qp(rctx->qp, &attr, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | 
                       IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER))
         return -2;
 
-    /* 【核心修复2】在这里挂满最初的 Receive 队列 (布满捕鼠夹) */
     for (int i = 0; i < MAX_RECV_WR; i++) {
         rdma_slave_post_recv_envelope(rctx, i);
     }
