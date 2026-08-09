@@ -84,7 +84,7 @@ redis-benchmark -p 6379 -n 1000000 -r 100000000 -q SET key:__rand_int__ value:__
 
 KVstore测试命令
 redis-benchmark -p 2000 -n 1000000 -r 100000000 -q PING                                                         
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                                 
+redis-benchmark -p 2000 -n 10000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                                 
 redis-benchmark -p 2000 -n 1000000 -r 100000000 -q RSET key:__rand_int__ value:__rand_int__                      
 redis-benchmark -p 2000 -n 1000000 -r 100000000 -q HSET key:__rand_int__ value:__rand_int__                      
 redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SSET key:__rand_int__ value:__rand_int__ 
@@ -140,14 +140,15 @@ Custom_Mempool |    29332 |    33112 |    33112 |     8472 |    12232 |    12232
 # 全量同步性能测试
 服务端（接收方）：iperf3 -s
 客户端（发送方）：iperf3 -c 192.168.37.129 -t 10
-[Perf RDMA] Received 1073745114 bytes in 20.923 seconds, throughput: 48.94 MB/s
-[Perf TCP] Received 1073748861 bytes in 7.506 seconds, throughput: 136.43 MB/s
+[Repl RDMA] Synchronized EXACT 1073745556 / 1073745556 bytes in 15.674 seconds, throughput: 65.33 MB/s
+[Perf TCP] Received 1073749448/1073749448 bytes in 3.117 seconds, throughput: 328.53 MB/s
+
 
 # 增量同步性能测试
  转发方式	  QPS	    	
-基准（无同步）	 250419	 
-eBPF 转发       286856 	 	
-TCP 网络转发	222193 
+基准（无同步）	 347726	 
+eBPF 转发       351767 	 	
+TCP 网络转发	 403577
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？

@@ -379,7 +379,6 @@ static void cmd_sys_sync(resp_request_t *req, resp_reply_t *reply) {
     } else if (g_rdma_ctx) {            
         if (repl_sync_log_via_rdma() != 0) printf("[Repl Error] RDMA sync failed!\n");
     }
-    reply->status = KVS_RESP_SUCCESS;
 }
 
 static void cmd_sys_sync_done(resp_request_t *req, resp_reply_t *reply) {
@@ -388,7 +387,6 @@ static void cmd_sys_sync_done(resp_request_t *req, resp_reply_t *reply) {
     extern volatile int g_repl_backlog_enabled;
     g_sync_file_done = 1;
     g_repl_backlog_enabled = 0;
-    reply->status = KVS_RESP_SUCCESS;
 }
 
 // command_t 命令表

@@ -73,10 +73,13 @@ void ntyco_client_co(void *arg) {
     c->rlength = 0;
     c->wlength = 0;
 
-    if (!c->rbuffer || !c->wbuffer) { ntyco_close_and_free_connection(fd); return; }
+    if (!c->rbuffer || !c->wbuffer) { 
+        ntyco_close_and_free_connection(fd); 
+        return; 
+    }
 
     while (1) {
-        if (c->rlength >= MAX_RBUFFER_SIZE) {// 背压逻辑
+        if (c->rlength >= MAX_RBUFFER_SIZE) {
             nty_coroutine_sleep(100); 
             continue;
         }
@@ -84,12 +87,27 @@ void ntyco_client_co(void *arg) {
         if (c->rcapacity - c->rlength < 65536 && c->rcapacity < MAX_RBUFFER_SIZE) { 
             int new_capacity = c->rcapacity * 2;
             if (new_capacity < 65536) new_capacity = 65536;
-            c->rbuffer = (char *)kvs_realloc(c->rbuffer, new_capacity);
+            char *new_buf = (char *)kvs_realloc(c->rbuffer, new_capacity);
+            if (!new_buf) {
+                ntyco_close_and_free_connection(fd);
+                return;
+            }
+            c->rbuffer = new_buf;
             c->rcapacity = new_capacity;
         }
 
         int count = recv(fd, c->rbuffer + c->rlength, c->rcapacity - c->rlength, 0);
-        if (count <= 0) break;
+        
+        if (count < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                nty_coroutine_sleep(1);
+                continue;
+            }
+            break;
+        } else if (count == 0) {
+            break;
+        }
+        
         c->rlength += count;
 
         int total_parsed_bytes = 0;
@@ -108,7 +126,10 @@ void ntyco_client_co(void *arg) {
             );
             
             if (status == 1 || parsed_bytes == 0) break;
-            if (status < 0) { ntyco_close_and_free_connection(fd); return; }
+            if (status < 0) { 
+                ntyco_close_and_free_connection(fd); 
+                return; 
+            }
             total_parsed_bytes += parsed_bytes;
         }
 
@@ -136,26 +157,38 @@ void ntyco_client_co(void *arg) {
 void ntyco_master_repl_send_co(void *arg) {
     while (1) {
         if (g_slave_fd > 0 && g_repl_backlog_count > 0) {
-            repl_backlog_node_t *node = &g_repl_backlog[g_repl_backlog_head];
-            ssize_t sent = send(g_slave_fd, node->data, node->len, MSG_DONTWAIT);
+            int max_per_loop = 500;
+            int sent_count = 0;
+            
+            while (g_repl_backlog_count > 0 && sent_count < max_per_loop) {
+                repl_backlog_node_t *node = &g_repl_backlog[g_repl_backlog_head];
+                ssize_t sent = send(g_slave_fd, node->data, node->len, MSG_DONTWAIT);
 
-            if (sent > 0) {
-                if ((size_t)sent == node->len) {
-                    kvs_free(node->data);
-                    g_repl_backlog_head = (g_repl_backlog_head + 1) % REPL_BACKLOG_MAX;
-                    g_repl_backlog_count--;
-                } else {
-                    memmove(node->data, node->data + sent, node->len - sent);
-                    node->len -= sent;
+                if (sent > 0) {
+                    if ((size_t)sent == node->len) {
+                        kvs_free(node->data);
+                        g_repl_backlog_head = (g_repl_backlog_head + 1) % REPL_BACKLOG_MAX;
+                        g_repl_backlog_count--;
+                        sent_count++;
+                    } else {
+                        memmove(node->data, node->data + sent, node->len - sent);
+                        node->len -= sent;
+                        break;
+                    }
+                } else if (sent < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        break;
+                    } else {
+                        ntyco_close_and_free_connection(g_slave_fd);
+                        g_slave_fd = -1; 
+                        break;
+                    }
                 }
-            } else if (sent < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    nty_coroutine_sleep(50);
-                } else {
-                    ntyco_close_and_free_connection(g_slave_fd);
-                    g_slave_fd = -1; 
-                    printf("===========send falied!===================\n");
-                }
+            }
+            if (g_repl_backlog_count > 10000) {
+                nty_coroutine_sleep(0);   
+            } else if (g_repl_backlog_count > 0) {
+                nty_coroutine_sleep(1);   
             }
         } else {
             nty_coroutine_sleep(500);
@@ -165,24 +198,47 @@ void ntyco_master_repl_send_co(void *arg) {
 
 void ntyco_server_co(void *arg) {
     int listen_fd = (int)(long)arg;
+    
     while (1) {
         struct sockaddr_in clientaddr;
         socklen_t len = sizeof(clientaddr);
         int clientfd = accept(listen_fd, (struct sockaddr*)&clientaddr, &len);
-        if (clientfd < 0) continue;
-        if (clientfd >= CONNECTION_SIZE) { close(clientfd); continue; }
+        
+        if (clientfd < 0) { 
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                perror("accept failed");
+            }
+            nty_coroutine_sleep(10);
+            continue; 
+        }
+        if (clientfd >= CONNECTION_SIZE) { 
+            close(clientfd); 
+            continue; 
+        }
 
         ntyco_conn_list[clientfd].fd = clientfd;
         ntyco_conn_list[clientfd].role = CONN_CLIENT;
 
         nty_coroutine *client_co = NULL;
-        nty_coroutine_create(&client_co, ntyco_client_co, (void*)(long)clientfd);
+        if (nty_coroutine_create(&client_co, ntyco_client_co, (void*)(long)clientfd) < 0) {
+            close(clientfd);
+            continue;
+        }
+        
+        nty_coroutine_sleep(0);
     }
 }
 
 static int init_listen_socket(unsigned short port) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) return -1;
+
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags < 0 || fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(sockfd);
+        return -1;
+    }
+
     int opt = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in servaddr;
@@ -230,7 +286,7 @@ void ntyco_slave_init_co(void *arg) {
 
         nty_coroutine *co = NULL;
         nty_coroutine_create(&co, ntyco_client_co, (void*)(long)fd);
-    } else {
+    } else if(g_use_rdma_sync) {
         repl_connect_to_master(master_ip, master_port);
     }
 }
@@ -243,24 +299,27 @@ int ntyco_start(unsigned short port, stream_handler_t handler) {
     ntyco_conn_list[listen_fd].fd = listen_fd;
 
     nty_coroutine *server_co = NULL;
-    nty_coroutine_create(&server_co, ntyco_server_co, (void*)(long)listen_fd);
+    if (nty_coroutine_create(&server_co, ntyco_server_co, (void*)(long)listen_fd) < 0) {
+        close(listen_fd);
+        return -1;
+    }
 
-    if (g_enable_ttl){
+    if (g_enable_ttl) {
         nty_coroutine *expire_co = NULL;
         nty_coroutine_create(&expire_co, ntyco_expire_co, NULL);
     }
     
-    if(g_enable_repl_master || g_enable_repl_slave || g_enable_persistence){
+    if (g_enable_repl_master || g_enable_repl_slave || g_enable_persistence) {
         nty_coroutine *persistence_co = NULL;
         nty_coroutine_create(&persistence_co, ntyco_persistence_co, NULL);
     }
     
-    if (g_enable_repl_master ) {
+    if (g_enable_repl_master) {
         nty_coroutine *send_co = NULL;
         nty_coroutine_create(&send_co, ntyco_master_repl_send_co, NULL);
     }
 
-    if (g_enable_repl_slave){
+    if (g_enable_repl_slave) {
         nty_coroutine *slave_init_co = NULL;
         nty_coroutine_create(&slave_init_co, ntyco_slave_init_co, NULL);
     }
@@ -278,6 +337,7 @@ struct conn* ntyco_host_slave_connection(int fd, char *wbuf, int wcap, int wlen)
     c->wcapacity = wcap;
     c->wlength = wlen;
     c->rbuffer = (char *)kvs_malloc(65536);
+    if (!c->rbuffer) return NULL;
     c->rcapacity = 65536;
     c->rlength = 0;
 

@@ -292,7 +292,6 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
                     g_repl_backlog[index].len = single_cmd_len;
                     g_repl_backlog_tail = (g_repl_backlog_tail + 1) % REPL_BACKLOG_MAX;
                     g_repl_backlog_count++;
-                    if(g_repl_backlog_count % 10000 == 0)printf("====================backlog_count=%d=========================\n",g_repl_backlog_count);
                 }
             }
 

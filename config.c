@@ -19,8 +19,8 @@ static int parse_replication(const char *val) {
 }
 
 static int parse_transport(const char *val) {
-    if (strcmp(val, "TCP") == 0)   return 1;
-    if (strcmp(val, "RDMA") == 0)  return 0;
+    if (strcmp(val, "RDMA") == 0)  return 1;
+    if (strcmp(val, "TCP") == 0)   return 2;
     return 0;  
 }
 

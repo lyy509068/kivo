@@ -19,11 +19,13 @@
 #include <sys/epoll.h>
 #include <sys/mman.h>
 #include <sys/sendfile.h>
+#include <netinet/tcp.h>
+#include <endian.h>
+#include <errno.h>
 
 #define REPL_INIT_BUFFER_SIZE 4096
 #define DEFAULT_RDMA_DEVICE "rxe0"
 
-volatile int g_running = 1; 
 volatile int g_slave_fd = -1;
 
 volatile int g_sync_file_done = 0;
@@ -78,7 +80,6 @@ int repl_start_slave_engine(void) {
     for (int i = 0; i < 8; i++) {
         rdma_slave_post_recv_envelope(g_rdma_ctx, i); 
     }
-    g_running = 1;
     if (pthread_create(&repl_slave_tid, NULL, pure_rdma_repl_slave_thread, NULL) != 0) return -1;
     return 0;
 }
@@ -264,18 +265,47 @@ void handle_slave_rdma_connect(resp_request_t *req, char **wbuf, int *wcap, int 
 int repl_sync_log_via_rdma(void) {
     if (!g_rdma_ctx) return -1;
 
-    int src_fd = open(PERSISTENCE_FILE, O_RDONLY);
-    if (src_fd < 0) { perror("open"); return -1; }
-
+    // 检查文件是否存在
     struct stat st;
-    if (fstat(src_fd, &st) < 0) { perror("fstat"); close(src_fd); return -1; }
+    int file_exists = (stat(PERSISTENCE_FILE, &st) == 0);
+
+    // 文件不存在或大小为0
+    if (!file_exists || st.st_size == 0) {
+        printf("[RDMA Master] Log file %s (size=%ld), sending empty header.\n", file_exists ? "is empty" : "not found", file_exists ? st.st_size : 0);
+
+        // 预挂载 Recv 包，准备接收 Header ACK
+        rdma_slave_post_recv_envelope(g_rdma_ctx, 1);
+
+        // 发送文件大小为 0
+        int ret = rdma_master_write_log_imm(g_rdma_ctx, 0, 0);
+        if (ret < 0) {
+            fprintf(stderr, "[RDMA Master] Failed to send empty file size header\n");
+            return -1;
+        }
+
+        // 等待从端回复 Header ACK
+        uint32_t ack_signal = 0;
+        rdma_slave_block_and_get_imm(g_rdma_ctx, &ack_signal);
+
+        printf("[RDMA Master] Successfully sent empty sync header (size=0).\n");
+        return 0;
+    }
+
+    //文件存在且大小 > 0
+    int src_fd = open(PERSISTENCE_FILE, O_RDONLY);
+    if (src_fd < 0) {
+        perror("[RDMA Master] Failed to open file");
+        return -1;
+    }
 
     size_t file_size = st.st_size;
-    if (file_size == 0) { close(src_fd); return 0; }
 
     void *mapped = mmap(NULL, file_size, PROT_READ, MAP_SHARED, src_fd, 0);
     close(src_fd);
-    if (mapped == MAP_FAILED) { perror("mmap"); return -1; }
+    if (mapped == MAP_FAILED) {
+        perror("[RDMA Master] mmap failed");
+        return -1;
+    }
 
     // 预挂载 Recv 包，准备接收 Header ACK
     rdma_slave_post_recv_envelope(g_rdma_ctx, 1);
@@ -301,7 +331,7 @@ int repl_sync_log_via_rdma(void) {
 
         memcpy(g_rdma_ctx->buffer, (char *)mapped + offset, chunk_size);
 
-        // 在发送 Chunk 之前，先预挂载用于接收从端 Chunk ACK 的 Recv 包！
+        // 在发送 Chunk 之前，先预挂载用于接收从端 Chunk ACK 的 Recv 包
         rdma_slave_post_recv_envelope(g_rdma_ctx, 1);
 
         // 发送数据分片
@@ -324,7 +354,6 @@ int repl_sync_log_via_rdma(void) {
 
 // 从端 RDMA 专用：接收线程
 static volatile int g_slave_rdma_running = 0; // 防重入标志位
-
 void* pure_rdma_repl_slave_thread(void *arg) {
     if (g_slave_rdma_running) {
         printf("[Repl Slave] Slave thread already running, skipping duplicate start.\n");
@@ -333,7 +362,6 @@ void* pure_rdma_repl_slave_thread(void *arg) {
     g_slave_rdma_running = 1;
 
     struct timespec t_start, t_end;
-    size_t total_received = 0;
 
     // 预挂载 Recv 包，准备接收 Header
     rdma_slave_post_recv_envelope(g_rdma_ctx, 1);
@@ -341,11 +369,48 @@ void* pure_rdma_repl_slave_thread(void *arg) {
     // 阻塞接收文件总大小 Header
     uint32_t total_file_size = 0;
     int ret = rdma_slave_block_and_get_imm(g_rdma_ctx, &total_file_size);
-    if (ret < 0 || total_file_size == 0) {
+    if (ret < 0) {
         fprintf(stderr, "[Repl Slave] Failed to receive file size header\n");
         g_slave_rdma_running = 0;
         return NULL;
     }
+
+    // 空文件
+    if (total_file_size == 0) {
+        printf("[Repl Slave] Received empty sync header (size=0).\n");
+
+        // 创建空的日志文件
+        int empty_fd = open(PERSISTENCE_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (empty_fd < 0) {
+            perror("[Repl Slave] Failed to create empty AOF file");
+        } else {
+            close(empty_fd);
+            printf("[Repl Slave] Created empty AOF file: %s\n", PERSISTENCE_FILE);
+        }
+
+        // 在回复 ACK 前预挂载（保持协议一致）
+        rdma_slave_post_recv_envelope(g_rdma_ctx, 1);
+
+        // 回复 Header ACK 给主端
+        rdma_master_write_log_imm(g_rdma_ctx, 0, 1);
+
+        // 发送 SYNC_DONE 给主端
+        if (g_repl_ctx.fd >= 0) {
+            const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
+            ssize_t send_ret = send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
+            if (send_ret < 0) {
+                printf("[Repl Slave] SYNC_DONE send FAILED: errno=%d (%s)\n", errno, strerror(errno));
+            } else {
+                printf("[Repl Slave] SYNC_DONE sent successfully (empty sync).\n");
+            }
+        }
+
+        printf("[Repl Slave] Empty sync completed.\n");
+        g_slave_rdma_running = 0;
+        return NULL;
+    }
+
+    // 正常接收文件（total_file_size > 0）
 
     printf("[Repl Slave] Header received! Expecting total file size: %u bytes\n", total_file_size);
 
@@ -356,13 +421,15 @@ void* pure_rdma_repl_slave_thread(void *arg) {
         return NULL;
     }
 
-    // 在向主端发送 ACK 之前，先预挂载好接收第一个 Chunk 的 Recv 包！
+    // 在向主端发送 ACK 之前，先预挂载好接收第一个 Chunk 的 Recv 包
     rdma_slave_post_recv_envelope(g_rdma_ctx, 1);
 
     // 给主端回复 Header ACK
     rdma_master_write_log_imm(g_rdma_ctx, 0, 1);
 
     clock_gettime(CLOCK_MONOTONIC, &t_start);
+
+    size_t total_received = 0;
 
     // 循环接收分片数据
     while (total_received < total_file_size) {
@@ -379,7 +446,7 @@ void* pure_rdma_repl_slave_thread(void *arg) {
         write(local_fd, g_rdma_ctx->buffer, incoming_chunk_size);
         total_received += incoming_chunk_size;
 
-        // 如果还有未收完的数据，在回复 Chunk ACK 前提前挂载下一个 Chunk 的 Recv 包！
+        // 如果还有未收完的数据，在回复 Chunk ACK 前提前挂载下一个 Chunk 的 Recv 包
         if (total_received < total_file_size) {
             rdma_slave_post_recv_envelope(g_rdma_ctx, 1);
         }
@@ -394,17 +461,17 @@ void* pure_rdma_repl_slave_thread(void *arg) {
 
     double elapsed = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
     double throughput = total_received / elapsed / (1024.0 * 1024.0);
-    printf("[Repl RDMA] Synchronized EXACT %zu / %u bytes in %.3f seconds, throughput: %.2f MB/s\n",
-           total_received, total_file_size, elapsed, throughput);
+    printf("[Repl RDMA] Synchronized EXACT %zu / %u bytes in %.3f seconds, throughput: %.2f MB/s\n", total_received, total_file_size, elapsed, throughput);
     fflush(stdout);
 
+    // 发送 SYNC_DONE 给主端
     if (g_repl_ctx.fd >= 0) {
         const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
         ssize_t send_ret = send(g_repl_ctx.fd, done_cmd, strlen(done_cmd), 0);
         if (send_ret < 0) {
             printf("[Repl Slave] SYNC_DONE send FAILED: errno=%d (%s)\n", errno, strerror(errno));
         } else {
-            printf("[Repl Slave] SYNC_DONE send successfully.\n");
+            printf("[Repl Slave] SYNC_DONE sent successfully.\n");
         }
     }
 
@@ -422,74 +489,106 @@ int repl_sync_log_via_tcp(void) {
         return -1;
     }
 
+    // 检查文件是否存在
+    struct stat st;
+    int file_exists = (stat(PERSISTENCE_FILE, &st) == 0);
+    
+    // 文件不存在 或 文件大小为0
+    if (!file_exists || st.st_size == 0) {
+        printf("[Repl] Log file %s (size=%ld), sending empty header.\n", file_exists ? "is empty" : "not found", file_exists ? st.st_size : 0);
+        
+        // 发送文件大小为0的header
+        uint64_t net_size = htobe64(0);
+        if (send(g_slave_fd, &net_size, sizeof(net_size), MSG_NOSIGNAL) != sizeof(net_size)) {
+            perror("[Repl Error] Failed to send empty file size header");
+            return -1;
+        }
+        
+        printf("[Repl] Successfully sent empty sync header (size=0).\n");
+        return 0;
+    }
+
+    //文件存在且大小>0
     int src_fd = open(PERSISTENCE_FILE, O_RDONLY);
     if (src_fd < 0) {
         perror("[Repl Error] Failed to open file for TCP sync");
         return -1;
     }
 
-    struct stat st;
-    fstat(src_fd, &st);
-    size_t file_size = st.st_size;
-    if (file_size == 0) { close(src_fd); return 0; }
+    uint64_t file_size = st.st_size;
+
+    // 将套接字设为阻塞模式，并设置发送超时
+    int flags = fcntl(g_slave_fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(g_slave_fd, F_SETFL, flags & ~O_NONBLOCK);
 
     struct timeval tv = {.tv_sec = 10, .tv_usec = 0};
     setsockopt(g_slave_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
+    // 开启 TCP_CORK：阻塞 TCP 发送，直到 Header 和 sendfile 的数据合并为一个大包发送
+    int state = 1;
+    setsockopt(g_slave_fd, IPPROTO_TCP, TCP_CORK, &state, sizeof(state));
+
+    // 发送 8 字节 Header
     uint64_t net_size = htobe64(file_size);
-    ssize_t sent = send(g_slave_fd, &net_size, sizeof(net_size), MSG_NOSIGNAL);
-    if (sent != sizeof(net_size)) {
+    if (send(g_slave_fd, &net_size, sizeof(net_size), MSG_NOSIGNAL) != sizeof(net_size)) {
         perror("[Repl Error] Failed to send file size header");
         close(src_fd);
         return -1;
     }
 
+    // sendfile 零拷贝传输：磁盘 -> Page Cache (DMA 1) -> 网卡 (DMA 2)
     off_t offset = 0;
     size_t remaining = file_size;
-    
     while (remaining > 0) {
         ssize_t n = sendfile(g_slave_fd, src_fd, &offset, remaining);
-        
         if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                usleep(1000); 
-                continue;
-            }
+            if (errno == EAGAIN || errno == EINTR) continue;
             printf("[Repl Error] sendfile failed at offset %ld: %s\n", offset, strerror(errno));
             close(src_fd);
             return -1;
         }
-        
         if (n == 0) {
             printf("[Repl Error] Slave closed connection during transfer\n");
             close(src_fd);
             return -1;
         }
-        
         remaining -= n;
     }
 
+    // 取消 TCP_CORK，强制刷新缓冲区发送
+    state = 0;
+    setsockopt(g_slave_fd, IPPROTO_TCP, TCP_CORK, &state, sizeof(state));
+
     close(src_fd);
-    printf("Successfully sent %zu bytes.\n", file_size);
+    printf("Successfully sent %zu bytes via sendfile.\n", file_size);
     return 0;
 }
 
 // 从端专用：接收sendfile文件线程
+#ifndef F_SETPIPE_SZ
+#define F_SETPIPE_SZ 1031
+#endif
 void* tcp_sendfile_recv_thread(void *arg) {
     int fd = *(int*)arg;
     kvs_free(arg);
 
-    // 1. 接收文件大小（保持不变）
+    // 线程内使用阻塞式 recv/splice，才能在网络无数据时由内核挂起，避免直接返回 EAGAIN 报错退出
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+
+    struct timeval tv = {.tv_sec = 10, .tv_usec = 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    // 阻塞精准读取 8 字节 Header
     uint64_t net_size = 0;
     ssize_t n = recv(fd, &net_size, sizeof(net_size), MSG_WAITALL);
     if (n != sizeof(net_size)) {
-        printf("[Repl Slave] Failed to receive file size\n");
+        printf("[Repl Slave] Failed to receive file size (read %zd bytes)\n", n);
         close(fd);
         return NULL;
     }
     size_t file_size = be64toh(net_size);
 
-    // 2. 打开本地文件
     int local_fd = open(PERSISTENCE_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (local_fd < 0) {
         perror("[Repl Slave] open AOF file failed");
@@ -497,43 +596,46 @@ void* tcp_sendfile_recv_thread(void *arg) {
         return NULL;
     }
 
-    // 3. 创建内核管道，用于 splice 中转
+    // 创建管道并扩展管道缓冲区至 1MB（降低上下文切换频次）
     int pipefd[2];
     if (pipe(pipefd) < 0) {
-        perror("pipe");
+        perror("[Repl Slave] pipe creation failed");
         close(fd);
         close(local_fd);
         return NULL;
     }
+    fcntl(pipefd[1], F_SETPIPE_SZ, 1024 * 1024);
 
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
 
+    // 双 splice 管道中转零拷贝：网卡 -> Pipe (DMA 1) -> 磁盘 (DMA 2)
     size_t remaining = file_size;
     while (remaining > 0) {
-        // splice 从 socket 到管道（可移动的最大字节数）
-        ssize_t n_spliced = splice(fd, NULL, pipefd[1], NULL,
-                                   remaining, SPLICE_F_MOVE);
+        // Step A: Socket -> Pipe 管道
+        ssize_t n_spliced = splice(fd, NULL, pipefd[1], NULL, remaining, SPLICE_F_MOVE | SPLICE_F_MORE);
         if (n_spliced <= 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                usleep(1000);
-                continue;
-            }
+            if (n_spliced < 0 && (errno == EAGAIN || errno == EINTR)) continue;
             perror("[Repl Slave] splice from socket failed");
             break;
         }
 
-        // splice 从管道到文件，必须恰好移动与上一步相同的字节数
-        ssize_t n_written = splice(pipefd[0], NULL, local_fd, NULL,
-                                   n_spliced, SPLICE_F_MOVE);
-        if (n_written < 0) {
-            perror("[Repl Slave] splice to file failed");
-            break;
+        // Step B: Pipe 管道 -> 文件（循环确保 n_spliced 字节全部从 Pipe 泄出到磁盘）
+        size_t pipe_rem = n_spliced;
+        while (pipe_rem > 0) {
+            ssize_t n_written = splice(pipefd[0], NULL, local_fd, NULL, pipe_rem, SPLICE_F_MOVE | SPLICE_F_MORE);
+            if (n_written <= 0) {
+                if (n_written < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+                perror("[Repl Slave] splice to file failed");
+                goto cleanup;
+            }
+            pipe_rem -= n_written;
         }
-        // 逻辑上 n_written 应与 n_spliced 相等
-        remaining -= n_written;
+
+        remaining -= n_spliced;
     }
 
+cleanup:
     clock_gettime(CLOCK_MONOTONIC, &t_end);
 
     close(pipefd[0]);
@@ -542,23 +644,32 @@ void* tcp_sendfile_recv_thread(void *arg) {
     close(local_fd);
 
     size_t received = file_size - remaining;
-    double elapsed = (t_end.tv_sec - t_start.tv_sec) +
-                     (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
-    double throughput = received / elapsed / (1024.0 * 1024.0);
-    printf("[Perf TCP] Received %zu bytes in %.3f seconds, throughput: %.2f MB/s\n",
-           received, elapsed, throughput);
+    double elapsed = (t_end.tv_sec - t_start.tv_sec) + (t_end.tv_nsec - t_start.tv_nsec) / 1e9;
+    double throughput = elapsed > 0 ? (received / elapsed / (1024.0 * 1024.0)) : 0;
+    
+    printf("[Perf TCP] Received %zu/%zu bytes in %.3f seconds, throughput: %.2f MB/s\n", received, file_size, elapsed, throughput);
     fflush(stdout);
 
-    // 后续恢复与通知主端（保持不变）
-    kvs_persistence_recover();
-    const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
-    send(fd, done_cmd, strlen(done_cmd), 0);
+    // 校验传输完整性
+    if (received == file_size) {
+        kvs_persistence_recover();
+        const char *done_cmd = "*1\r\n$9\r\nSYNC_DONE\r\n";
+        send(fd, done_cmd, strlen(done_cmd), 0);
+    } else {
+        printf("[Repl Slave] Incomplete file reception! Transfer aborted.\n");
+    }
+
+    flags = fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
     return NULL;
 }
 
+
 // 通用函数
 void repl_destroy(void) {
-    if (g_running) g_running = 0;
 
     if (g_rdma_ctx) {
         rdma_ring_destroy(g_rdma_ctx);

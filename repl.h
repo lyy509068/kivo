@@ -11,6 +11,7 @@ extern int g_enable_mempool;
 extern int g_enable_repl_master;
 extern int g_enable_repl_slave;
 extern int g_use_tcp_sync;
+extern int g_use_rdma_sync;
 
 struct repl_context {
     int fd;

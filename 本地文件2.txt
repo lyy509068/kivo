@@ -208,3 +208,50 @@ io_uring     极高                    Linux only（5.1+内核）               
 ————————————————
 版权声明：本文为CSDN博主「m0_67522305」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
 原文链接：https://blog.csdn.net/m0_67522305/article/details/160737077
+常用命令：
+# 查看所有 RDMA 设备
+ibv_devices
+rdma link show
+
+# 删除指定设备
+sudo rdma link del rxe0
+sudo rdma link del siw0
+
+# 删除所有 RXE 设备
+sudo rdma link show | grep rxe | awk '{print $NF}' | xargs -I {} sudo rdma link del {}
+
+# 1. 加载内核模块（开机后执行一次）
+sudo modprobe rdma_rxe
+
+# 2. 查看可用网卡
+ip link show
+
+# 3. 创建 RXE 设备（绑定到物理网卡）
+sudo rdma link add rxe0 type rxe netdev ens33
+
+# 4. 验证设备创建成功
+ibv_devices
+# 输出示例:
+#     device           node GUID
+#     ------           ----------------
+#     rxe0             020c29fffe6d321f
+
+主端 - 看发给从机的数据
+# 找到 server 进程 PID
+MASTER_PID=$(pgrep -f "./server config.conf")
+
+# 追踪 sendto/sendmsg 系统调用，打印数据内容
+sudo strace -p $MASTER_PID -e trace=sendto,sendmsg -s 500 -x 2>&1 | grep -v "res=0"
+
+# 假设从机 IP 是 192.168.37.129
+sudo tcpdump -i any -s 0 -A -nn 'host 192.168.37.129 and port 2000' 2>/dev/null | grep -E '^\*|^\$|^\+|^\-'
+
+从端 - 看从内核收到的数据
+# 找到 server 进程 PID
+SLAVE_PID=$(pgrep -f "./server config.conf")
+
+# 追踪 recvfrom/recvmsg 系统调用
+sudo strace -p $SLAVE_PID -e trace=recvfrom,recvmsg -s 500 -x 2>&1 | head -50
+
+# 假设主机 IP 是 192.168.37.128
+sudo tcpdump -i any -s 0 -A -nn 'host 192.168.37.128 and port 2000' 2>/dev/null | grep -E '^\*|^\$|^\+|^\-'
