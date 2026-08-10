@@ -176,8 +176,8 @@ run_round_2() {
     stop_ebpf_relay
     unload_ebpf
     
-    #stop_server "$SLAVE_USER" "$SLAVE_IP"
-    #stop_server "$MASTER_USER" "$MASTER_IP"
+    stop_server "$SLAVE_USER" "$SLAVE_IP"
+    stop_server "$MASTER_USER" "$MASTER_IP"
     
     echo "[完成] 第二轮测试结束"
 }
@@ -227,11 +227,11 @@ echo "生成时间: $(date '+%Y-%m-%d %H:%M:%S')" > "$RESULT_FILE"
 remote_exec "$MASTER_USER" "$MASTER_IP" "mkdir -p $MASTER_PROJ_DIR" || true
 remote_exec "$SLAVE_USER" "$SLAVE_IP" "mkdir -p $SLAVE_PROJ_DIR" || true
 
-#run_round_1
-#sleep 3
+run_round_1
+sleep 3
 run_round_2
 sleep 3
-#run_round_3
+run_round_3
 
 echo -e "\n=============================================="
 echo " 所有测试完成！"

@@ -90,7 +90,6 @@ void kvs_mempool_init(void) {
     g_typed_pools[OBJ_ARRAY]  = mem_pool_create(sizeof(kvs_array_item_t));
     g_typed_pools[OBJ_RBTREE] = mem_pool_create(sizeof(rbtree_node_binary_t));
     g_typed_pools[OBJ_HASH]   = mem_pool_create(sizeof(hashnode_t));
-    g_typed_pools[OBJ_SKIP]   = mem_pool_create(sizeof(skipnode_binary_t));
 
     // 初始化通用 Slab 池
     for (int i = 0; i < SLAB_COUNT; i++) {

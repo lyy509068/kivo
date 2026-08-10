@@ -1,0 +1,19 @@
+生成时间: 2026-08-10 07:40:35
+
+=================== 第一轮：基准测试 ===================
+Total:       100000 commands
+Time:        0.244 seconds
+Average QPS: 410654
+
+
+=================== 第二轮：eBPF 转发 ===================
+Total:       100000 commands
+Time:        0.323 seconds
+Average QPS: 309453
+
+
+=================== 第三轮：TCP 网络转发 ===================
+Total:       100000 commands
+Time:        0.289 seconds
+Average QPS: 345698
+

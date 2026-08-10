@@ -194,7 +194,7 @@ int kvs_snapshot_save(void) {
     fsync(fd);
     close(fd);
 
-    // 【核心修改】：原子重命名覆盖正式快照文件 (Atomic Rename)
+    // 重命名覆盖正式快照文件 (Atomic Rename)
     if (rename(tmp_filename, final_filename) < 0) {
         perror("[SNAP] Rename snapshot file failed");
         unlink(tmp_filename);

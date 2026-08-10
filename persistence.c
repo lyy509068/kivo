@@ -29,9 +29,6 @@ typedef struct {
 // 持久化上下文
 static int aof_fd = -1;
 static struct io_uring aof_ring;
-static pthread_mutex_t aof_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t aof_cond = PTHREAD_COND_INITIALIZER;
-
 // 双缓冲区架构
 static aof_buffer_t aof_buf_active;
 static aof_buffer_t aof_buf_flush;
@@ -85,7 +82,7 @@ int kvs_persistence_init(void) {
     return 0;
 }
 
-// 触发双缓冲交换与 io_uring 刷盘（调用时须持有 aof_mutex）
+// 触发双缓冲交换与 io_uring 刷盘
 static void aof_trigger_flush_nolock(void) {
     if (aof_buf_active.len == 0 || is_io_uring_busy) {
         return;
@@ -110,7 +107,7 @@ static void aof_trigger_flush_nolock(void) {
         aof_file_offset += flush_len; // 提前推进文件偏移
         io_uring_submit(&aof_ring);
     } else {
-        // SQE 满时清除 busy 标志，留在下一个 epoll 周期再次尝试提交，绝不在 worker 线程中同步 pwrite 阻塞网络
+        // SQE 满时清除 busy 标志，下一次调用这个函数再次尝试提交
         __sync_lock_release(&is_io_uring_busy);
     }
 }
@@ -132,7 +129,6 @@ static void aof_check_cqe_nonblock(void) {
     if (found) {
         __sync_lock_release(&is_io_uring_busy);
         aof_buf_flush.len = 0;
-        pthread_cond_signal(&aof_cond);
 
         // 增加阀值判断，防止 CQE 完成后立刻平刷几字节的 active 数据
         if (aof_buf_active.len >= AOF_MIN_FLUSH_SIZE) {
@@ -141,11 +137,9 @@ static void aof_check_cqe_nonblock(void) {
     }
 }
 
-// 写日志函数：纯内存追加，极速释放锁
+// 写日志函数：纯内存追加
 void kvs_persistence_write(const void *data, int len) {
     if (aof_fd < 0 || !data || len <= 0) return;
-
-    pthread_mutex_lock(&aof_mutex);
 
     // 如果 active 缓冲区装满了，尝试触发一次刷盘
     if (aof_buf_active.len + len > AOF_BUF_SIZE) {
@@ -159,14 +153,12 @@ void kvs_persistence_write(const void *data, int len) {
     memcpy(aof_buf_active.buf + aof_buf_active.len, data, len);
     aof_buf_active.len += len;
 
-    pthread_mutex_unlock(&aof_mutex);
+    
 }
 
 // 批量刷盘（容量 + 超时双控制）
 void kvs_persistence_flush_pending(void) {
     if (aof_fd < 0) return;
-
-    pthread_mutex_lock(&aof_mutex);
 
     // 1. 先收割可能完成的 CQE
     aof_check_cqe_nonblock();
@@ -183,8 +175,6 @@ void kvs_persistence_flush_pending(void) {
         aof_trigger_flush_nolock();
         g_last_flush_time_ms = now; // 更新刷盘时间
     }
-
-    pthread_mutex_unlock(&aof_mutex);
 }
 
 
@@ -232,20 +222,18 @@ void kvs_persistence_recover(void) {
 void kvs_persistence_force_flush(void) {
     if (aof_fd < 0) return;
 
-    pthread_mutex_lock(&aof_mutex);
     aof_check_cqe_nonblock();
 
     if (!is_io_uring_busy && aof_buf_active.len > 0) {
         aof_trigger_flush_nolock();
         g_last_flush_time_ms = get_current_ms();
     }
-    pthread_mutex_unlock(&aof_mutex);
+    
 }
 
 // 销毁与收尾落盘 
 void kvs_persistence_close(void) {
-    pthread_mutex_lock(&aof_mutex);
-
+    
     // 步骤 1：收割所有已完成的 CQE
     aof_check_cqe_nonblock();
 
@@ -330,6 +318,4 @@ void kvs_persistence_close(void) {
         close(aof_fd);
         aof_fd = -1;
     }
-
-    pthread_mutex_unlock(&aof_mutex);
 }

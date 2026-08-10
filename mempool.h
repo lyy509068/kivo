@@ -5,14 +5,13 @@
 #include <stdint.h>
 
 #define POOL_BLOCK_SIZE (64 * 1024)
-#define MAX_SLAB_SIZE 4096
+#define MAX_SLAB_SIZE 8192
 
 
 typedef enum {
     OBJ_ARRAY = 0,
     OBJ_RBTREE,
     OBJ_HASH,
-    OBJ_SKIP,
     OBJ_MAX
 } kvs_obj_type_t;
 

@@ -157,7 +157,7 @@ void ntyco_client_co(void *arg) {
 void ntyco_master_repl_send_co(void *arg) {
     while (1) {
         if (g_slave_fd > 0 && g_repl_backlog_count > 0) {
-            int max_per_loop = 500;
+            int max_per_loop = 1000;
             int sent_count = 0;
             
             while (g_repl_backlog_count > 0 && sent_count < max_per_loop) {
@@ -191,7 +191,7 @@ void ntyco_master_repl_send_co(void *arg) {
                 nty_coroutine_sleep(1);   
             }
         } else {
-            nty_coroutine_sleep(500);
+            nty_coroutine_sleep(10);
         }
     }
 }
