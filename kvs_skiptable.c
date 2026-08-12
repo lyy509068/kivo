@@ -9,6 +9,19 @@
 
 kvs_skip_t global_skip = {0};
 
+static inline int kv_data_compare_fast(
+    const kv_data_t *a,
+    const kv_data_t *b)
+{
+    if (a->len != b->len)
+        return a->len < b->len ? -1 : 1;
+
+    if (a->data == b->data)
+        return 0;
+
+    return memcmp(a->data, b->data, a->len);
+}
+
 static inline int64_t skip_now_if_ttl(void) {
     if (!g_enable_ttl) return 0;
     struct timeval tv;
@@ -116,7 +129,7 @@ static void skip_find_update(kvs_skip_t *skip, kv_data_t *key,
     for (int i = skip->level; i >= 0; i--) {
         size_t level_cmp = 0;
         while (current->forward[i] && 
-               kv_data_compare(&current->forward[i]->key, key) < 0) {
+               kv_data_compare_fast(&current->forward[i]->key, key) < 0) {
             current = current->forward[i];
             level_cmp++;
         }
@@ -126,7 +139,7 @@ static void skip_find_update(kvs_skip_t *skip, kv_data_t *key,
     current = current->forward[0];
     
     if (found_node) {
-        if (current && kv_data_compare(&current->key, key) == 0) {
+        if (current && kv_data_compare_fast(&current->key, key) == 0) {
             *found_node = current;
         } else {
             *found_node = NULL;

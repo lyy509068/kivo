@@ -7,13 +7,12 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <errno.h>
-#include <time.h>
 
 #define SERVER_IP "192.168.37.128"
 #define SERVER_PORT 2000
 #define TOTAL_COMMANDS 100000
 
-#define PIPELINE_WINDOW 500
+#define PIPELINE_WINDOW 100
 #define RECV_BUF_SIZE (2 * 1024 * 1024)
 #define SEND_BUF_SIZE (64 * 1024)
 
@@ -75,8 +74,6 @@ int build_resp_set(char *buf, const char *cmd, const char *key, const char *val)
 }
 
 int main() {
-    srand(time(NULL));
-
     int sock = connect_server();
     if (sock < 0) {
         printf("[FATAL] Cannot connect to server!\n");
@@ -91,7 +88,10 @@ int main() {
         return -1;
     }
 
-    printf("QPS Test: %d commands (1%% array, 33%% rbtree, 33%% hash, 33%% skiplist)\n", TOTAL_COMMANDS);
+    // 固定引擎轮转：SET → RSET → HSET → SSET
+    const char *eng_cmds[] = {"SET", "RSET", "HSET", "SSET"};
+
+    printf("QPS Test: %d commands (fixed order: SET → RSET → HSET → SSET)\n", TOTAL_COMMANDS);
 
     int recv_buf_len = 0;
     int sent_cnt = 0;
@@ -106,20 +106,16 @@ int main() {
         // 1. 批量打包发送
         int send_len = 0;
         while (sent_cnt - acked_cnt < PIPELINE_WINDOW && sent_cnt < TOTAL_COMMANDS) {
-            // 按比例选引擎
-            int r = rand() % 100;
-            int eng;
-            if (r < 1)       eng = 1;   // SET 1%
-            else if (r < 34) eng = 2;   // RSET 33%
-            else if (r < 67) eng = 3;   // HSET 33%
-            else             eng = 4;   // SSET 33%
+            // 固定轮转引擎
+            int eng_idx = sent_cnt % 4;   // 0=SET, 1=RSET, 2=HSET, 3=SSET
+            int eng = eng_idx + 1;        // 1-4
 
             char key[32], val[32];
-            sprintf(key, "localkey_%06d", sent_cnt);
+            sprintf(key, "key_%06d", sent_cnt);
             sprintf(val, "value_%06d", sent_cnt);
 
             char cmd[256];
-            int cmd_len = build_resp_set(cmd, SET_CMDS[eng], key, val);
+            int cmd_len = build_resp_set(cmd, eng_cmds[eng_idx], key, val);
 
             if (send_len + cmd_len > SEND_BUF_SIZE) break;
 
@@ -171,7 +167,7 @@ int main() {
     printf("Total:       %d commands\n", TOTAL_COMMANDS);
     printf("Time:        %.3f seconds\n", elapsed);
     printf("Average QPS: %.0f\n", TOTAL_COMMANDS / elapsed);
-    printf("\nEngine distribution:\n");
+    printf("\nEngine distribution (fixed rotation):\n");
     printf("  SET  (Array):    %ld (%.1f%%)\n", eng_counts[1], eng_counts[1] * 100.0 / TOTAL_COMMANDS);
     printf("  RSET (RBTree):   %ld (%.1f%%)\n", eng_counts[2], eng_counts[2] * 100.0 / TOTAL_COMMANDS);
     printf("  HSET (Hash):     %ld (%.1f%%)\n", eng_counts[3], eng_counts[3] * 100.0 / TOTAL_COMMANDS);

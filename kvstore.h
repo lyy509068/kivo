@@ -21,7 +21,7 @@ extern int g_enable_mempool;
 extern int g_enable_repl_master;
 extern int g_enable_repl_slave;
 
-command_t *lookup_command(const char *name);
+command_t *lookup_command(const char *name, int len);
 int kvs_execute_batch(parsed_cmd_t *cmds, resp_reply_t *replies, int cmd_num);
 typedef int (*cmd_handler_t)(parsed_cmd_t *cmds, resp_reply_t *replies, int cmd_num);
 
@@ -58,12 +58,12 @@ int kvs_snapshot_load(void);
 
 // 二进制数据块
 typedef struct {    
-    void *data;     // 数据
-    size_t len;     // 数据长度
+    void *data;          // 数据
+    size_t len;          // 数据长度
+    uint64_t hash_cache; // 缓存哈希值，0 表示未计算
 } kv_data_t;
+
 // 底层数据结构二进制辅助函数
-int kv_data_cmp(kv_data_t *a, kv_data_t *b);
-unsigned long kv_data_hash(kv_data_t *key, int size);
 int kv_data_dup(kv_data_t *dst, kv_data_t *src);
 void kv_data_free(kv_data_t *data);
 int kv_data_create(kv_data_t *data, void *src, size_t len);// 创建 kv_data_t
@@ -119,9 +119,10 @@ typedef struct _rbtree_node_binary {
     struct _rbtree_node_binary *right;
     struct _rbtree_node_binary *parent;
 
-    kv_data_t key;                     
-    kv_data_t value;                   
-    int64_t expire_time;              
+    int64_t expire_time;
+    kv_data_t key;               // key 的 kv_data_t，data 指向内嵌区域
+    kv_data_t value;             // value 的 kv_data_t，data 指向内嵌区域
+    char data[];                 // 柔性数组，实际存储 key 和 value 的原始数据
 } rbtree_node_binary_t;
 
 // 底层红黑树框架控制结构（内部转换使用）
@@ -149,10 +150,11 @@ int kvs_rbtree_del_if_expired(kvs_rbtree_t *inst, kv_data_t *key, int64_t expect
 #if ENABLE_HASH
 
 typedef struct hashnode_s {
-    kv_data_t key;
-    kv_data_t value;
-    int64_t expire_time;     // 绝对过期时间戳(ms)，0表示不过期
-    struct hashnode_s *next; // 链地址法处理哈希冲突
+    struct hashnode_s *next;   // 链表指针
+    int64_t expire_time;       // 过期时间戳（毫秒）
+    kv_data_t key;             // key 的 kv_data_t，data 指向内嵌区域
+    kv_data_t value;           // value 的 kv_data_t，data 指向内嵌区域
+    char data[];               // 柔性数组，实际存储 key 和 value 的原始数据
 } hashnode_t;
 
 typedef struct hashtable_s {

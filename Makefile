@@ -1,14 +1,10 @@
 CC = gcc
 CLANG = clang
 
-# ========== ASAN 配置（只给 server 用） ==========
-ASAN_FLAGS = -fsanitize=address -fno-omit-frame-pointer -g
-
-CFLAGS = -Wall -g -I ./NtyCo/core/
-CFLAGS_ASAN = $(CFLAGS) $(ASAN_FLAGS)
+# ========== 编译标志（开启优化和帧指针，适合 perf 热点分析） ==========
+CFLAGS = -Wall -g -O2 -fno-omit-frame-pointer -I ./NtyCo/core/
 
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm
-LDFLAGS_ASAN = $(LDFLAGS) $(ASAN_FLAGS)
 
 BPF_LDFLAGS = -lbpf -lelf -lz
 
@@ -26,7 +22,8 @@ BPF_KERN_OBJ = sync_filter.bpf.o
 
 TESTCASES = test_fullpersistence1 test_fullpersistence2 test_incrementpersistence1 \
             test_incrementpersistence2 test_mempool test_master test_slave test_TTL \
-            test_batchcommand test_specialchars test_save test_1G test_transport
+            test_batchcommand test_batchcommand_verify test_specialchars test_save \
+            test_1G test_1G_verify test_transport test_transport_verify \
 
 SUBDIR = ./NtyCo/
 
@@ -34,17 +31,10 @@ OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.
        kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o config.o\
        rdma.o repl.o expire.o
 
-.PHONY: all clean ECHO $(SUBDIR) load_bpf unload_bpf asan
+.PHONY: all clean ECHO $(SUBDIR) load_bpf unload_bpf
 
-# ========== 默认编译（不带 ASAN） ==========
+# ========== 默认编译 ==========
 all: $(SUBDIR) $(BPF_KERN_OBJ) $(TARGET) $(RELAY_TARGET) $(TESTCASES)
-
-# ========== 带 ASAN 编译 ==========
-asan:
-	@echo "========================================="
-	@echo "  Compiling with AddressSanitizer (ASAN)"
-	@echo "========================================="
-	@$(MAKE) all CFLAGS="$(CFLAGS_ASAN)" LDFLAGS="$(LDFLAGS_ASAN)"
 
 $(SUBDIR): ECHO
 	make -C $@
@@ -61,15 +51,14 @@ $(BPF_KERN_OBJ): sync_filter.bpf.c
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $(OBJS) $(LDFLAGS)
 
-# eBPF 用户态中继程序（不用 ASAN）
+# eBPF 用户态中继程序
 $(RELAY_TARGET): ebpf_relay.o
 	$(CC) -o $@ $< $(BPF_LDFLAGS)
 
-# ebpf_relay.o 永远不用 ASAN
 ebpf_relay.o: ebpf_relay.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# 测试用例（不用 ASAN）
+# 测试用例
 $(TESTCASES): %: %.c
 	$(CC) $(CFLAGS) -o $@ $<
 

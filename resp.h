@@ -7,7 +7,7 @@
 
 // 批量处理与命令查表支持
 #ifndef PIPELINE_MAX
-#define PIPELINE_MAX 512
+#define PIPELINE_MAX 200
 #endif
 
 struct conn;
@@ -34,6 +34,7 @@ typedef struct resp_request {
     int *argv_len;      // 参数长度数组
     char *buf_argv[RESP_STATIC_ARGC];
     int buf_argv_len[RESP_STATIC_ARGC];
+    int is_dynamic;     // 标记 argv/argv_len 是否动态分配
 } resp_request_t;
 
 // 响应结构体
@@ -51,9 +52,11 @@ typedef struct command_s {
 } command_t;
 
 // 经过协议层解析和查表后生成的 命令对象
-typedef struct parsed_cmd_s {
+typedef struct {
     resp_request_t req;
-    command_t *cmd;      // 已通过 lookup_command 查到的业务指针
+    command_t *cmd;
+    char *cmd_raw_ptr;      // 新增：指向原始 RESP 报文
+    int single_cmd_len;     // 新增：当前命令长度
 } parsed_cmd_t;
 
 // 【核心修改】：协议层用来调用业务层的回调函数签名

@@ -32,7 +32,7 @@ static int is_write_command(const char *cmd, int len) {
 }
 
 // 查表函数
-extern command_t *lookup_command(const char *name);
+extern command_t *lookup_command(const char *name, int len);
 
 // 全局批量处理函数指针
 static cmd_handler_t g_command_handler = NULL;
@@ -85,47 +85,60 @@ static int has_complete_resp_command(const char *buf, int buf_len, int *out_cmd_
     return 1;
 }
 
-/*
- * 零拷贝解包函数
- * 直接指向 req_buf，并在 \r\n 处替换 \r 为 \0
- */
-static void resp_unpack(char *req_buf, resp_request_t *req) {
+static void resp_unpack_no_modify(char *req_buf, resp_request_t *req) {
     char *p = req_buf;
     const char *crlf = find_crlf(p, 100); 
+    
+    if (!crlf) {
+        req->argc = 0;
+        req->is_dynamic = 0;
+        return;
+    }
     
     req->argc = atoi(p + 1);
     
     if (req->argc <= RESP_STATIC_ARGC) {
         req->argv = req->buf_argv;
         req->argv_len = req->buf_argv_len;
+        req->is_dynamic = 0;
     } else {
         req->argv = (char **)kvs_malloc(sizeof(char *) * req->argc);
         req->argv_len = (int *)kvs_malloc(sizeof(int) * req->argc);
+        req->is_dynamic = 1;
     }
     
     p = (char *)(crlf + 2);
     
     for (int i = 0; i < req->argc; i++) {
         crlf = find_crlf(p, 128);
+        if (!crlf) {
+            req->argc = i;
+            return;
+        }
         int arg_len = atoi(p + 1);
         p = (char *)(crlf + 2);
         
         req->argv_len[i] = arg_len;
-        req->argv[i] = p;          // 零拷贝
-        p[arg_len] = '\0';         // 原地替换
+        req->argv[i] = p;          // 指向 in_buf，零拷贝
         
-        p += arg_len + 2;          // 跳到下一个参数开头
+        p += arg_len + 2;
     }
 }
 
-/*
- * 极简释放函数
- */
 static void free_resp_request(resp_request_t *req) {
-    if (req->argc > RESP_STATIC_ARGC) {
-        if (req->argv) kvs_free(req->argv);
-        if (req->argv_len) kvs_free(req->argv_len);
+    if (!req) return;
+    if (req->is_dynamic) {
+        if (req->argv) {
+            kvs_free(req->argv);
+            req->argv = NULL;
+        }
+        if (req->argv_len) {
+            kvs_free(req->argv_len);
+            req->argv_len = NULL;
+        }
+        req->is_dynamic = 0;
     }
+    req->argc = 0;
 }
 
 /*
@@ -179,10 +192,6 @@ void resp_pack_with_realloc(char **wbuf, int *wcap, int *wlen, resp_reply_t *rep
     resp_pack(*wbuf, wlen, reply);
 }
 
-
-/*
- * 协议层流处理入口（Pipeline 批量零拷贝版）
- */
 int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, int *wcap, int *wlen, int fd) {
     if (in_len <= 0) {
         *parsed = 0;
@@ -190,8 +199,14 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
     }
 
     if (in_buf[0] != '*') {
-        return -1; // 报文不合法
+        return -1;
     }
+
+    // ---------- 预分配池（栈上） ----------
+    #define MAX_ARGC 16  // 足够大
+    char *cmd_argv_pool[PIPELINE_MAX][MAX_ARGC];
+    int cmd_argv_len_pool[PIPELINE_MAX][MAX_ARGC];
+    // -----------------------------------
 
     int processed = 0;
     int cmd_num = 0;
@@ -199,23 +214,20 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
     parsed_cmd_t cmds[PIPELINE_MAX];
     resp_reply_t replies[PIPELINE_MAX];
 
-    // 阶段 1：解析所有可用命令到本地数组中，只做解析和查表，不执行
     while (processed < in_len && cmd_num < PIPELINE_MAX) {
         int single_cmd_len = 0;
         
-        // 探测是否有完整 RESP 请求
         if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
-            break; // 半包，跳出循环等待后续数据
+            break;
         }
 
         char *cmd_raw_ptr = in_buf + processed; 
 
-        // 零拷贝解包
         resp_request_t temp_req;
-        resp_unpack(cmd_raw_ptr, &temp_req);
+        memset(&temp_req, 0, sizeof(resp_request_t));
+        resp_unpack_no_modify(cmd_raw_ptr, &temp_req);
 
-        // 握手与特例命令拦截 (RDMA / SYNC / PING) 
-        // （这些属于底层网络机制，直接在协议层短路拦截）
+        // ---- 特殊命令处理（RDMA / SYNC / PING） ----
         int is_special_network_cmd = 0;
         
         if (g_enable_repl_master && temp_req.argc > 0) {
@@ -231,7 +243,7 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             }
         }
 
-        if (temp_req.argc > 0 && strcasecmp(temp_req.argv[0], "PING") == 0) {
+        if (temp_req.argc > 0 && temp_req.argv_len[0] == 4 && strncasecmp(temp_req.argv[0], "PING", 4) == 0) {
             resp_reply_t ping_reply = {KVS_RESP_ERROR, NULL, 0};
             if (temp_req.argc == 1) ping_reply.status = KVS_RESP_PONG;
             else if (temp_req.argc == 2) {
@@ -254,34 +266,40 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             continue; 
         }
         
-        // 构建批量业务命令: 只查表赋值指针，不执行!
-        cmds[cmd_num].req = temp_req;
-        if (temp_req.argc > 0) {
-            cmds[cmd_num].cmd = lookup_command(temp_req.argv[0]);
+        // ---- 存储命令信息（使用池，零拷贝） ----
+        int argc = temp_req.argc;
+        if (argc > MAX_ARGC) {
+            // 罕见情况：参数超过预定义，改用动态分配（fallback）
+            cmds[cmd_num].req.argc = argc;
+            cmds[cmd_num].req.is_dynamic = 1;
+            cmds[cmd_num].req.argv = (char **)kvs_malloc(sizeof(char *) * argc);
+            cmds[cmd_num].req.argv_len = (int *)kvs_malloc(sizeof(int) * argc);
+            memcpy(cmds[cmd_num].req.argv, temp_req.argv, sizeof(char *) * argc);
+            memcpy(cmds[cmd_num].req.argv_len, temp_req.argv_len, sizeof(int) * argc);
         } else {
-            cmds[cmd_num].cmd = NULL;
+            cmds[cmd_num].req.argc = argc;
+            cmds[cmd_num].req.is_dynamic = 0;               // 使用池，不释放
+            cmds[cmd_num].req.argv = cmd_argv_pool[cmd_num];
+            cmds[cmd_num].req.argv_len = cmd_argv_len_pool[cmd_num];
+            memcpy(cmd_argv_pool[cmd_num], temp_req.argv, sizeof(char *) * argc);
+            memcpy(cmd_argv_len_pool[cmd_num], temp_req.argv_len, sizeof(int) * argc);
         }
-
-        // 初始化 reply
+        
+        cmds[cmd_num].cmd = (argc > 0) ? lookup_command(temp_req.argv[0], temp_req.argv_len[0]) : NULL;
+        cmds[cmd_num].cmd_raw_ptr = cmd_raw_ptr;
+        cmds[cmd_num].single_cmd_len = single_cmd_len;
+        
         replies[cmd_num].status = KVS_RESP_ERROR;
         replies[cmd_num].body = NULL;
         replies[cmd_num].body_len = 0;
 
-        // 写入 WAL (AOF) - 只写修改数据的命令
-        int is_write = (temp_req.argc > 0 && is_write_command(temp_req.argv[0], temp_req.argv_len[0]));
-
+        // ---- 写入 WAL ----
+        int is_write = (argc > 0 && is_write_command(temp_req.argv[0], temp_req.argv_len[0]));
         if (is_write) {
-            // 1. 写入前临时将 \0 还原为 \r，保证 cmd_raw_ptr 为标准的 RESP 报文
-            for (int i = 0; i < temp_req.argc; i++) {
-                temp_req.argv[i][temp_req.argv_len[i]] = '\r';
-            }
-
-            // 2. 写入 WAL (AOF)
             if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
                 kvs_persistence_write(cmd_raw_ptr, single_cmd_len);
             }
 
-            // 3. 写入主从复制 Backlog
             extern int g_sync_file_done;
             extern volatile int g_slave_fd;
             if (g_slave_fd > 0 && g_enable_repl_master && ((g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled)) {
@@ -294,12 +312,10 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
                     g_repl_backlog_count++;
                 }
             }
-
-            // 4. 写完后重新变回 \0，保证后续业务层处理时仍是合法的 C 字符串
-            for (int i = 0; i < temp_req.argc; i++) {
-                temp_req.argv[i][temp_req.argv_len[i]] = '\0';
-            }
         }
+
+        // 释放 temp_req 的动态资源（如果有）
+        free_resp_request(&temp_req);
 
         processed += single_cmd_len;
         cmd_num++;
@@ -307,35 +323,48 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
 
     *parsed = processed;
 
-    // 阶段 2：一次性交给业务层执行，协议层绝不碰 cmd->proc()
+    // 阶段 2：执行前替换 \r 为 \0
+    for (int i = 0; i < cmd_num; i++) {
+        resp_request_t *req = &cmds[i].req;
+        for (int j = 0; j < req->argc; j++) {
+            req->argv[j][req->argv_len[j]] = '\0';
+        }
+    }
+
+    // 阶段 3：批量执行业务层
     if (cmd_num > 0) {
         if (g_command_handler) {
             g_command_handler(cmds, replies, cmd_num);
         } else {
-            // 防御性处理：如果没有处理函数，返回 ERR unknown command
             for (int i = 0; i < cmd_num; i++) {
                 replies[i].status = KVS_RESP_UNKNOWN;
             }
         }
+    }
 
-        // 统一打包结果 & 释放结构体
-        for (int i = 0; i < cmd_num; i++) {
-            if (wbuf && wcap && wlen) {
-                resp_pack_with_realloc(wbuf, wcap, wlen, &replies[i]);
-            }
-            
-            free_resp_request(&cmds[i].req); 
-            
-            if (replies[i].body) {           
-                kvs_free(replies[i].body);
-                replies[i].body = NULL;
-            }
+    // 阶段 4：恢复 \r
+    for (int i = 0; i < cmd_num; i++) {
+        resp_request_t *req = &cmds[i].req;
+        for (int j = 0; j < req->argc; j++) {
+            req->argv[j][req->argv_len[j]] = '\r';
         }
     }
 
-    return 0; 
-}
+    // 阶段 5：打包回复 & 释放
+    for (int i = 0; i < cmd_num; i++) {
+        if (wbuf && wcap && wlen) {
+            resp_pack_with_realloc(wbuf, wcap, wlen, &replies[i]);
+        }
+        // 如果是动态分配的（fallback），释放；池中的不释放
+        free_resp_request(&cmds[i].req);
+        if (replies[i].body) {           
+            kvs_free(replies[i].body);
+            replies[i].body = NULL;
+        }
+    }
 
+    return 0;
+}
 
 /**
  * 内部删除命令专用处理：生成 RESP 报文，写入 AOF 和主从复制 backlog
@@ -379,7 +408,6 @@ int protocol_process_recover(char *in_buf, int in_len) {
 
     int processed = 0;
     int recovered_count = 0;
-    int skipped_count = 0;
 
     while (processed < in_len) {
         int single_cmd_len = 0;
@@ -390,34 +418,53 @@ int protocol_process_recover(char *in_buf, int in_len) {
         
         resp_request_t temp_req;
         memset(&temp_req, 0, sizeof(resp_request_t));
-        resp_unpack(in_buf + processed, &temp_req);
+        resp_unpack_no_modify(in_buf + processed, &temp_req);
 
+        // 构造单条命令（独立分配 argv 数组）
         parsed_cmd_t cmds[1];
         resp_reply_t replies[1];
         
-        cmds[0].req = temp_req;
-        cmds[0].cmd = (temp_req.argc > 0) ? lookup_command(temp_req.argv[0]) : NULL;
+        cmds[0].req.argc = temp_req.argc;
+        cmds[0].req.is_dynamic = 1;
+        cmds[0].req.argv = (char **)kvs_malloc(sizeof(char *) * temp_req.argc);
+        cmds[0].req.argv_len = (int *)kvs_malloc(sizeof(int) * temp_req.argc);
+        memcpy(cmds[0].req.argv, temp_req.argv, sizeof(char *) * temp_req.argc);
+        memcpy(cmds[0].req.argv_len, temp_req.argv_len, sizeof(int) * temp_req.argc);
+        
+        cmds[0].cmd = (temp_req.argc > 0) ? lookup_command(temp_req.argv[0], temp_req.argv_len[0]) : NULL;
+        cmds[0].cmd_raw_ptr = NULL;
+        cmds[0].single_cmd_len = 0;
+        
         replies[0].status = KVS_RESP_ERROR;
         replies[0].body = NULL;
         replies[0].body_len = 0;
+
+        // 替换 \r 为 \0（因为我们复制了指针，替换 in_buf 会影响复制后的内容）
+        for (int j = 0; j < temp_req.argc; j++) {
+            temp_req.argv[j][temp_req.argv_len[j]] = '\0';
+        }
 
         if (g_command_handler) {
             g_command_handler(cmds, replies, 1);
         }
 
-        if (replies[0].status == KVS_RESP_OK) {
-            recovered_count++;
-        } else {
-            skipped_count++;
+        // 恢复 \r
+        for (int j = 0; j < temp_req.argc; j++) {
+            temp_req.argv[j][temp_req.argv_len[j]] = '\r';
         }
 
+        // 释放 temp_req 的动态资源（如果有）
+        free_resp_request(&temp_req);
+        
+        // 释放命令的独立资源
         if (replies[0].body) {
             kvs_free(replies[0].body);
         }
-        free_resp_request(&temp_req);
+        free_resp_request(&cmds[0].req);
+        
         processed += single_cmd_len;
     }
     
-    return processed;
+    return recovered_count;
 }
 

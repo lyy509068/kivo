@@ -453,15 +453,28 @@ void kvs_cmd_init(void) {
     g_cmd_hash_inited = 1;
 }
 
-command_t *lookup_command(const char *name) {
+/*
+ * 查表函数（支持带长度和不带长度）
+ * 如果 len > 0，按长度比较；如果 len == 0，按字符串比较（依赖 \0 结尾）
+ */
+command_t *lookup_command(const char *name, int len) {
     if (!name) return NULL;
     if (!g_cmd_hash_inited) kvs_cmd_init();
 
-    uint32_t hash = cmd_hash(name);
+    uint32_t hash = 5381;
+    int compare_len = (len > 0) ? len : (int)strlen(name);
+    
+    // 计算哈希
+    for (int i = 0; i < compare_len && name[i]; i++) {
+        hash = ((hash << 5) + hash) + (unsigned char)toupper(name[i]);
+    }
     uint32_t idx = hash & (CMD_HASH_SIZE - 1);
 
     while (g_cmd_hash[idx] != NULL) {
-        if (strcasecmp(g_cmd_hash[idx]->name, name) == 0) {
+        int cmd_len = (int)strlen(g_cmd_hash[idx]->name);
+        // 长度匹配且内容匹配（使用 strncasecmp）
+        if (cmd_len == compare_len &&
+            strncasecmp(g_cmd_hash[idx]->name, name, compare_len) == 0) {
             return g_cmd_hash[idx];
         }
         idx = (idx + 1) & (CMD_HASH_SIZE - 1);

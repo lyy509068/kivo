@@ -1,15 +1,13 @@
-
-
 #include "kvstore.h"
 #include <string.h>
 #include <stdint.h>   
 #include <sys/time.h> 
 
 #if ENABLE_RBTREE
+
 #define RED 0
 #define BLACK 1
 
-// 全局红黑树实例
 kvs_rbtree_t global_rbtree = {0};
 
 static inline int64_t rbtree_now_if_ttl(void) {
@@ -19,20 +17,48 @@ static inline int64_t rbtree_now_if_ttl(void) {
     return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-static rbtree_node_binary_t* rbtree_mini(rbtree_binary_t *T, rbtree_node_binary_t *x) {
+/* ========== 节点创建与销毁（内嵌数据） ========== */
+
+static inline rbtree_node_binary_t* rbtree_node_create(kv_data_t *key, kv_data_t *value, int64_t expire_time) {
+    size_t total_size = sizeof(rbtree_node_binary_t) + key->len + value->len;
+    rbtree_node_binary_t *node = (rbtree_node_binary_t *)kvs_malloc(total_size);
+    if (!node) return NULL;
+    
+    node->color = RED;
+    node->left = NULL;
+    node->right = NULL;
+    node->parent = NULL;
+    node->expire_time = expire_time;
+    
+    node->key.data = node->data;
+    node->key.len = key->len;
+    memcpy(node->data, key->data, key->len);
+    
+    node->value.data = node->data + key->len;
+    node->value.len = value->len;
+    memcpy(node->value.data, value->data, value->len);
+    
+    return node;
+}
+
+static inline void rbtree_node_free(rbtree_node_binary_t *node) {
+    if (node) kvs_free(node);
+}
+
+/* ========== 红黑树核心操作（inline） ========== */
+
+static inline rbtree_node_binary_t* rbtree_mini(rbtree_binary_t *T, rbtree_node_binary_t *x) {
     while (x->left != T->nil) {
         x = x->left;
     }
     return x;
 }
 
-static rbtree_node_binary_t* rbtree_successor(rbtree_binary_t *T, rbtree_node_binary_t *x) {
-    rbtree_node_binary_t *y = x->parent;
-    
+static inline rbtree_node_binary_t* rbtree_successor(rbtree_binary_t *T, rbtree_node_binary_t *x) {
     if (x->right != T->nil) {
         return rbtree_mini(T, x->right);
     }
-    
+    rbtree_node_binary_t *y = x->parent;
     while ((y != T->nil) && (x == y->right)) {
         x = y;
         y = y->parent;
@@ -40,14 +66,12 @@ static rbtree_node_binary_t* rbtree_successor(rbtree_binary_t *T, rbtree_node_bi
     return y;
 }
 
-static void rbtree_left_rotate(rbtree_binary_t *T, rbtree_node_binary_t *x) {
+static inline void rbtree_left_rotate(rbtree_binary_t *T, rbtree_node_binary_t *x) {
     rbtree_node_binary_t *y = x->right;
-    
     x->right = y->left;
     if (y->left != T->nil) {
         y->left->parent = x;
     }
-    
     y->parent = x->parent;
     if (x->parent == T->nil) {
         T->root = y;
@@ -56,19 +80,16 @@ static void rbtree_left_rotate(rbtree_binary_t *T, rbtree_node_binary_t *x) {
     } else {
         x->parent->right = y;
     }
-    
     y->left = x;
     x->parent = y;
 }
 
-static void rbtree_right_rotate(rbtree_binary_t *T, rbtree_node_binary_t *y) {
+static inline void rbtree_right_rotate(rbtree_binary_t *T, rbtree_node_binary_t *y) {
     rbtree_node_binary_t *x = y->left;
-    
     y->left = x->right;
     if (x->right != T->nil) {
         x->right->parent = y;
     }
-    
     x->parent = y->parent;
     if (y->parent == T->nil) {
         T->root = x;
@@ -77,11 +98,11 @@ static void rbtree_right_rotate(rbtree_binary_t *T, rbtree_node_binary_t *y) {
     } else {
         y->parent->left = x;
     }
-    
     x->right = y;
     y->parent = x;
 }
 
+/* ========== 插入修复（不变） ========== */
 static void rbtree_insert_fixup(rbtree_binary_t *T, rbtree_node_binary_t *z) {
     while (z->parent->color == RED) {
         if (z->parent == z->parent->parent->left) {
@@ -121,38 +142,56 @@ static void rbtree_insert_fixup(rbtree_binary_t *T, rbtree_node_binary_t *z) {
     T->root->color = BLACK;
 }
 
-static void rbtree_insert(rbtree_binary_t *T, rbtree_node_binary_t *z) {
-    rbtree_node_binary_t *y = T->nil;
+/* ========== 查找函数（用于 GET/DEL/EXISTS） ========== */
+static inline rbtree_node_binary_t* rbtree_search(rbtree_binary_t *T, kv_data_t *key) {
+    if (!T || !key) return NULL;
+    rbtree_node_binary_t *node = T->root;
+    while (node != NULL && node != T->nil) {
+        if (!node->key.data) break;
+        int cmp = kv_data_compare(key, &node->key);
+        if (cmp < 0) {
+            node = node->left;
+        } else if (cmp > 0) {
+            node = node->right;
+        } else {
+            return node;
+        }
+    }
+    return T->nil;
+}
+
+/* ========== 新增：一次遍历找父节点和比较结果 ========== */
+static inline rbtree_node_binary_t* rbtree_find_parent(
+    rbtree_binary_t *T,
+    kv_data_t *key,
+    rbtree_node_binary_t **parent_out,
+    int *cmp_out)
+{
+    rbtree_node_binary_t *parent = T->nil;
     rbtree_node_binary_t *x = T->root;
-    
+    int cmp = 0;
+
     while (x != T->nil) {
-        y = x;
-        int cmp = kv_data_compare(&z->key, &x->key);
+        parent = x;
+        cmp = kv_data_compare(key, &x->key);
         if (cmp < 0) {
             x = x->left;
         } else if (cmp > 0) {
             x = x->right;
         } else {
-            return;  // key 已存在
+            // 找到了已有节点
+            *parent_out = x;
+            *cmp_out = 0;
+            return x;
         }
     }
-    
-    z->parent = y;
-    if (y == T->nil) {
-        T->root = z;
-    } else if (kv_data_compare(&z->key, &y->key) < 0) {
-        y->left = z;
-    } else {
-        y->right = z;
-    }
-    
-    z->left = T->nil;
-    z->right = T->nil;
-    z->color = RED;
-    
-    rbtree_insert_fixup(T, z);
+
+    *parent_out = parent;
+    *cmp_out = cmp;
+    return T->nil;  // 未找到，返回 nil
 }
 
+/* ========== 删除修复（不变） ========== */
 static void rbtree_delete_fixup(rbtree_binary_t *T, rbtree_node_binary_t *x) {
     while ((x != T->root) && (x->color == BLACK)) {
         if (x == x->parent->left) {
@@ -163,7 +202,6 @@ static void rbtree_delete_fixup(rbtree_binary_t *T, rbtree_node_binary_t *x) {
                 rbtree_left_rotate(T, x->parent);
                 w = x->parent->right;
             }
-            
             if ((w->left->color == BLACK) && (w->right->color == BLACK)) {
                 w->color = RED;
                 x = x->parent;
@@ -188,7 +226,6 @@ static void rbtree_delete_fixup(rbtree_binary_t *T, rbtree_node_binary_t *x) {
                 rbtree_right_rotate(T, x->parent);
                 w = x->parent->left;
             }
-            
             if ((w->left->color == BLACK) && (w->right->color == BLACK)) {
                 w->color = RED;
                 x = x->parent;
@@ -210,84 +247,64 @@ static void rbtree_delete_fixup(rbtree_binary_t *T, rbtree_node_binary_t *x) {
     x->color = BLACK;
 }
 
+/* ========== 标准节点移植（transplant） ========== */
+static inline void rbtree_transplant(rbtree_binary_t *T, rbtree_node_binary_t *u, rbtree_node_binary_t *v) {
+    if (u->parent == T->nil) {
+        T->root = v;
+    } else if (u == u->parent->left) {
+        u->parent->left = v;
+    } else {
+        u->parent->right = v;
+    }
+    if (v != T->nil) {
+        v->parent = u->parent;
+    }
+}
+
+/* ========== 删除函数（采用 transplant，简化版） ========== */
 static rbtree_node_binary_t* rbtree_delete(rbtree_binary_t *T, rbtree_node_binary_t *z) {
-    rbtree_node_binary_t *y = T->nil;
-    rbtree_node_binary_t *x = T->nil;
-    
-    if ((z->left == T->nil) || (z->right == T->nil)) {
-        y = z;
+    rbtree_node_binary_t *y = z;
+    int y_original_color = y->color;
+    rbtree_node_binary_t *x;
+
+    if (z->left == T->nil) {
+        x = z->right;
+        rbtree_transplant(T, z, z->right);
+    } else if (z->right == T->nil) {
+        x = z->left;
+        rbtree_transplant(T, z, z->left);
     } else {
-        y = rbtree_successor(T, z);
-    }
-    
-    if (y->left != T->nil) {
-        x = y->left;
-    } else if (y->right != T->nil) {
+        y = rbtree_mini(T, z->right);
+        y_original_color = y->color;
         x = y->right;
+        if (y->parent == z) {
+            if (x != T->nil) {
+                x->parent = y;
+            }
+        } else {
+            rbtree_transplant(T, y, y->right);
+            y->right = z->right;
+            y->right->parent = y;
+        }
+        rbtree_transplant(T, z, y);
+        y->left = z->left;
+        y->left->parent = y;
+        y->color = z->color;
     }
-    
-    x->parent = y->parent; 
-    
-    if (y->parent == T->nil) {
-        T->root = x;
-    } else if (y == y->parent->left) {
-        y->parent->left = x;
-    } else {
-        y->parent->right = x;
-    }
-    
-    if (y != z) {
-        // ✅ 修复：先保存 z 的旧数据
-        kv_data_t old_key = z->key;
-        kv_data_t old_value = z->value;
-        
-        // 把 y 的数据转移到 z
-        z->key = y->key;
-        z->value = y->value;
-        z->expire_time = y->expire_time;
-        
-        // 把旧数据放到 y，让外层统一释放
-        y->key = old_key;
-        y->value = old_value;
-    }
-    
-    if (y->color == BLACK) {
+
+    if (y_original_color == BLACK) {
         rbtree_delete_fixup(T, x);
     }
-    
-    return y;  // 外层会统一释放 y 的 key/value 和 y 本身
+
+    return z;  // 返回被物理删除的节点（z），外层释放
 }
 
+/* ========== 公共接口 ========== */
 
-static rbtree_node_binary_t* rbtree_search(rbtree_binary_t *T, kv_data_t *key) {
-    if (!T || !key || !T->root) return NULL; //安全拦截
-    
-    rbtree_node_binary_t *node = T->root;
-    
-    // 双重防御：既不能等于 nil，也不能等于底层真正的 NULL
-    while (node != NULL && node != T->nil) {
-        
-        if (!node->key.data) {// 确保node内部的key内存是合法的
-            break;
-        }
-
-        int cmp = kv_data_compare(key, &node->key);
-        if (cmp < 0) {
-            node = node->left;
-        } else if (cmp > 0) {
-            node = node->right;
-        } else {
-            return node; // 找到了
-        }
-    }
-    return T->nil;
-}
-
-// 原样输出
 int kvs_rbtree_create(kvs_rbtree_t *inst) {
     if (!inst) return -1;
     
-    inst->nil = (rbtree_node_binary_t*)kvs_malloc_type(OBJ_RBTREE, sizeof(rbtree_node_binary_t));
+    inst->nil = (rbtree_node_binary_t*)kvs_malloc(sizeof(rbtree_node_binary_t));
     if (!inst->nil) return -1;
     
     inst->nil->color = BLACK;
@@ -298,78 +315,109 @@ int kvs_rbtree_create(kvs_rbtree_t *inst) {
     inst->nil->key.len = 0;
     inst->nil->value.data = NULL;
     inst->nil->value.len = 0;
-    inst->nil->expire_time = 0; 
-    
+    inst->nil->expire_time = 0;
     inst->root = inst->nil;
-    
     return 0;
 }
 
-// 原样输出
 static void rbtree_free_node(rbtree_binary_t *T, rbtree_node_binary_t *node) {
     if (node == T->nil) return;
     rbtree_free_node(T, node->left);
     rbtree_free_node(T, node->right);
-    
-    kv_data_destroy(&node->key);
-    kv_data_destroy(&node->value);
-    kvs_free_type(OBJ_RBTREE, node);
+    rbtree_node_free(node);
 }
 
-// 原样输出
 void kvs_rbtree_destroy(kvs_rbtree_t *inst) {
     if (!inst) return;
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
     if (T->root != T->nil) {
-        rbtree_free_node(T, T->root); // 递归释放整棵树的所有节点
+        rbtree_free_node(T, T->root);
     }
     if (T->nil) {
-        kvs_free_type(OBJ_RBTREE, T->nil);
+        kvs_free(T->nil);
         T->nil = NULL;
     }
     T->root = NULL;
 }
 
+/* ========== SET：合并查找与插入 ========== */
 int kvs_rbtree_set(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
     if (!inst || !key || !value) return -1;
     
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
-    rbtree_node_binary_t *existing = rbtree_search(T, key);
-    
-    if (existing != inst->nil) {
-        // 直接覆盖 value，不检查是否过期
-        kv_data_destroy(&existing->value);
-        if (kv_data_dup(&existing->value, value) != 0) return -2;
-        existing->expire_time = expire_time;
-        return 0;
+    rbtree_node_binary_t *parent;
+    int cmp;
+
+    // 一次遍历找到插入位置或已存在节点
+    rbtree_node_binary_t *existing = rbtree_find_parent(T, key, &parent, &cmp);
+
+    if (existing != T->nil) {
+        // key 已存在，更新 value（原地或重新分配）
+        if (value->len <= existing->value.len) {
+            memcpy(existing->value.data, value->data, value->len);
+            existing->value.len = value->len;
+            existing->expire_time = expire_time;
+            return 0;
+        } else {
+            // 新 value 更大，需要删除旧节点并重新插入
+            rbtree_node_binary_t *to_delete = rbtree_delete(T, existing);
+            if (to_delete && to_delete != T->nil) {
+                rbtree_node_free(to_delete);
+            }
+            // 现在作为新 key 插入（但 key 相同，重新创建）
+            rbtree_node_binary_t *new_node = rbtree_node_create(key, value, expire_time);
+            if (!new_node) return -1;
+            // 重新查找插入位置（因为树结构已变）
+            existing = rbtree_find_parent(T, key, &parent, &cmp);
+            // 此时 existing 应为 T->nil（因为已删除）
+            if (existing != T->nil) {
+                // 理论上不可能，但以防万一
+                rbtree_node_free(new_node);
+                return -1;
+            }
+            // 挂接新节点
+            new_node->parent = parent;
+            new_node->left = T->nil;
+            new_node->right = T->nil;
+            new_node->color = RED;
+            if (parent == T->nil) {
+                T->root = new_node;
+            } else if (cmp < 0) {
+                parent->left = new_node;
+            } else {
+                parent->right = new_node;
+            }
+            rbtree_insert_fixup(T, new_node);
+            return 0;
+        }
     }
-    
-    rbtree_node_binary_t *node = (rbtree_node_binary_t*)kvs_malloc_type(OBJ_RBTREE, sizeof(rbtree_node_binary_t));
-    if (!node) return -2;
-    if (kv_data_dup(&node->key, key) != 0) {
-        kvs_free_type(OBJ_RBTREE, node);
-        return -2;
-    }
-    if (kv_data_dup(&node->value, value) != 0) {
-        kv_data_destroy(&node->key);
-        kvs_free_type(OBJ_RBTREE, node);
-        return -2;
-    }
+
+    // key 不存在，创建新节点并插入
+    rbtree_node_binary_t *node = rbtree_node_create(key, value, expire_time);
+    if (!node) return -1;
+
+    node->parent = parent;
+    node->left = T->nil;
+    node->right = T->nil;
     node->color = RED;
-    node->left = inst->nil;
-    node->right = inst->nil;
-    node->parent = inst->nil;
-    node->expire_time = expire_time; 
-    rbtree_insert((rbtree_binary_t*)inst, node);
+
+    if (parent == T->nil) {
+        T->root = node;
+    } else if (cmp < 0) {
+        parent->left = node;
+    } else {
+        parent->right = node;
+    }
+
+    rbtree_insert_fixup(T, node);
     return 0;
 }
 
+/* ========== GET ========== */
 kv_data_t* kvs_rbtree_get(kvs_rbtree_t *inst, kv_data_t *key) {
     if (!inst || !key) return NULL;
-    
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
     rbtree_node_binary_t *node = rbtree_search(T, key);
-    
     if (node == NULL || node == T->nil) return NULL;
     
     if (g_enable_ttl && node->expire_time > 0) {
@@ -382,67 +430,50 @@ kv_data_t* kvs_rbtree_get(kvs_rbtree_t *inst, kv_data_t *key) {
     return &node->value;
 }
 
-// 原样输出
+/* ========== DEL ========== */
 int kvs_rbtree_del(kvs_rbtree_t *inst, kv_data_t *key) {
     if (!inst || !key) return -1;
+    rbtree_binary_t *T = (rbtree_binary_t*)inst;
+    rbtree_node_binary_t *node = rbtree_search(T, key);
+    if (node == inst->nil) return 1;
     
-    rbtree_node_binary_t *node = rbtree_search((rbtree_binary_t*)inst, key);
-    if (node == inst->nil) return 1;  // 不存在
-    
-    rbtree_node_binary_t *cur = rbtree_delete((rbtree_binary_t*)inst, node);
-    if (cur) {
-        // 如果 cur 内部还有残留数据，则正常销毁
-        kv_data_destroy(&cur->key);
-        kv_data_destroy(&cur->value);
-        kvs_free_type(OBJ_RBTREE, cur);
+    rbtree_node_binary_t *deleted = rbtree_delete(T, node);
+    if (deleted && deleted != T->nil) {
+        rbtree_node_free(deleted);
     }
-    
     return 0;
 }
 
-/**
- * 条件删除：只有当 key 存在且节点的 expire_time 等于 expected_expire 时才删除
- * 返回 1 表示已删除，0 表示未删除（key 不存在或时间不匹配）
- */
 int kvs_rbtree_del_if_expired(kvs_rbtree_t *inst, kv_data_t *key, int64_t expected_expire) {
     if (!inst || !key) return 0;
-    
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
     rbtree_node_binary_t *node = rbtree_search(T, key);
-    
-    // 找不到或返回哨兵
     if (node == NULL || node == T->nil) return 0;
-    
-    // 检查过期时间是否完全匹配
     if (node->expire_time != expected_expire) return 0;
-    
-    // 匹配，执行物理删除
     kvs_rbtree_del(inst, key);
     return 1;
 }
 
+/* ========== MOD ========== */
 int kvs_rbtree_mod(kvs_rbtree_t *inst, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
-    // MOD 合并为 SET，无需单独实现
     return kvs_rbtree_set(inst, key, value, expire_time);
 }
 
-
+/* ========== EXISTS ========== */
 int kvs_rbtree_exist(kvs_rbtree_t *inst, kv_data_t *key) {
     if (!inst || !key) return -1;
-    
-    // 内部通过调修改后的 get 可以间接实现惰性删除拦截
     kv_data_t *res = kvs_rbtree_get(inst, key);
     return (res == NULL) ? 1 : 0;
 }
 
-
+/* ========== FOREACH ========== */
 static void rbtree_foreach_node(rbtree_binary_t *T, rbtree_node_binary_t *node, 
                                 int64_t now, int check_expire,
                                 void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
     if (node == T->nil) return;
     rbtree_foreach_node(T, node->left, now, check_expire, callback, arg);
     if (check_expire && node->expire_time > 0 && now > node->expire_time) {
-        // 跳过过期节点
+        /* 跳过过期节点 */
     } else {
         callback(&node->key, &node->value, arg);
     }
@@ -454,46 +485,23 @@ void kvs_rbtree_foreach(kvs_rbtree_t *inst, void (*callback)(kv_data_t *key, kv_
     rbtree_binary_t *T = (rbtree_binary_t*)inst;
     int64_t now = 0;
     int check_expire = g_enable_ttl;
-    if (check_expire) {
-        now = rbtree_now_if_ttl();
-    }
+    if (check_expire) now = rbtree_now_if_ttl();
     rbtree_foreach_node(T, T->root, now, check_expire, callback, arg);
 }
 
+/* ========== UTILITY ========== */
 int kvs_rbtree_get_value_len(char *key_ptr, int key_len) {
-    if (!key_ptr || key_len <= 0) {
-        return 0;
-    }
-
-    // 1. 检查全局红黑树是否已初始化
-    if (global_rbtree.nil == NULL || global_rbtree.root == NULL) {
-        return 0;
-    }
-
-    // 2. 在栈上构造临时 key（不分配内存，仅引用网络缓冲区）
-    kv_data_t tmp_key;
-    tmp_key.data = key_ptr;
-    tmp_key.len  = (size_t)key_len;
-
-    // 3. 直接调用公共接口，而不是手动操作底层 rbtree_search
+    if (!key_ptr || key_len <= 0) return 0;
+    if (global_rbtree.nil == NULL || global_rbtree.root == NULL) return 0;
+    kv_data_t tmp_key = { .data = key_ptr, .len = (size_t)key_len };
     kv_data_t *res_val = kvs_rbtree_get(&global_rbtree, &tmp_key);
-
-    // 4. 如果未找到或 value 无效，则返回 0
-    if (res_val == NULL || res_val->data == NULL) {
-        return 0;
-    }
-
-    // 5. 防止 size_t -> int 转换溢出
-    if (res_val->len > (size_t)0x7fffffff) {
-        return 0;
-    }
-
-    // 6. 返回实际 value 长度
+    if (res_val == NULL || res_val->data == NULL) return 0;
+    if (res_val->len > (size_t)0x7fffffff) return 0;
     return (int)res_val->len;
 }
 
-// 原样输出
 kv_data_t* kvs_rbtree_get_global(kv_data_t *key) {
     return kvs_rbtree_get(&global_rbtree, key);
 }
+
 #endif
