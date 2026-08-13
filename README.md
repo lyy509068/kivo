@@ -16,31 +16,33 @@ redis文件模式：
 ./test_specialchars 四种数据结构都插入5个特殊字符串，由本地五个文件作为value构建resp命令，先插入并验证回复，然后获取并逐字对比和本地文件是否相同
 
 Redis                                                                                              
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 1  -q SET key:__rand_int__ value:__rand_int__   
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 10 -q SET key:__rand_int__ value:__rand_int__    
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 20 -q SET key:__rand_int__ value:__rand_int__    
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 40 -q SET key:__rand_int__ value:__rand_int__   
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 80 -q SET key:__rand_int__ value:__rand_int__    
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 160 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 1  -c 1 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 10 -c 1 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 20 -c 1 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 40 -c 1 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 80 -c 1 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -P 160 -c 1 -q SET key:__rand_int__ value:__rand_int__   
 
 KVstore                                                                                              
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 1  -q SET key:__rand_int__ value:__rand_int__     
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 10 -q SET key:__rand_int__ value:__rand_int__   
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 20 -q SET key:__rand_int__ value:__rand_int__   
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 40 -q SET key:__rand_int__ value:__rand_int__    
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 80 -q SET key:__rand_int__ value:__rand_int__    
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 160 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 1  -c 1 -q SET key:__rand_int__ value:__rand_int__     
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 10 -c 1 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 20 -c 1 -q SET key:__rand_int__ value:__rand_int__   
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 40 -c 1 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 80 -c 1 -q SET key:__rand_int__ value:__rand_int__    
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -P 160 -c 1 -q SET key:__rand_int__ value:__rand_int__   
                                                           
-========================================================================================================
-Pipeline   | Redis (SET)    | KV (Array)     | KV (RBTree)     | KV (Hash)      | KV (SkipList)   
---------------------------------------------------------------------------------------------------------
--P 1       | 123304         | 16051          | 70249           | 107066         | 64653           
--P 10      | 285655         | 11806          | 487092          | 619195         | 348432          
--P 20      | 313381         | 11587          | 651041          | 1012145        | 541125          
--P 40      | 470828         | 11655          | 881057          | 1305483        | 733137          
--P 80      | 249875         | 9910           | 1094091         | 1420454        | 990099          
--P 160     | 486459         | 11287          | 1490313         | 1912045        | 1261034         
-========================================================================================================
+======================================================================================================================================
+                                Redis vs KVstore 三大引擎独立测试 (1000000 条)                                                         
+======================================================================================================================================
+Pipeline   | Redis (PING)   | KV (PING)      | Redis (SET)    | KV (RBTree)     | KV (Hash)      | KV (SkipList)   
+--------------------------------------------------------------------------------------------------------------------------------------
+-P 1       | 14233          | 14609          | 13255          | 13375           | 14158          | 13261           
+-P 10      | 137042         | 142389         | 110059         | 97723           | 123777         | 89758           
+-P 20      | 258665         | 275558         | 187969         | 151561          | 217580         | 136462          
+-P 40      | 479846         | 527426         | 281690         | 211014          | 359066         | 184060          
+-P 80      | 837520         | 955109         | 388500         | 266311          | 526870         | 221680          
+-P 160     | 1302083        | 1633987        | 477554         | 311429          | 725163         | 251952          
+======================================================================================================================================
 # 全量持久化功能测试
 ./test_fullpersistence1 插入10w条数据    
 ./test_fullpersistence2 获得10w条数据
@@ -53,10 +55,10 @@ Pipeline   | Redis (SET)    | KV (Array)     | KV (RBTree)     | KV (Hash)      
 ===============================================================================
 测试时间            间隔命令条数    SAVE次数   时间(s)    QPS        最后一次SAVE耗时
 ------------------ -------------- ---------- --------- ---------- ----------------
-2026-08-05 12:15:02 1000000        1          1.05       950771     0.42ms
-2026-08-05 12:15:03 100000         10         0.98       1016637    0.39ms
-2026-08-05 12:15:04 10000          100        1.05       953383     0.25ms
-2026-08-05 12:15:06 1000           1000       1.18       850897     0.06ms
+2026-08-13 08:48:17 1000000        1          62.80      15923      2.13ms
+2026-08-13 08:49:19 100000         10         62.02      16125      2.00ms
+2026-08-13 08:50:22 10000          100        62.74      15941      1.92ms
+2026-08-13 08:51:26 1000           1000       62.85      15927      0.02ms
 =================================================================================
 
 # 增量持久化功能测试
@@ -79,28 +81,28 @@ redis-cli -p 6379 CONFIG SET appendfsync everysec
 redis-cli -p 6379 CONFIG SET appendonly no
 redis-benchmark -p 6379 -t ping -n 100000 -q
 
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -q PING                                                        
-redis-benchmark -p 6379 -n 1000000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                      
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -c 1 -q PING                                                        
+redis-benchmark -p 6379 -n 1000000 -r 100000000 -c 1 -q SET key:__rand_int__ value:__rand_int__                      
 
 KVstore测试命令
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -q PING                                                         
-redis-benchmark -p 2000 -n 10000 -r 100000000 -q SET key:__rand_int__ value:__rand_int__                                 
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -q RSET key:__rand_int__ value:__rand_int__                      
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -q HSET key:__rand_int__ value:__rand_int__                      
-redis-benchmark -p 2000 -n 1000000 -r 100000000 -q SSET key:__rand_int__ value:__rand_int__ 
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -c 1 -q PING                                                         
+redis-benchmark -p 2000 -n 10000 -r 100000000 -c 1 -q SET key:__rand_int__ value:__rand_int__                                 
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -c 1 -q RSET key:__rand_int__ value:__rand_int__                      
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -c 1 -q HSET key:__rand_int__ value:__rand_int__                      
+redis-benchmark -p 2000 -n 1000000 -r 100000000 -c 1 -q SSET key:__rand_int__ value:__rand_int__ 
 
 =========================================================================
                      日志开关性能影响对比测试汇总                       
 =========================================================================
 测试命令 / 数据结构         | 关闭日志 QPS | 打开日志 QPS
 ------------------------------------------------------------------------- 
-Redis PING                          | 118091          | 118175         
-Redis SET                           | 124719          | 122369         
-KVstore PING                        | 126968          | 126887         
-KVstore SET (Array)                 | 16638           | 16638          
-KVstore RSET (Red-Black)            | 72568           | 68908          
-KVstore HSET (Hash)                 | 110643          | 105053         
-KVstore SSET (SkipList)             | 67127           | 63678          
+Redis PING                          | 14837           | 14849          
+Redis SET                           | 14196           | 13038          
+KVstore PING                        | 15092           | 16131          
+KVstore SET (Array)                 | 9532            | 8795           
+KVstore RSET (Red-Black)            | 13970           | 14670          
+KVstore HSET (Hash)                 | 14631           | 15261          
+KVstore SSET (SkipList)             | 13704           | 14241          
 =========================================================================
 
 
@@ -140,15 +142,15 @@ Custom_Mempool |    29332 |    33112 |    33112 |     8472 |    12232 |    12232
 # 全量同步性能测试
 服务端（接收方）：iperf3 -s
 客户端（发送方）：iperf3 -c 192.168.37.129 -t 10
-[Repl RDMA] Synchronized EXACT 1073745556 / 1073745556 bytes in 15.674 seconds, throughput: 65.33 MB/s
-[Perf TCP] Received 1073749448/1073749448 bytes in 3.117 seconds, throughput: 328.53 MB/s
+[Repl RDMA] Synchronized EXACT 1073745556 / 1073745556 bytes in 15.674 seconds, throughput: 65.33 MB/s MTU 8000  
+              [Perf TCP] Received 1073749448/1073749448 bytes in 3.117 seconds, throughput: 328.53 MB/s
 
 
 # 增量同步性能测试
  转发方式	  QPS	    	
 基准（无同步）	 347726	 
 eBPF 转发       351767 	 	
-TCP 网络转发	 403577
+TCP 网络转发	403577
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？

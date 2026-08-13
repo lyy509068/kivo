@@ -87,7 +87,7 @@ for p in "${PIPELINES[@]}"; do
     # 2.1 Redis PING
     restart_redis
     echo -n "  [1/6] Redis PING ... "
-    qps_redis_ping=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TEST_N -P $p -q PING")
+    qps_redis_ping=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TEST_N -c 1 -P $p -q PING")
     RESULTS["REDIS_PING_$p"]=$qps_redis_ping
     echo "$qps_redis_ping QPS"
 
@@ -95,7 +95,7 @@ for p in "${PIPELINES[@]}"; do
     echo -n "  [2/6] KVstore PING ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
-    qps_kv_ping=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -P $p -q PING")
+    qps_kv_ping=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -c 1 -P $p -q PING")
     RESULTS["KV_PING_$p"]=$qps_kv_ping
     echo "$qps_kv_ping QPS"
     kill_server
@@ -103,7 +103,7 @@ for p in "${PIPELINES[@]}"; do
     # 2.3 Redis SET
     restart_redis
     echo -n "  [3/6] Redis SET ... "
-    qps_redis_set=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TEST_N -r 100000000 -P $p -q SET key:__rand_int__ value:__rand_int__")
+    qps_redis_set=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TEST_N -r 100000000 -c 1 -P $p -q SET key:__rand_int__ value:__rand_int__")
     RESULTS["REDIS_SET_$p"]=$qps_redis_set
     echo "$qps_redis_set QPS"
 
@@ -111,7 +111,7 @@ for p in "${PIPELINES[@]}"; do
     echo -n "  [4/6] KVstore RBTree (RSET) ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
-    qps_rbt=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -P $p -q RSET key:__rand_int__ value:__rand_int__")
+    qps_rbt=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -c 1 -P $p -q RSET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_RBT_$p"]=$qps_rbt
     echo "$qps_rbt QPS"
     kill_server
@@ -120,7 +120,7 @@ for p in "${PIPELINES[@]}"; do
     echo -n "  [5/6] KVstore Hash (HSET) ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
-    qps_hsh=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -P $p -q HSET key:__rand_int__ value:__rand_int__")
+    qps_hsh=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -c 1 -P $p -q HSET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_HSH_$p"]=$qps_hsh
     echo "$qps_hsh QPS"
     kill_server
@@ -129,7 +129,7 @@ for p in "${PIPELINES[@]}"; do
     echo -n "  [6/6] KVstore SkipList (SSET) ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
-    qps_skl=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -P $p -q SSET key:__rand_int__ value:__rand_int__")
+    qps_skl=$(parse_qps "redis-benchmark -p $KV_PORT -n $TEST_N -r 100000000 -c 1 -P $p -q SSET key:__rand_int__ value:__rand_int__")
     RESULTS["KV_SKL_$p"]=$qps_skl
     echo "$qps_skl QPS"
     kill_server

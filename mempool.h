@@ -8,12 +8,6 @@
 #define MAX_SLAB_SIZE 8192
 
 
-typedef enum {
-    OBJ_ARRAY = 0,
-    OBJ_RBTREE,
-    OBJ_HASH,
-    OBJ_MAX
-} kvs_obj_type_t;
 
 typedef struct pool_block {
     void *data;
@@ -34,7 +28,6 @@ typedef struct mem_pool {
 } mem_pool_t;
 
 
-extern mem_pool_t *g_typed_pools[OBJ_MAX];
 extern mem_pool_t *g_size_map[MAX_SLAB_SIZE + 1];
 extern int g_enable_mempool;
 
@@ -46,9 +39,6 @@ void mem_pool_free(mem_pool_t *pool, void *ptr);
 
 
 void kvs_mempool_init(void);    
-
-void *kvs_malloc_type(kvs_obj_type_t type, size_t size);
-void kvs_free_type(kvs_obj_type_t type, void *ptr);
 
 void *kvs_malloc(size_t size);
 void kvs_free(void *ptr);

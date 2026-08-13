@@ -10,14 +10,13 @@
 
 #define SERVER_PORT 2000
 #define TOTAL_RECORDS 1000000
-#define PIPELINE_WINDOW 500
 #define RECV_BUF_SIZE (2 * 1024 * 1024)
 #define SEND_BUF_SIZE (64 * 1024)
 
-#define ARRAY_RECORDS 10000
-#define RBTREE_RECORDS 330000
-#define HASH_RECORDS 330000
-#define SKIPLIST_RECORDS 330000
+#define ARRAY_RECORDS 1
+#define RBTREE_RECORDS 333333
+#define HASH_RECORDS 333333
+#define SKIPLIST_RECORDS 333333
 
 const char* SET_CMDS[] = {"", "SET", "RSET", "HSET", "SSET"};
 const char* ENGINE_NAMES[] = {"", "Array", "RBTree", "Hash", "SkipList"};
@@ -178,7 +177,6 @@ int run_benchmark(int save_interval) {
     stats.total_acked = 0;
     stats.start_time = get_time_sec();
 
-    
     for (int engine_type = 1; engine_type <= 4; engine_type++) {
         const char *engine_name = ENGINE_NAMES[engine_type];
         int records_to_insert = ENGINE_RECORDS[engine_type];
@@ -189,50 +187,42 @@ int run_benchmark(int save_interval) {
         double engine_start_time = get_time_sec();
         int engine_sent_start = sent_cnt;
         
-        // Pipeline循环：发送该引擎的所有记录
+        // 逐条发送该引擎的所有记录
         while (acked_cnt - engine_sent_start < records_to_insert) {
+            // 构建一条SET命令并直接发送
+            char cmd[256];
+            int cmd_len = build_set_cmd(cmd, engine_type, sent_cnt);
             
-            // 1. 批量打包发送
-            int send_len = 0;
-            while (sent_cnt - acked_cnt < PIPELINE_WINDOW && 
-                   sent_cnt - engine_sent_start < records_to_insert) {
-                char cmd[256];
-                int cmd_len = build_set_cmd(cmd, engine_type, sent_cnt);
-                
-                if (send_len + cmd_len > SEND_BUF_SIZE) break;
-                
-                memcpy(send_buf + send_len, cmd, cmd_len);
-                send_len += cmd_len;
-                sent_cnt++;
-                stats.total_sent++;
-            }
-            
-            if (send_len > 0) {
-                if (send(sock, send_buf, send_len, 0) < 0) {
-                    perror("send");
-                    goto cleanup;
-                }
-            }
-            
-            // 2. 接收并解析响应
-            int n = recv(sock, recv_buf + recv_buf_len, RECV_BUF_SIZE - recv_buf_len, 0);
-            if (n <= 0) {
-                if (n == 0) printf("\nServer closed connection.\n");
-                else perror("recv");
+            if (send(sock, cmd, cmd_len, 0) < 0) {
+                perror("send");
                 goto cleanup;
             }
+            sent_cnt++;
+            stats.total_sent++;
             
-            recv_buf_len += n;
-            
-            int parsed_bytes = 0;
-            int count = parse_resp_replies(recv_buf, recv_buf_len, &parsed_bytes);
-            acked_cnt += count;
-            stats.total_acked += count;
-            
-            if (parsed_bytes > 0) {
-                int remain = recv_buf_len - parsed_bytes;
-                if (remain > 0) memmove(recv_buf, recv_buf + parsed_bytes, remain);
-                recv_buf_len = remain;
+            // 等待接收1个响应
+            int acked = 0;
+            while (acked < 1) {
+                int n = recv(sock, recv_buf + recv_buf_len, RECV_BUF_SIZE - recv_buf_len, 0);
+                if (n <= 0) {
+                    if (n == 0) printf("\nServer closed connection.\n");
+                    else perror("recv");
+                    goto cleanup;
+                }
+                
+                recv_buf_len += n;
+                
+                int parsed_bytes = 0;
+                int count = parse_resp_replies(recv_buf, recv_buf_len, &parsed_bytes);
+                acked += count;
+                acked_cnt += count;
+                stats.total_acked += count;
+                
+                if (parsed_bytes > 0) {
+                    int remain = recv_buf_len - parsed_bytes;
+                    if (remain > 0) memmove(recv_buf, recv_buf + parsed_bytes, remain);
+                    recv_buf_len = remain;
+                }
             }
             
             // 检查是否需要SAVE

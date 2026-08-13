@@ -27,6 +27,29 @@ CLR_GREEN="\033[32m"
 CLR_YELLOW="\033[33m"
 CLR_BLUE="\033[34m"
 
+# ---------------------------------------------------------------------------
+# 自动开启配置文件中的快照功能
+# 直接修改 snapshot 行，确保其为 ON
+# ---------------------------------------------------------------------------
+enable_snapshot() {
+    local conf="$1"
+    if [ ! -f "$conf" ]; then
+        echo "❌ 配置文件 $conf 不存在！"
+        exit 1
+    fi
+
+    # 检查是否存在 snapshot 行（忽略前导空格和大小写）
+    if grep -qi '^[[:space:]]*snapshot[[:space:]]' "$conf"; then
+        # 将 snapshot 行替换为 "snapshot ON"（保留原缩进风格）
+        sed -i 's/^\([[:space:]]*snapshot[[:space:]]*\).*/\1ON/I' "$conf"
+        echo -e "${CLR_YELLOW}[√] 已确保配置文件快照开关为 ON${CLR_RESET}"
+    else
+        # 如果不存在 snapshot 行，则在文件末尾追加
+        echo "snapshot ON" >> "$conf"
+        echo -e "${CLR_YELLOW}[√] 配置文件中未找到 snapshot 行，已自动添加 snapshot ON${CLR_RESET}"
+    fi
+}
+
 # 精确关闭服务器 (绝不误杀 VS Code)
 stop_server() {
     if command -v fuser >/dev/null 2>&1; then
@@ -69,6 +92,7 @@ intervals=(1000000 100000 10000 1000)
 
 for interval in "${intervals[@]}"; do
     stop_server
+    enable_snapshot "$SERVER_CONF"   # ★ 每次测试前确保快照开启
     start_server
     
     # 执行压测
