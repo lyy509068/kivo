@@ -1,9 +1,9 @@
 #include "mempool.h"
 #include <stdlib.h>
 #include <string.h>
+#include <malloc.h>
 #include "kvstore.h" 
 
-mem_pool_t *g_typed_pools[OBJ_MAX] = {NULL};
 mem_pool_t *g_size_map[MAX_SLAB_SIZE + 1] = {NULL};
 
 mem_pool_t *mem_pool_create(size_t user_size) {
@@ -85,11 +85,6 @@ static int g_initialized = 0;
 
 void kvs_mempool_init(void) {
     if (g_initialized) return;
-    
-    // 获取结构体字节数
-    g_typed_pools[OBJ_ARRAY]  = mem_pool_create(sizeof(kvs_array_item_t));
-    g_typed_pools[OBJ_RBTREE] = mem_pool_create(sizeof(rbtree_node_binary_t));
-    g_typed_pools[OBJ_HASH]   = mem_pool_create(sizeof(hashnode_t));
 
     // 初始化通用 Slab 池
     for (int i = 0; i < SLAB_COUNT; i++) {

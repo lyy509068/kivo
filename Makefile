@@ -119,5 +119,5 @@ clean:
 	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap kvstore.snap.tmp $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o  \
 												  reactor.o proactor.o ntyco.o resp.o \
 												  kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
-												  config.o rdma.o repl.o expire_thread.o
+												  config.o rdma.o repl.o expire.o
 	make -C $(SUBDIR) clean

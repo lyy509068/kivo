@@ -46,25 +46,6 @@ typedef struct {
     void *owner; 
 } fallback_header_t;
 
-void *kvs_malloc_type(kvs_obj_type_t type, size_t size) {
-    if (g_enable_mempool && type < OBJ_MAX) {
-        if (!g_typed_pools[type]) kvs_mempool_init(); 
-        return mem_pool_alloc(g_typed_pools[type]);
-    }
-    return malloc(size); 
-}
-
-void kvs_free_type(kvs_obj_type_t type, void *ptr) {
-    if (!ptr) return;
-    if (g_enable_mempool && type < OBJ_MAX) {
-        if (g_typed_pools[type]) {
-            mem_pool_free(g_typed_pools[type], ptr);
-            return;
-        }
-    }
-    free(ptr);
-}
-
 void *kvs_malloc(size_t size) {
     if (size == 0) return NULL;
     if (!g_enable_mempool) return malloc(size);

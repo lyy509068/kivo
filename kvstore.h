@@ -162,6 +162,7 @@ typedef struct hashtable_s {
     int max_slots;        // 桶的数量
     int count;            // 当前元素总数
 } hashtable_t;
+
 typedef hashtable_t kvs_hash_t;
 
 int  kvs_hash_create(kvs_hash_t *hash);
@@ -183,19 +184,20 @@ int kvs_hash_del_if_expired(kvs_hash_t *hash, kv_data_t *key, int64_t expected_e
 
 #define MAX_LEVEL 12
 
-// 二进制安全跳表节点
+// 二进制安全跳表节点（连续内存布局）
 typedef struct skipnode_binary_s {
     kv_data_t key;
     kv_data_t value;
     int64_t expire_time;
-    struct skipnode_binary_s *forward[]; // 柔性数组！！！
+    int level;                            // 节点实际层数
+    struct skipnode_binary_s *forward[];  // 柔性数组
 } skipnode_binary_t;
 
 // 跳表结构体
 typedef struct skiplist_binary_s {
-    int level;                         // 当前最大层数
-    skipnode_binary_t *header;         // 头节点
-    int count;                         // 节点总数
+    int level;                            // 当前最大层数
+    skipnode_binary_t *header;            // 头节点
+    int count;                            // 节点总数
 } skiplist_binary_t;
 
 // 对外类型
@@ -205,7 +207,6 @@ typedef skiplist_binary_t kvs_skip_t;
 int kvs_skip_create(kvs_skip_t *skip);
 void kvs_skip_destroy(kvs_skip_t *skip);
 
-// 修改：_set 和 _mod 增加 int64_t expire_time 参数
 int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t expire_time);
 kv_data_t* kvs_skip_get(kvs_skip_t *skip, kv_data_t *key);
 int kvs_skip_del(kvs_skip_t *skip, kv_data_t *key);
@@ -215,6 +216,7 @@ int kvs_skip_exist(kvs_skip_t *skip, kv_data_t *key);
 void kvs_skip_foreach(kvs_skip_t *skip, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);
 int kvs_skip_get_value_len(kvs_skip_t *skip, kv_data_t *key);
 int kvs_skip_del_if_expired(kvs_skip_t *skip, kv_data_t *key, int64_t expected_expire);
+
 #endif
 
 void *kvs_malloc(size_t size);

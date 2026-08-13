@@ -4,22 +4,23 @@
 #include <stdint.h>   
 #include <sys/time.h> 
 #include <unistd.h>
+#include <pthread.h>
 
 #if ENABLE_SKIPLIST
 
 kvs_skip_t global_skip = {0};
 
-static inline int kv_data_compare_fast(
-    const kv_data_t *a,
-    const kv_data_t *b)
-{
-    if (a->len != b->len)
-        return a->len < b->len ? -1 : 1;
-
-    if (a->data == b->data)
-        return 0;
-
-    return memcmp(a->data, b->data, a->len);
+/* 标准 kv_data 比较 */
+static inline int kv_data_compare_safe(const kv_data_t *a, const kv_data_t *b) {
+    if (a == b) return 0;
+    if (!a || !a->data) return (!b || !b->data) ? 0 : -1;
+    if (!b || !b->data) return 1;
+    size_t min_len = a->len < b->len ? a->len : b->len;
+    int cmp = memcmp(a->data, b->data, min_len);
+    if (cmp != 0) return cmp;
+    if (a->len < b->len) return -1;
+    if (a->len > b->len) return 1;
+    return 0;
 }
 
 static inline int64_t skip_now_if_ttl(void) {
@@ -48,46 +49,48 @@ static int random_level(void) {
     return level;
 }
 
-/*  节点创建（柔性数组，一次性分配）  */
+/* 节点创建：一次性分配 node + forward 数组 + key 数据 + value 数据 */
 static skipnode_binary_t* skipnode_create(int level, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
-    size_t size = sizeof(skipnode_binary_t) + (level + 1) * sizeof(skipnode_binary_t*);
-    skipnode_binary_t *node = kvs_malloc(size);
-    if (!node) {
-        printf("[SKIP ERROR] skipnode_create - kvs_malloc node failed, size=%zu\n", size);
-        return NULL;
-    }
-    
-    if (kv_data_dup(&node->key, key) != 0) {
-        printf("[SKIP ERROR] key dup failed, node=%p\n", (void*)node);
-        kvs_free(node);
-        return NULL;
-    }
-    
-    if (kv_data_dup(&node->value, value) != 0) {
-        printf("[SKIP ERROR] value dup failed, node=%p\n", (void*)node);
-        kv_data_destroy(&node->key);
-        kvs_free(node);
-        return NULL;
-    }
-    
+    size_t key_len = (key && key->data) ? key->len : 0;
+    size_t val_len = (value && value->data) ? value->len : 0;
+    size_t forward_bytes = (level + 1) * sizeof(skipnode_binary_t *);
+    size_t total_size = sizeof(skipnode_binary_t) + forward_bytes + key_len + val_len;
+
+    skipnode_binary_t *node = (skipnode_binary_t *)kvs_malloc(total_size);
+    if (!node) return NULL;
+
+    node->level = level;
     node->expire_time = expire_time;
-    
+
     for (int i = 0; i <= level; i++) {
         node->forward[i] = NULL;
     }
-    
+
+    char *payload = (char *)node + sizeof(skipnode_binary_t) + forward_bytes;
+
+    node->key.data = payload;
+    node->key.len = key_len;
+    if (key_len > 0 && key->data) {
+        memcpy(node->key.data, key->data, key_len);
+    }
+
+    node->value.data = payload + key_len;
+    node->value.len = val_len;
+    if (val_len > 0 && value->data) {
+        memcpy(node->value.data, value->data, val_len);
+    }
+
     return node;
 }
 
-/*  节点销毁（柔性数组内嵌，一次性释放）  */
-static void skipnode_destroy(skipnode_binary_t *node) {
-    if (!node) return;
-    kv_data_destroy(&node->key);
-    kv_data_destroy(&node->value);
-    kvs_free(node);
+/* 节点销毁：单次内存释放 */
+static inline void skipnode_destroy(skipnode_binary_t *node) {
+    if (node) {
+        kvs_free(node);
+    }
 }
 
-/*  初始化  */
+/* 初始化 */
 int kvs_skip_create(kvs_skip_t *skip) {
     if (!skip) return -1;
     
@@ -103,9 +106,9 @@ int kvs_skip_create(kvs_skip_t *skip) {
     return 0;
 }
 
-/*  销毁  */
+/* 销毁 */
 void kvs_skip_destroy(kvs_skip_t *skip) {
-    if (!skip) return;
+    if (!skip || !skip->header) return;
     
     skipnode_binary_t *current = skip->header->forward[0];
     while (current) {
@@ -120,18 +123,16 @@ void kvs_skip_destroy(kvs_skip_t *skip) {
     skip->count = 0;
 }
 
-/*  查找并记录更新路径  */
+/* 查找并记录更新路径 */
 static void skip_find_update(kvs_skip_t *skip, kv_data_t *key, 
                              skipnode_binary_t *update[MAX_LEVEL + 1],
                              skipnode_binary_t **found_node) {
     skipnode_binary_t *current = skip->header;
     
     for (int i = skip->level; i >= 0; i--) {
-        size_t level_cmp = 0;
         while (current->forward[i] && 
-               kv_data_compare_fast(&current->forward[i]->key, key) < 0) {
+               kv_data_compare_safe(&current->forward[i]->key, key) < 0) {
             current = current->forward[i];
-            level_cmp++;
         }
         update[i] = current;
     }
@@ -139,7 +140,7 @@ static void skip_find_update(kvs_skip_t *skip, kv_data_t *key,
     current = current->forward[0];
     
     if (found_node) {
-        if (current && kv_data_compare_fast(&current->key, key) == 0) {
+        if (current && kv_data_compare_safe(&current->key, key) == 0) {
             *found_node = current;
         } else {
             *found_node = NULL;
@@ -168,21 +169,26 @@ static int handle_expired_node(kvs_skip_t *skip, skipnode_binary_t *node,
     return 1;
 }
 
-/*  SET  */
+/* SET */
 int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t expire_time) {
-    
     if (!skip || !skip->header || !key || !value) return -1;
     
     skipnode_binary_t *update[MAX_LEVEL + 1];
-    skipnode_binary_t *current;
+    skipnode_binary_t *current = NULL;
     
     skip_find_update(skip, key, update, &current);
     
     if (current) {
-        kv_data_destroy(&current->value);
-        if (kv_data_dup(&current->value, value) != 0) return -2;
-        current->expire_time = expire_time;
-        return 0;
+        if (value->len <= current->value.len) {
+            memcpy(current->value.data, value->data, value->len);
+            current->value.len = value->len;
+            current->expire_time = expire_time;
+            return 0;
+        } else {
+            // 原 value 空间不足，重建节点替换
+            kvs_skip_del(skip, key);
+            skip_find_update(skip, key, update, &current);
+        }
     }
     
     int level = random_level();
@@ -194,9 +200,8 @@ int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t exp
     }
     
     skipnode_binary_t *new_node = skipnode_create(level, key, value, expire_time);
-    if (!new_node) {return -2;}
+    if (!new_node) return -2;
     
-    // 插入节点
     for (int i = 0; i <= level; i++) {
         new_node->forward[i] = update[i]->forward[i];
         update[i]->forward[i] = new_node;
@@ -206,12 +211,12 @@ int kvs_skip_set(kvs_skip_t *skip, kv_data_t *key, kv_data_t *value, int64_t exp
     return 0;
 }
 
-/*  GET  */
+/* GET */
 kv_data_t* kvs_skip_get(kvs_skip_t *skip, kv_data_t *key) {
     if (!skip || !skip->header || !key) return NULL;
     
     skipnode_binary_t *update[MAX_LEVEL + 1];
-    skipnode_binary_t *current;
+    skipnode_binary_t *current = NULL;
     
     skip_find_update(skip, key, update, &current);
     
@@ -226,12 +231,12 @@ kv_data_t* kvs_skip_get(kvs_skip_t *skip, kv_data_t *key) {
     return current ? &current->value : NULL;
 }
 
-/*  DEL  */
+/* DEL */
 int kvs_skip_del(kvs_skip_t *skip, kv_data_t *key) {
     if (!skip || !skip->header || !key) return -1;
     
     skipnode_binary_t *update[MAX_LEVEL + 1];
-    skipnode_binary_t *current;
+    skipnode_binary_t *current = NULL;
     
     skip_find_update(skip, key, update, &current);
     
@@ -257,7 +262,7 @@ int kvs_skip_del_if_expired(kvs_skip_t *skip, kv_data_t *key, int64_t expected_e
     if (!skip || !skip->header || !key) return 0;
     
     skipnode_binary_t *update[MAX_LEVEL + 1];
-    skipnode_binary_t *current;
+    skipnode_binary_t *current = NULL;
     
     skip_find_update(skip, key, update, &current);
     
@@ -279,7 +284,7 @@ int kvs_skip_exist(kvs_skip_t *skip, kv_data_t *key) {
 }
 
 void kvs_skip_foreach(kvs_skip_t *skip, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg) {
-    if (!skip || !callback) return;
+    if (!skip || !skip->header || !callback) return;
     
     int64_t now = 0;
     int check_expire = g_enable_ttl;

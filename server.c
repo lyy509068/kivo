@@ -112,6 +112,10 @@ void dest_kvengine(void) {
     kvs_skip_destroy(&global_skip);
     #endif
 
+    if (g_enable_mempool) {
+        // 销毁内存池
+    }
+
 }
 
 int main(int argc, char *argv[]) {

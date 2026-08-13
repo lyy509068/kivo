@@ -13,7 +13,7 @@
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 2000
-#define BATCH_SIZE 100
+#define BATCH_SIZE 1
 #define MAX_KEY_LEN 64
 #define MAX_VAL_LEN 128
 #define SEND_BUF_SIZE 65536
