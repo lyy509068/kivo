@@ -85,9 +85,10 @@ static int has_complete_resp_command(const char *buf, int buf_len, int *out_cmd_
     return 1;
 }
 
-static void resp_unpack_no_modify(char *req_buf, resp_request_t *req) {
+static void resp_unpack_no_modify(char *req_buf, int buf_len, resp_request_t *req) {
     char *p = req_buf;
-    const char *crlf = find_crlf(p, 100); 
+    // 使用剩余长度查找第一个 \r\n
+    const char *crlf = find_crlf(p, buf_len);
     
     if (!crlf) {
         req->argc = 0;
@@ -110,7 +111,9 @@ static void resp_unpack_no_modify(char *req_buf, resp_request_t *req) {
     p = (char *)(crlf + 2);
     
     for (int i = 0; i < req->argc; i++) {
-        crlf = find_crlf(p, 128);
+        // 计算当前剩余长度
+        int remaining = buf_len - (p - req_buf);
+        crlf = find_crlf(p, remaining);
         if (!crlf) {
             req->argc = i;
             return;
@@ -202,11 +205,10 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         return -1;
     }
 
-    // ---------- 预分配池（栈上） ----------
+    // 预分配池
     #define MAX_ARGC 16  // 足够大
     char *cmd_argv_pool[PIPELINE_MAX][MAX_ARGC];
     int cmd_argv_len_pool[PIPELINE_MAX][MAX_ARGC];
-    // -----------------------------------
 
     int processed = 0;
     int cmd_num = 0;
@@ -225,19 +227,22 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
 
         resp_request_t temp_req;
         memset(&temp_req, 0, sizeof(resp_request_t));
-        resp_unpack_no_modify(cmd_raw_ptr, &temp_req);
+        resp_unpack_no_modify(cmd_raw_ptr, single_cmd_len, &temp_req);
 
-        // ---- 特殊命令处理（RDMA / SYNC / PING） ----
+        // 特殊命令处理（RDMA / SYNC / PING） 
         int is_special_network_cmd = 0;
-        
-        if (g_enable_repl_master && temp_req.argc > 0) {
+        int is_rdma_cmd = (temp_req.argv_len[0] == 12 && strncasecmp(temp_req.argv[0], "RDMA_CONNECT", 12) == 0);
+        int is_sync_cmd = (temp_req.argv_len[0] == 4 && strncasecmp(temp_req.argv[0], "SYNC", 4) == 0);
+
+        if (g_enable_repl_master && temp_req.argc > 0 && (is_rdma_cmd || is_sync_cmd)) {
             extern struct conn ntyco_conn_list[]; 
             struct conn *c = &ntyco_conn_list[fd];
-            if (strcasecmp(temp_req.argv[0], "RDMA_CONNECT") == 0) {
+
+            if (is_rdma_cmd) {
                 c->role = CONN_SLAVE;
                 handle_slave_rdma_connect(&temp_req, wbuf, wcap, wlen, fd);
                 is_special_network_cmd = 1;
-            } else if (g_use_tcp_sync && strcasecmp(temp_req.argv[0], "SYNC") == 0) {
+            } else if (g_use_tcp_sync && is_sync_cmd) {
                 extern volatile int g_slave_fd;
                 g_slave_fd = fd; 
             }
@@ -266,10 +271,10 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             continue; 
         }
         
-        // ---- 存储命令信息（使用池，零拷贝） ----
+        // 存储命令信息（使用池，零拷贝） 
         int argc = temp_req.argc;
         if (argc > MAX_ARGC) {
-            // 罕见情况：参数超过预定义，改用动态分配（fallback）
+            // 参数超过预定义，改用动态分配（fallback）
             cmds[cmd_num].req.argc = argc;
             cmds[cmd_num].req.is_dynamic = 1;
             cmds[cmd_num].req.argv = (char **)kvs_malloc(sizeof(char *) * argc);
@@ -293,7 +298,7 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         replies[cmd_num].body = NULL;
         replies[cmd_num].body_len = 0;
 
-        // ---- 写入 WAL ----
+        // 写入 WAL 
         int is_write = (argc > 0 && is_write_command(temp_req.argv[0], temp_req.argv_len[0]));
         if (is_write) {
             if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
@@ -418,7 +423,7 @@ int protocol_process_recover(char *in_buf, int in_len) {
         
         resp_request_t temp_req;
         memset(&temp_req, 0, sizeof(resp_request_t));
-        resp_unpack_no_modify(in_buf + processed, &temp_req);
+        resp_unpack_no_modify(in_buf + processed, single_cmd_len, &temp_req);
 
         // 构造单条命令（独立分配 argv 数组）
         parsed_cmd_t cmds[1];

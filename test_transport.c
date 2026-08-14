@@ -12,7 +12,6 @@
 #define SERVER_PORT 2000
 #define TOTAL_COMMANDS 100000
 
-#define PIPELINE_WINDOW 100
 #define RECV_BUF_SIZE (2 * 1024 * 1024)
 #define SEND_BUF_SIZE (64 * 1024)
 
@@ -91,66 +90,56 @@ int main() {
     // 固定引擎轮转：SET → RSET → HSET → SSET
     const char *eng_cmds[] = {"SET", "RSET", "HSET", "SSET"};
 
-    printf("QPS Test: %d commands (fixed order: SET → RSET → HSET → SSET)\n", TOTAL_COMMANDS);
+    printf("QPS Test (single-command mode): %d commands (fixed order: SET → RSET → HSET → SSET)\n", TOTAL_COMMANDS);
 
     int recv_buf_len = 0;
-    int sent_cnt = 0;
     int acked_cnt = 0;
     long eng_counts[5] = {0};
 
     double start_time = get_time_sec();
 
-    // Pipeline循环
-    while (acked_cnt < TOTAL_COMMANDS) {
-        
-        // 1. 批量打包发送
-        int send_len = 0;
-        while (sent_cnt - acked_cnt < PIPELINE_WINDOW && sent_cnt < TOTAL_COMMANDS) {
-            // 固定轮转引擎
-            int eng_idx = sent_cnt % 4;   // 0=SET, 1=RSET, 2=HSET, 3=SSET
-            int eng = eng_idx + 1;        // 1-4
+    for (int sent_cnt = 0; sent_cnt < TOTAL_COMMANDS; sent_cnt++) {
+        // 1. 构造单条命令（固定轮转引擎）
+        int eng_idx = sent_cnt % 4;          // 0=SET, 1=RSET, 2=HSET, 3=SSET
+        int eng = eng_idx + 1;               // 1-4
 
-            char key[32], val[32];
-            sprintf(key, "key_%06d", sent_cnt);
-            sprintf(val, "value_%06d", sent_cnt);
+        char key[32], val[32];
+        sprintf(key, "key_%06d", sent_cnt);
+        sprintf(val, "value_%06d", sent_cnt);
 
-            char cmd[256];
-            int cmd_len = build_resp_set(cmd, eng_cmds[eng_idx], key, val);
+        char cmd[256];
+        int cmd_len = build_resp_set(cmd, eng_cmds[eng_idx], key, val);
 
-            if (send_len + cmd_len > SEND_BUF_SIZE) break;
-
-            memcpy(send_buf + send_len, cmd, cmd_len);
-            send_len += cmd_len;
-            eng_counts[eng]++;
-            sent_cnt++;
-        }
-
-        if (send_len > 0) {
-            if (send(sock, send_buf, send_len, 0) < 0) {
-                perror("send");
-                goto cleanup;
-            }
-        }
-
-        // 2. 接收并解析响应
-        int n = recv(sock, recv_buf + recv_buf_len, RECV_BUF_SIZE - recv_buf_len, 0);
-        if (n <= 0) {
-            if (n == 0) printf("\nServer closed connection.\n");
-            else perror("recv");
+        // 2. 发送命令
+        if (send(sock, cmd, cmd_len, 0) < 0) {
+            perror("send");
             goto cleanup;
         }
 
-        recv_buf_len += n;
+        // 3. 接收并解析响应（直到收到至少一条完整回复）
+        while (1) {
+            int n = recv(sock, recv_buf + recv_buf_len, RECV_BUF_SIZE - recv_buf_len, 0);
+            if (n <= 0) {
+                if (n == 0) printf("\nServer closed connection.\n");
+                else perror("recv");
+                goto cleanup;
+            }
+            recv_buf_len += n;
 
-        int parsed_bytes = 0;
-        int count = parse_resp_replies(recv_buf, recv_buf_len, &parsed_bytes);
-        acked_cnt += count;
-
-        // 移除已解析的数据
-        if (parsed_bytes > 0) {
-            int remain = recv_buf_len - parsed_bytes;
-            if (remain > 0) memmove(recv_buf, recv_buf + parsed_bytes, remain);
-            recv_buf_len = remain;
+            int parsed_bytes = 0;
+            int count = parse_resp_replies(recv_buf, recv_buf_len, &parsed_bytes);
+            if (count > 0) {
+                // 成功解析出至少一条回复（正常情况下应为1）
+                acked_cnt += count;
+                // 移除已解析的数据
+                if (parsed_bytes > 0) {
+                    memmove(recv_buf, recv_buf + parsed_bytes, recv_buf_len - parsed_bytes);
+                    recv_buf_len -= parsed_bytes;
+                }
+                eng_counts[eng]++;   // 记录该引擎的成功次数
+                break;               // 跳出接收循环，继续下一条命令
+            }
+            // 否则数据不完整，继续接收
         }
 
         // 打印进度

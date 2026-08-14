@@ -443,7 +443,13 @@ void* pure_rdma_repl_slave_thread(void *arg) {
         }
 
         // 写入本地磁盘
-        write(local_fd, g_rdma_ctx->buffer, incoming_chunk_size);
+        ssize_t written = write(local_fd, g_rdma_ctx->buffer, incoming_chunk_size);
+        if (written < 0 || (size_t)written != incoming_chunk_size) {
+            perror("[Repl Slave] write to AOF failed");
+            close(local_fd);
+            g_slave_rdma_running = 0;
+            return NULL;
+        }
         total_received += incoming_chunk_size;
 
         // 如果还有未收完的数据，在回复 Chunk ACK 前提前挂载下一个 Chunk 的 Recv 包

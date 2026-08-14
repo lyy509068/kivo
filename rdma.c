@@ -78,11 +78,20 @@ struct rdma_ring_ctx* rdma_ring_init(const char *dev_name) {
     rctx->qp = ibv_create_qp(rctx->pd, &qp_attr);
     if (!rctx->qp) goto err;
 
-    posix_memalign((void**)&rctx->buffer, 4096, RING_BUFFER_SIZE);
+    int ret = posix_memalign((void**)&rctx->buffer, 4096, RING_BUFFER_SIZE);
+    if (ret != 0) {
+        fprintf(stderr, "posix_memalign buffer failed: %d\n", ret);
+        goto err;
+    }
+
     rctx->mr_buf = ibv_reg_mr(rctx->pd, rctx->buffer, RING_BUFFER_SIZE,
                               IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
     
-    posix_memalign((void**)&rctx->local_meta, 4096, sizeof(struct ring_meta));
+    ret = posix_memalign((void**)&rctx->local_meta, 4096, sizeof(struct ring_meta));
+    if (ret != 0) {
+        fprintf(stderr, "posix_memalign meta failed: %d\n", ret);
+        goto err;
+    }
     memset(rctx->local_meta, 0, sizeof(struct ring_meta));
     rctx->mr_meta = ibv_reg_mr(rctx->pd, rctx->local_meta, sizeof(struct ring_meta),
                                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
@@ -103,6 +112,14 @@ err:
 
 int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote) {
     memcpy(&rctx->remote_meta, remote, sizeof(struct ring_meta));
+    // ★ 查询端口属性获取 active_mtu
+    struct ibv_port_attr port_attr;
+    if (ibv_query_port(rctx->ctx, 1, &port_attr)) {
+        fprintf(stderr, "[RDMA] ibv_query_port failed\n");
+        return -1;
+    }
+    // active_mtu 是 enum ibv_mtu，可直接作为 path_mtu，但需确保不超过 active_mtu
+    enum ibv_mtu max_mtu = port_attr.active_mtu; // 也可以使用 port_attr.max_mtu 但通常用 active_mtu
 
     // INIT
     struct ibv_qp_attr attr = {
@@ -116,7 +133,7 @@ int rdma_ring_configure(struct rdma_ring_ctx *rctx, struct ring_meta *remote) {
 
     // RTR (Ready To Receive)
     attr.qp_state = IBV_QPS_RTR;
-    attr.path_mtu = IBV_MTU_1024;
+    attr.path_mtu = max_mtu;
     attr.dest_qp_num = remote->qpn;
     attr.rq_psn = 0;
     attr.max_dest_rd_atomic = 1;

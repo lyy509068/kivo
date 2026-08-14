@@ -3,215 +3,308 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include <errno.h>
-#include <fcntl.h>   
-#include <poll.h>    
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 
-#define SLAVE_IP "192.168.37.129" 
-#define SLAVE_PORT 2000           
+#define SLAVE_IP "192.168.37.129"
+#define SLAVE_PORT 2000
 #define MAX_PAYLOAD_SIZE 16384
-#define REBUF_SIZE (32 * 1024 * 1024) 
+#define REBUF_SIZE (64 * 1024 * 1024)
+#define OOO_MAX 512   // 最大乱序缓存节点数
 
+// TCP 序列号比较宏
+#define SEQ_GT(a,b)  ((int32_t)((a)-(b)) > 0)
+#define SEQ_GEQ(a,b) ((int32_t)((a)-(b)) >= 0)
+
+// eBPF 传递的事件结构（与内核侧一致）
 struct event_t {
-    __u32 payload_len;
+    uint32_t src_ip;
+    uint16_t src_port;
+    uint32_t seq;
+    uint32_t payload_len;
     char payload[0];
 };
 
+// 乱序包节点
+struct ooo_node {
+    uint32_t seq;
+    uint32_t len;
+    char data[MAX_PAYLOAD_SIZE];
+    struct ooo_node *next;
+};
+
+// 全局状态
 int slave_sock = -1;
 volatile int running = 1;
 
+// 待发送的连续字节流
 static char *rebuf = NULL;
 static int rebuf_len = 0;
 static int rebuf_cap = REBUF_SIZE;
 
+// TCP 重组状态
+static uint32_t expected_seq = 0;
+static int seq_initialized = 0;
+static struct ooo_node *ooo_head = NULL;
+static int ooo_cnt = 0;
+
+// 统计
+static volatile uint64_t recv_event   = 0;
+static volatile uint64_t recv_bytes   = 0;
+static volatile uint64_t sent_bytes   = 0;
+static volatile uint64_t ooo_stored   = 0;
+static volatile uint64_t ooo_merged   = 0;
+
+// ------------------ 发送辅助 ------------------
 int set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-// 解析完整 RESP 命令长度
-static int find_resp_cmd(const char *buf, int len) {
-    if (len < 4 || buf[0] != '*') return 0;
-    const char *p = buf;
-    const char *end = buf + len;
-
-    const char *crlf = memmem(p, end - p, "\r\n", 2);
-    if (!crlf) return 0;
-    int argc = atoi(p + 1);
-    p = crlf + 2;
-
-    for (int i = 0; i < argc; i++) {
-        if (p >= end || *p != '$') return 0;
-        crlf = memmem(p, end - p, "\r\n", 2);
-        if (!crlf) return 0;
-        int arg_len = atoi(p + 1);
-        p = crlf + 2;
-        if (p + arg_len + 2 > end) return 0;
-        if (p[arg_len] != '\r' || p[arg_len+1] != '\n') return 0;
-        p += arg_len + 2;
-    }
-    return (int)(p - buf);
-}
-
-static int is_replication_command(const char *cmd_buf, int cmd_len) {
-    if (cmd_len < 10) return 0;
-    const char *p = cmd_buf + 1;
-    const char *crlf = memmem(p, cmd_len - (p - cmd_buf), "\r\n", 2);
-    if (!crlf) return 0;
-    p = crlf + 2;
-    
-    if (*p != '$') return 0;
-    crlf = memmem(p, cmd_len - (p - cmd_buf), "\r\n", 2);
-    if (!crlf) return 0;
-    int len = atoi(p + 1);
-    p = crlf + 2;
-    
-    if (p + len > cmd_buf + cmd_len) return 0;
-    if (len == 3 && strncmp(p, "SET", 3) == 0) return 1;
-    if (len == 4) {
-        if (strncmp(p, "RSET", 4) == 0) return 1;
-        if (strncmp(p, "HSET", 4) == 0) return 1;
-        if (strncmp(p, "SSET", 4) == 0) return 1;
-    }
-    return 0;
-}
-
-// 非阻塞网络发送函数
-static int send_all_nonblock(int fd, const char *buf, int len) {
-    int total_sent = 0;
-    while (total_sent < len) {
-        ssize_t sent = send(fd, buf + total_sent, len - total_sent, MSG_NOSIGNAL);
-        if (sent < 0) {
+// 尝试将 rebuf 中的数据通过 TCP 发送给从机，发不出去就保留
+static void flush_rebuf(void) {
+    while (rebuf_len > 0 && running) {
+        ssize_t sent = send(slave_sock, rebuf, rebuf_len, MSG_NOSIGNAL);
+        if (sent > 0) {
+            sent_bytes += sent;
+            memmove(rebuf, rebuf + sent, rebuf_len - sent);
+            rebuf_len -= sent;
+        } else if (sent < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                break; // Socket 发送缓冲区满，返回已发送字节数
+                break;  // 发送缓冲区满，等下次
+            } else {
+                fprintf(stderr, "[Relay] send error: %s\n", strerror(errno));
+                running = 0;
+                break;
             }
-            return -1; // 出错
+        } else {
+            // sent == 0，连接关闭
+            fprintf(stderr, "[Relay] slave closed connection\n");
+            running = 0;
+            break;
         }
-        total_sent += sent;
     }
-    return total_sent;
 }
 
-// 直接将动态 Ring Buffer 数据存入重组缓冲区，减少中间队列开销
-static int handle_event(void *ctx, void *data, size_t data_sz) {
-    struct event_t *e = (struct event_t *)data;
-    
-    if (e->payload_len == 0 || e->payload_len > MAX_PAYLOAD_SIZE) {
-        return 0;
-    }
-
-    if (rebuf_len + e->payload_len > rebuf_cap) {
+// 将数据追加到 rebuf
+static void rebuf_append(const char *data, int len) {
+    if (rebuf_len + len > rebuf_cap) {
         rebuf_cap *= 2;
-        char *new_buf = (char*)realloc(rebuf, rebuf_cap);
+        char *new_buf = realloc(rebuf, rebuf_cap);
         if (!new_buf) {
-            fprintf(stderr, "[eBPF Relay] Out of memory!\n");
-            return 0;
+            fprintf(stderr, "[Relay] realloc failed\n");
+            running = 0;
+            return;
         }
         rebuf = new_buf;
     }
+    memcpy(rebuf + rebuf_len, data, len);
+    rebuf_len += len;
+}
 
-    memcpy(rebuf + rebuf_len, e->payload, e->payload_len);
-    rebuf_len += e->payload_len;
+// ------------------ 乱序队列管理 ------------------
+static void ooo_flush(void) {
+    int merged;
+    do {
+        merged = 0;
+        struct ooo_node *prev = NULL;
+        struct ooo_node *cur = ooo_head;
+        while (cur) {
+            if (cur->seq == expected_seq) {
+                // 接到预期序列号，追加并发送
+                rebuf_append(cur->data, cur->len);
+                expected_seq += cur->len;
+                ooo_merged++;
+
+                if (prev) prev->next = cur->next;
+                else ooo_head = cur->next;
+                struct ooo_node *tmp = cur;
+                cur = cur->next;
+                free(tmp);
+                ooo_cnt--;
+                merged = 1;
+
+                // 追加后立即尝试发送
+                flush_rebuf();
+            } else {
+                prev = cur;
+                cur = cur->next;
+            }
+        }
+    } while (merged);
+}
+
+static void ooo_insert(uint32_t seq, const char *data, uint32_t len) {
+    // 去重
+    for (struct ooo_node *cur = ooo_head; cur; cur = cur->next) {
+        if (cur->seq == seq) return;
+    }
+
+    // 如果乱序队列过大，清空并重新同步
+    if (ooo_cnt >= OOO_MAX) {
+        fprintf(stderr, "[Relay] OOO queue overflow, resyncing\n");
+        while (ooo_head) {
+            struct ooo_node *tmp = ooo_head;
+            ooo_head = ooo_head->next;
+            free(tmp);
+        }
+        ooo_cnt = 0;
+        seq_initialized = 0;
+        return;
+    }
+
+    struct ooo_node *node = calloc(1, sizeof(*node));
+    node->seq = seq;
+    node->len = len;
+    memcpy(node->data, data, len);
+
+    // 按 seq 升序插入
+    struct ooo_node *prev = NULL;
+    struct ooo_node *cur = ooo_head;
+    while (cur && SEQ_GEQ(seq, cur->seq)) {
+        prev = cur;
+        cur = cur->next;
+    }
+    node->next = cur;
+    if (prev) prev->next = node;
+    else ooo_head = node;
+    ooo_cnt++;
+    ooo_stored++;
+}
+
+// ------------------ TCP 重组处理 ------------------
+static void process_tcp_payload(uint32_t seq, const char *data, uint32_t len) {
+    if (!seq_initialized) {
+        // 第一个包，直接作为起始序列号
+        expected_seq = seq;
+        seq_initialized = 1;
+    }
+
+    if (seq == expected_seq) {
+        // 顺序正确，直接追加并发送
+        rebuf_append(data, len);
+        expected_seq += len;
+        flush_rebuf();
+        // 检查乱序队列是否有后续连续数据
+        ooo_flush();
+    } else if (SEQ_GT(seq, expected_seq)) {
+        // 未来包，存入乱序队列
+        ooo_insert(seq, data, len);
+    } else {
+        // 旧包或重叠包
+        uint32_t end = seq + len;
+        if (SEQ_GT(end, expected_seq)) {
+            // 有部分新数据
+            uint32_t offset = expected_seq - seq;
+            uint32_t new_len = end - expected_seq;
+            rebuf_append(data + offset, new_len);
+            expected_seq += new_len;
+            flush_rebuf();
+            ooo_flush();
+        }
+        // 纯旧数据，忽略
+    }
+}
+
+// ------------------ eBPF 事件回调 ------------------
+static int handle_event(void *ctx, void *data, size_t data_sz) {
+    struct event_t *e = (struct event_t *)data;
+    if (e->payload_len == 0 || e->payload_len > MAX_PAYLOAD_SIZE) return 0;
+
+    recv_event++;
+    recv_bytes += e->payload_len;
+
+    process_tcp_payload(e->seq, e->payload, e->payload_len);
     return 0;
 }
 
+// ------------------ 信号处理 ------------------
+static void sig_handler(int sig) {
+    running = 0;
+}
+
+// ------------------ 主函数 ------------------
 int main(int argc, char **argv) {
-    rebuf = (char*)malloc(REBUF_SIZE);
-    if (!rebuf) return 1;
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
 
-    printf("[eBPF Relay] Start transport\n");
+    rebuf = malloc(REBUF_SIZE);
+    if (!rebuf) {
+        perror("malloc rebuf");
+        return 1;
+    }
 
+    printf("[Relay] Connecting to slave %s:%d...\n", SLAVE_IP, SLAVE_PORT);
     slave_sock = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in slave_addr;
-    memset(&slave_addr, 0, sizeof(slave_addr));
-    slave_addr.sin_family = AF_INET;
-    slave_addr.sin_port = htons(SLAVE_PORT);
-    inet_pton(AF_INET, SLAVE_IP, &slave_addr.sin_addr);
-    if (connect(slave_sock, (struct sockaddr *)&slave_addr, sizeof(slave_addr)) < 0) {
+    struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(SLAVE_PORT)};
+    inet_pton(AF_INET, SLAVE_IP, &sa.sin_addr);
+    if (connect(slave_sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         perror("connect");
         free(rebuf);
         return 1;
     }
     set_nonblocking(slave_sock);
-
     int sndbuf = 8 * 1024 * 1024;
     setsockopt(slave_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
 
     int map_fd = bpf_obj_get("/sys/fs/bpf/payload_ringbuf");
     if (map_fd < 0) {
-        perror("bpf_obj_get map failed");
-        free(rebuf);
+        perror("bpf_obj_get");
         close(slave_sock);
+        free(rebuf);
         return 1;
     }
 
     struct ring_buffer *rb = ring_buffer__new(map_fd, handle_event, NULL, NULL);
     if (!rb) {
         fprintf(stderr, "ring_buffer__new failed\n");
-        free(rebuf);
         close(map_fd);
         close(slave_sock);
+        free(rebuf);
         return 1;
     }
 
+    printf("[Relay] Ready, polling events...\n");
+
+    // 主循环：先发送待发数据，再 poll 新事件
     while (running) {
-        // 1. 优先拉取内核 RingBuffer 数据填充 rebuf
-        ring_buffer__poll(rb, 1);
-
-        // 2. 解析并尽可能多地发送完整 RESP 指令
-        while (rebuf_len > 0) {
-            int cmd_len = find_resp_cmd(rebuf, rebuf_len);
-            
-            // 没找到完整命令
-            if (cmd_len <= 0) {
-                // 如果积压数据太大且没有合法 RESP 头，尝试自动容错修补错位
-                if (rebuf_len > MAX_PAYLOAD_SIZE * 4) {
-                    int next_star = -1;
-                    for (int i = 1; i < rebuf_len; i++) {
-                        if (rebuf[i] == '*') {
-                            next_star = i;
-                            break;
-                        }
-                    }
-                    if (next_star > 0) {
-                        memmove(rebuf, rebuf + next_star, rebuf_len - next_star);
-                        rebuf_len -= next_star;
-                        continue;
-                    }
-                }
-                break;
-            }
-
-            // 找到了完整 RESP 指令
-            if (is_replication_command(rebuf, cmd_len)) {
-                int sent = send_all_nonblock(slave_sock, rebuf, cmd_len);
-                if (sent < cmd_len) {
-                    // 如果只发了一部分（缓冲区满），保留未发完的部分，跳出循环等待下次发送
-                    if (sent > 0) {
-                        memmove(rebuf, rebuf + sent, rebuf_len - sent);
-                        rebuf_len -= sent;
-                    }
-                    usleep(100);
-                    break; 
-                }
-                usleep(2);
-            }
-
-            // 发送完毕或非复制指令，从 rebuf 中安全移除
-            memmove(rebuf, rebuf + cmd_len, rebuf_len - cmd_len);
-            rebuf_len -= cmd_len;
+        // 有数据就尝试发送
+        if (rebuf_len > 0) {
+            flush_rebuf();
         }
+
+        // poll eBPF 事件；如果有待发数据，使用短超时避免阻塞发送
+        int timeout = rebuf_len > 0 ? 1 : 100;
+        ring_buffer__poll(rb, timeout);
     }
 
+    printf("\n[Relay] Final Stats:\n");
+    printf("  recv_event: %lu\n", recv_event);
+    printf("  recv_bytes: %lu\n", recv_bytes);
+    printf("  sent_bytes: %lu\n", sent_bytes);
+    printf("  ooo_stored: %lu\n", ooo_stored);
+    printf("  ooo_merged: %lu\n", ooo_merged);
+    printf("  rebuf_left: %d\n", rebuf_len);
+    printf("  ooo_left:   %d\n", ooo_cnt);
+
+    // 清理
     ring_buffer__free(rb);
     close(map_fd);
     close(slave_sock);
     free(rebuf);
+    while (ooo_head) {
+        struct ooo_node *tmp = ooo_head;
+        ooo_head = ooo_head->next;
+        free(tmp);
+    }
     return 0;
 }

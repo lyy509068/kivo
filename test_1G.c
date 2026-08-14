@@ -34,11 +34,41 @@ int connect_server() {
 char* read_file(const char *filename, size_t *out_len) {
     FILE *fp = fopen(filename, "rb");
     if (!fp) { *out_len = 0; return NULL; }
-    fseek(fp, 0, SEEK_END);
-    *out_len = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        *out_len = 0;
+        return NULL;
+    }
+    long len = ftell(fp);
+    if (len < 0) {
+        fclose(fp);
+        *out_len = 0;
+        return NULL;
+    }
+    *out_len = (size_t)len;
+
+    if (fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        *out_len = 0;
+        return NULL;
+    }
+
     char *buf = (char *)malloc(*out_len);
-    if (buf) fread(buf, 1, *out_len, fp);
+    if (!buf) {
+        fclose(fp);
+        *out_len = 0;
+        return NULL;
+    }
+
+    size_t nread = fread(buf, 1, *out_len, fp);
+    if (nread != *out_len) {
+        free(buf);
+        fclose(fp);
+        *out_len = 0;
+        return NULL;
+    }
+
     fclose(fp);
     return buf;
 }

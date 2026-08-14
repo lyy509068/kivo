@@ -11,7 +11,7 @@ CLIENT_IP="192.168.37.130"
 MASTER_PORT=2000
 
 MASTER_PROJ_DIR="/home/lyy/course/project/KVstore2/9.1-kvstore"
-SLAVE_PROJ_DIR="/home/c2/project/KVstore7/9.1-kvstore"
+SLAVE_PROJ_DIR="/home/c2/project/KVstore6/9.1-kvstore"
 CLIENT_PROJ_DIR="/home/c1/project"
 
 MASTER_USER="lyy"
@@ -168,9 +168,9 @@ run_round_2() {
     remote_exec "$CLIENT_USER" "$CLIENT_IP" "cd $CLIENT_PROJ_DIR && ./test_transport $MASTER_IP $MASTER_PORT" >> "$RESULT_FILE" 2>&1
     echo "" >> "$RESULT_FILE"
     
-    # ★ 客户端插入完成后，等待35秒让增量同步完成
-    echo "[等待] 客户端插入完成，等待 35 秒让增量同步完成..."
-    sleep 35
+    # ★ 客户端插入完成后，等待5秒让增量同步完成
+    echo "[等待] 客户端插入完成，等待 5 秒让增量同步完成..."
+    sleep 5
     
     # 停止 eBPF
     stop_ebpf_relay
@@ -206,9 +206,9 @@ run_round_3() {
     remote_exec "$CLIENT_USER" "$CLIENT_IP" "cd $CLIENT_PROJ_DIR && ./test_transport $MASTER_IP $MASTER_PORT" >> "$RESULT_FILE" 2>&1
     echo "" >> "$RESULT_FILE"
     
-    # ★ 客户端插入完成后，等待35秒让增量同步完成
-    echo "[等待] 客户端插入完成，等待 35 秒让增量同步完成..."
-    sleep 35
+    # ★ 客户端插入完成后，等待5秒让增量同步完成
+    echo "[等待] 客户端插入完成，等待 5 秒让增量同步完成..."
+    sleep 5
     
     stop_server "$SLAVE_USER" "$SLAVE_IP"
     stop_server "$MASTER_USER" "$MASTER_IP"

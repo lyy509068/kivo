@@ -5,23 +5,26 @@
 #include <linux/tcp.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include <stddef.h>   // for offsetof
 
 #define MAX_PAYLOAD_SIZE 16384
 
-// 定义一个固定大小的结构体，用于在暂存区(Scratch Buffer)中分配空间
+// 事件结构：携带 TCP 元数据和 payload
 struct event_t {
+    __u32 src_ip;
+    __u16 src_port;
+    __u32 seq;                // TCP 序列号（主机字节序）
     __u32 payload_len;
     char payload[MAX_PAYLOAD_SIZE];
 };
 
-// 1. 用于向用户态发送变长数据的 RingBuffer
+// RingBuffer：用户态读取
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 64 * 1024 * 1024); // 64MB
 } payload_ringbuf SEC(".maps");
 
-// 2. Per-CPU Array 暂存区 (Scratch Map)
-// 由于 eBPF 栈大小限制(512B)，8KB 的临时缓冲区必须放在 Map 中
+// PerCPU 暂存区，避免栈溢出
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __type(key, __u32);
@@ -45,43 +48,49 @@ int handle_tc_dual_write(struct __sk_buff *skb) {
     struct tcphdr *tcph = (void *)(iph + 1);
     if ((void *)(tcph + 1) > data_end) return TC_ACT_OK;
 
+    // 只捕获目的端口为 2000 的 TCP 包（客户端 -> 主机）
     if (tcph->dest != bpf_htons(2000)) return TC_ACT_OK;
 
+    // 可选：过滤掉特定源 IP（如从机 IP），防止自环
+    // 根据实际环境修改，这里假设从机 IP 为 192.168.37.129
+    // 如果不需要过滤，可删除下面的判断
     __u32 src_ip = iph->saddr;
-    if (src_ip == bpf_htonl(0xc0a85c82)) return TC_ACT_OK;
+    if (src_ip == bpf_htonl(0xc0a82581)) return TC_ACT_OK; // 192.168.37.129
 
+    // 忽略握手、挥手和 RST 包
     if (tcph->rst || tcph->syn || tcph->fin) return TC_ACT_OK;
 
     int total = (int)bpf_ntohs(iph->tot_len);
     int ihl   = (int)(iph->ihl * 4);
     int thl   = (int)(tcph->doff * 4);
-    
     int len = total - ihl - thl;
     if (len < 1) return TC_ACT_OK;
     if (len > MAX_PAYLOAD_SIZE) len = MAX_PAYLOAD_SIZE;
 
     __u32 offset = ETH_HLEN + ihl + thl;
 
-    // 1：获取当前 CPU 的独立暂存区 (避免并发冲突)
     __u32 key = 0;
     struct event_t *e = bpf_map_lookup_elem(&scratch_map, &key);
     if (!e) return TC_ACT_OK;
 
-    // 2：把数据先写入暂存区
+    // 填充元数据
+    e->src_ip = iph->saddr;
+    e->src_port = tcph->source;
+    e->seq = bpf_ntohl(tcph->seq);   // 转为主机字节序，便于用户态比较
     e->payload_len = len;
+
+    // 拷贝 payload
     if (bpf_skb_load_bytes(skb, offset, e->payload, len) != 0) {
         return TC_ACT_OK;
     }
 
-    // 3：计算实际要发送的动态长度
-    // 强制转为 unsigned long，并增加显式边界检查，帮助 Verifier 确认不会越界
-    __u64 send_size = sizeof(__u32) + len;
+    // 计算实际要发送的字节数（只发送实际 payload，避免拷贝整个 MAX_PAYLOAD_SIZE）
+    __u64 send_size = offsetof(struct event_t, payload) + len;
     if (send_size > sizeof(struct event_t)) {
-        return TC_ACT_OK; // 兜底防御，防止 Verifier 报错
+        return TC_ACT_OK;
     }
 
-    // 4：使用 bpf_ringbuf_output 提交变长数据
-    // 它会从 e 的地址拷贝 send_size 个字节到 RingBuffer 中
+    // 提交到 RingBuffer
     bpf_ringbuf_output(&payload_ringbuf, e, send_size, 0);
 
     return TC_ACT_OK;

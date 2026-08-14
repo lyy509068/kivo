@@ -363,6 +363,7 @@ static void cmd_sys_sync(resp_request_t *req, resp_reply_t *reply) {
 }
 
 static void cmd_sys_sync_done(resp_request_t *req, resp_reply_t *reply) {
+    printf("Received SYNC_DONE.\n");
     repl_destroy();
     extern int g_sync_file_done;
     extern volatile int g_repl_backlog_enabled;
