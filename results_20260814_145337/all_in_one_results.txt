@@ -1,0 +1,76 @@
+生成时间: 2026-08-14 14:53:37
+
+=================== 第一轮：基准测试 ===================
+QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
+  [10000/100000] QPS: 2322
+  [20000/100000] QPS: 2231
+  [30000/100000] QPS: 2188
+  [40000/100000] QPS: 2105
+  [50000/100000] QPS: 2071
+  [60000/100000] QPS: 2031
+  [70000/100000] QPS: 1999
+  [80000/100000] QPS: 1982
+  [90000/100000] QPS: 1969
+  [100000/100000] QPS: 1952
+
+=== QPS Test Complete ===
+Total:       100000 commands
+Time:        51.242 seconds
+Average QPS: 1952
+
+Engine distribution (fixed rotation):
+  SET  (Array):    25000 (25.0%)
+  RSET (RBTree):   25000 (25.0%)
+  HSET (Hash):     25000 (25.0%)
+  SSET (SkipList): 25000 (25.0%)
+
+
+=================== 第二轮：eBPF 转发 ===================
+QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
+  [10000/100000] QPS: 1924
+  [20000/100000] QPS: 2041
+  [30000/100000] QPS: 1996
+  [40000/100000] QPS: 1962
+  [50000/100000] QPS: 1923
+  [60000/100000] QPS: 1894
+  [70000/100000] QPS: 1865
+  [80000/100000] QPS: 1842
+  [90000/100000] QPS: 1825
+  [100000/100000] QPS: 1810
+
+=== QPS Test Complete ===
+Total:       100000 commands
+Time:        55.244 seconds
+Average QPS: 1810
+
+Engine distribution (fixed rotation):
+  SET  (Array):    25000 (25.0%)
+  RSET (RBTree):   25000 (25.0%)
+  HSET (Hash):     25000 (25.0%)
+  SSET (SkipList): 25000 (25.0%)
+
+
+=================== 第三轮：TCP 网络转发 ===================
+QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
+  [10000/100000] QPS: 2284
+  [20000/100000] QPS: 2156
+  [30000/100000] QPS: 2150
+  [40000/100000] QPS: 2158
+  [50000/100000] QPS: 2092
+  [60000/100000] QPS: 2043
+  [70000/100000] QPS: 2002
+  [80000/100000] QPS: 1967
+  [90000/100000] QPS: 1941
+  [100000/100000] QPS: 1920
+
+=== QPS Test Complete ===
+Total:       100000 commands
+Time:        52.097 seconds
+Average QPS: 1920
+
+Engine distribution (fixed rotation):
+  SET  (Array):    25000 (25.0%)
+  RSET (RBTree):   25000 (25.0%)
+  HSET (Hash):     25000 (25.0%)
+  SSET (SkipList): 25000 (25.0%)
+

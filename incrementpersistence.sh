@@ -2,6 +2,7 @@
 
 # ==========================================================
 # Redis vs KVstore 日志开关性能对比测试脚本（自动重启隔离版）
+# 测试顺序：先测开启日志(ON)，再测关闭日志(OFF)
 # ==========================================================
 
 REDIS_PORT=6379
@@ -33,7 +34,7 @@ stop_kvstore() {
 }
 
 set_kvstore_persistence() {
-    local value="$1"
+    local value="$1"   # 可以是 ON 或 OFF
     echo "设置 KVstore persistence = $value"
     if [ ! -f "$KV_CONFIG_FILE" ]; then
         {
@@ -54,13 +55,13 @@ set_kvstore_persistence() {
 }
 
 start_kvstore() {
-    local mode="$1"
+    local mode="$1"   # ON 或 OFF
     stop_kvstore
     set_kvstore_persistence "$mode"
     echo "启动 KVstore 服务器 (persistence=$mode)..."
     rm -f "$KV_AOF_FILE"
 
-    # 启动服务器，输出重定向到日志，防止污染终端
+    # 启动服务器，输出重定向到日志
     "$KV_SERVER_BIN" "$KV_CONFIG_FILE" > server.log 2>&1 &
     SERVER_PID=$!
 
@@ -102,16 +103,15 @@ set_redis_appendonly() {
 
 # ---------- 引擎测试函数（每个引擎独立启动/停止 KVstore） ----------
 run_kv_engine_test() {
-    local test_name="$1"       # 用于显示
-    local resp_cmd="$2"        # redis-benchmark 的测试命令（不含 -p/-n/-r 等公共参数）
-    local mode="$3"            # 当前持久化模式 OFF/ON
-    local result_key="$4"      # 存储结果的键名
-    local request_count="$5"   # 请求数
+    local test_name="$1"
+    local resp_cmd="$2"
+    local mode="$3"            # 当前持久化模式 ON/OFF
+    local result_key="$4"
+    local request_count="$5"
 
     echo -n "  $test_name ... "
     start_kvstore "$mode"
     local qps
-    # ★ 修改点：添加 -c 1 强制单连接
     qps=$(parse_qps "redis-benchmark -p $KV_PORT -n $request_count -r $RAND_RANGE -c 1 -q $resp_cmd")
     eval "${result_key}=\$qps"
     echo "$qps QPS"
@@ -120,8 +120,8 @@ run_kv_engine_test() {
 
 # ---------- 完整压测流程（给定持久化模式） ----------
 run_benchmarks_for_mode() {
-    local mode="$1"      # OFF 或 ON
-    local prefix="$2"    # LOG_OFF 或 LOG_ON
+    local mode="$1"      # ON 或 OFF
+    local prefix="$2"    # LOG_ON 或 LOG_OFF
 
     echo "--------------------------------------------------"
     echo ">>> 开始执行 [日志 $mode] 模式下的压测..."
@@ -129,22 +129,19 @@ run_benchmarks_for_mode() {
 
     # 1. Redis PING
     echo -n "  [1/7] Redis PING ... "
-    # ★ 修改点：添加 -c 1
     qps=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TOTAL_REQUESTS -r $RAND_RANGE -c 1 -q PING")
     eval "${prefix}_RESULTS['REDIS_PING']=\$qps"
     echo "$qps QPS"
 
     # 2. Redis SET
     echo -n "  [2/7] Redis SET ... "
-    # ★ 修改点：添加 -c 1
     qps=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TOTAL_REQUESTS -r $RAND_RANGE -c 1 -q SET key:__rand_int__ value:__rand_int__")
     eval "${prefix}_RESULTS['REDIS_SET']=\$qps"
     echo "$qps QPS"
 
-    # 3. KVstore PING（不需要重启，仅检查服务）
+    # 3. KVstore PING
     echo -n "  [3/7] KVstore PING ... "
     start_kvstore "$mode"
-    # ★ 修改点：添加 -c 1
     qps=$(parse_qps "redis-benchmark -p $KV_PORT -n $TOTAL_REQUESTS -r $RAND_RANGE -c 1 -q PING")
     eval "${prefix}_RESULTS['KV_PING']=\$qps"
     echo "$qps QPS"
@@ -162,26 +159,26 @@ run_benchmarks_for_mode() {
     run_kv_engine_test "[7/7] KVstore SSET (跳表)" "SSET key:__rand_int__ value:__rand_int__" "$mode" "${prefix}_RESULTS['KV_SSET']" $TOTAL_REQUESTS
 }
 
-# ---------- 主流程 ----------
+# ---------- 主流程（顺序：先 ON 后 OFF） ----------
 echo "=================================================="
 echo "      自动化日志开关性能对比测试（引擎隔离版）"
 echo "=================================================="
 
-# 第一轮：关闭日志
+# 第一轮：开启日志 (AOF ON)
 echo ""
-echo ">>> 第一轮：关闭日志 (AOF OFF)"
-echo "=================================================="
-restart_redis
-set_redis_appendonly "no"
-run_benchmarks_for_mode "OFF" "LOG_OFF"
-
-# 第二轮：开启日志
-echo ""
-echo ">>> 第二轮：开启日志 (AOF ON)"
+echo ">>> 第一轮：开启日志 (AOF ON)"
 echo "=================================================="
 restart_redis
 set_redis_appendonly "yes"
 run_benchmarks_for_mode "ON" "LOG_ON"
+
+# 第二轮：关闭日志 (AOF OFF)
+echo ""
+echo ">>> 第二轮：关闭日志 (AOF OFF)"
+echo "=================================================="
+restart_redis
+set_redis_appendonly "no"
+run_benchmarks_for_mode "OFF" "LOG_OFF"
 
 # 清理可能残留的 KVstore 进程
 stop_kvstore
@@ -193,15 +190,15 @@ OUTPUT_FILE="incrementpersistence_result.txt"
     echo "========================================================================="
     echo "                     日志开关性能影响对比测试汇总                       "
     echo "========================================================================="
-    printf "%-35s | %-15s | %-15s\n" "测试命令 / 数据结构" "关闭日志 QPS" "打开日志 QPS"
+    printf "%-35s | %-15s | %-15s\n" "测试命令 / 数据结构" "开启日志 QPS" "关闭日志 QPS"
     echo "------------------------------------------------------------------------- "
-    printf "%-35s | %-15s | %-15s\n" "Redis PING"             "${LOG_OFF_RESULTS['REDIS_PING']}" "${LOG_ON_RESULTS['REDIS_PING']}"
-    printf "%-35s | %-15s | %-15s\n" "Redis SET"              "${LOG_OFF_RESULTS['REDIS_SET']}"  "${LOG_ON_RESULTS['REDIS_SET']}"
-    printf "%-35s | %-15s | %-15s\n" "KVstore PING"           "${LOG_OFF_RESULTS['KV_PING']}"    "${LOG_ON_RESULTS['KV_PING']}"
-    printf "%-35s | %-15s | %-15s\n" "KVstore SET (Array)"    "${LOG_OFF_RESULTS['KV_SET']}"     "${LOG_ON_RESULTS['KV_SET']}"
-    printf "%-35s | %-15s | %-15s\n" "KVstore RSET (Red-Black)" "${LOG_OFF_RESULTS['KV_RSET']}"    "${LOG_ON_RESULTS['KV_RSET']}"
-    printf "%-35s | %-15s | %-15s\n" "KVstore HSET (Hash)"     "${LOG_OFF_RESULTS['KV_HSET']}"    "${LOG_ON_RESULTS['KV_HSET']}"
-    printf "%-35s | %-15s | %-15s\n" "KVstore SSET (SkipList)" "${LOG_OFF_RESULTS['KV_SSET']}"    "${LOG_ON_RESULTS['KV_SSET']}"
+    printf "%-35s | %-15s | %-15s\n" "Redis PING"             "${LOG_ON_RESULTS['REDIS_PING']}" "${LOG_OFF_RESULTS['REDIS_PING']}"
+    printf "%-35s | %-15s | %-15s\n" "Redis SET"              "${LOG_ON_RESULTS['REDIS_SET']}"  "${LOG_OFF_RESULTS['REDIS_SET']}"
+    printf "%-35s | %-15s | %-15s\n" "KVstore PING"           "${LOG_ON_RESULTS['KV_PING']}"    "${LOG_OFF_RESULTS['KV_PING']}"
+    printf "%-35s | %-15s | %-15s\n" "KVstore SET (Array)"    "${LOG_ON_RESULTS['KV_SET']}"     "${LOG_OFF_RESULTS['KV_SET']}"
+    printf "%-35s | %-15s | %-15s\n" "KVstore RSET (Red-Black)" "${LOG_ON_RESULTS['KV_RSET']}"    "${LOG_OFF_RESULTS['KV_RSET']}"
+    printf "%-35s | %-15s | %-15s\n" "KVstore HSET (Hash)"     "${LOG_ON_RESULTS['KV_HSET']}"    "${LOG_OFF_RESULTS['KV_HSET']}"
+    printf "%-35s | %-15s | %-15s\n" "KVstore SSET (SkipList)" "${LOG_ON_RESULTS['KV_SSET']}"    "${LOG_OFF_RESULTS['KV_SSET']}"
     echo "========================================================================="
 } | tee "$OUTPUT_FILE"
 

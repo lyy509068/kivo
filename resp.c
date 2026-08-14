@@ -205,22 +205,13 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         return -1;
     }
 
-    // 预分配池
-    #define MAX_ARGC 16
-    char *cmd_argv_pool[PIPELINE_MAX][MAX_ARGC];
-    int cmd_argv_len_pool[PIPELINE_MAX][MAX_ARGC];
-
     int processed = 0;
-    int cmd_num = 0;
-    
-    parsed_cmd_t cmds[PIPELINE_MAX];
-    resp_reply_t replies[PIPELINE_MAX];
 
-    while (processed < in_len && cmd_num < PIPELINE_MAX) {
+    while (processed < in_len) {
         int single_cmd_len = 0;
         
         if (!has_complete_resp_command(in_buf + processed, in_len - processed, &single_cmd_len)) {
-            break;
+            break; 
         }
 
         char *cmd_raw_ptr = in_buf + processed; 
@@ -229,7 +220,7 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         memset(&temp_req, 0, sizeof(resp_request_t));
         resp_unpack_no_modify(cmd_raw_ptr, single_cmd_len, &temp_req);
 
-        // 特殊命令处理（RDMA / SYNC / PING）
+        // ---- 特殊命令处理（RDMA / SYNC / PING） ----
         int is_special_network_cmd = 0;
         int is_rdma_cmd = (temp_req.argc > 0 && temp_req.argv_len[0] == 12 && 
                           strncasecmp(temp_req.argv[0], "RDMA_CONNECT", 12) == 0);
@@ -274,33 +265,34 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             continue; 
         }
         
-        // 存储命令信息（使用池，零拷贝）
-        int argc = temp_req.argc;
-        if (argc > MAX_ARGC) {
-            cmds[cmd_num].req.argc = argc;
-            cmds[cmd_num].req.is_dynamic = 1;
-            cmds[cmd_num].req.argv = (char **)kvs_malloc(sizeof(char *) * argc);
-            cmds[cmd_num].req.argv_len = (int *)kvs_malloc(sizeof(int) * argc);
-            memcpy(cmds[cmd_num].req.argv, temp_req.argv, sizeof(char *) * argc);
-            memcpy(cmds[cmd_num].req.argv_len, temp_req.argv_len, sizeof(int) * argc);
-        } else {
-            cmds[cmd_num].req.argc = argc;
-            cmds[cmd_num].req.is_dynamic = 0;
-            cmds[cmd_num].req.argv = cmd_argv_pool[cmd_num];
-            cmds[cmd_num].req.argv_len = cmd_argv_len_pool[cmd_num];
-            memcpy(cmd_argv_pool[cmd_num], temp_req.argv, sizeof(char *) * argc);
-            memcpy(cmd_argv_len_pool[cmd_num], temp_req.argv_len, sizeof(int) * argc);
-        }
-        
-        cmds[cmd_num].cmd = (argc > 0) ? lookup_command(temp_req.argv[0], temp_req.argv_len[0]) : NULL;
-        cmds[cmd_num].cmd_raw_ptr = cmd_raw_ptr;
-        cmds[cmd_num].single_cmd_len = single_cmd_len;
-        
-        replies[cmd_num].status = KVS_RESP_ERROR;
-        replies[cmd_num].body = NULL;
-        replies[cmd_num].body_len = 0;
+        // ---- 构造单条命令 ----
+        parsed_cmd_t cmd;
+        resp_reply_t reply;
 
-        // 写入 WAL
+        memset(&cmd, 0, sizeof(cmd));
+        memset(&reply, 0, sizeof(reply));
+
+        int argc = temp_req.argc;
+        // 暂存 argv/argv_len 指针（零拷贝）
+        // 由于我们要立即执行，可以复用 temp_req 的指针，但需要复制到 cmd 中
+        // 为了避免后续 free 影响，我们直接复制指针（浅拷贝）——因为 temp_req 在循环结束前有效
+        // 但注意 temp_req.argv 可能是动态分配的，我们需防止被释放
+        // 方法：将 temp_req 的指针赋值给 cmd.req，并设置 is_dynamic = 0（因为 temp_req 将负责释放）
+        // 但为了安全，我们直接使用 temp_req 的字段，在调用 g_command_handler 后再释放 temp_req
+        // 所以我们不复制，直接使用 temp_req
+        
+        // 先不释放 temp_req，直到执行完毕
+        // 但我们需要将 temp_req 赋值给 cmd.req（浅拷贝）
+        cmd.req = temp_req;  // 结构体赋值，包含 argv 指针
+        cmd.cmd = (argc > 0) ? lookup_command(temp_req.argv[0], temp_req.argv_len[0]) : NULL;
+        cmd.cmd_raw_ptr = cmd_raw_ptr;
+        cmd.single_cmd_len = single_cmd_len;
+
+        reply.status = KVS_RESP_ERROR;
+        reply.body = NULL;
+        reply.body_len = 0;
+
+        // ---- 写入 WAL（先写日志再执行） ----
         int is_write = (argc > 0 && is_write_command(temp_req.argv[0], temp_req.argv_len[0]));
         if (is_write) {
             if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
@@ -309,7 +301,8 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
 
             extern int g_sync_file_done;
             extern volatile int g_slave_fd;
-            if (g_slave_fd > 0 && g_enable_repl_master && ((g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled)) {
+            if (g_slave_fd > 0 && g_enable_repl_master &&
+                ((g_use_tcp_sync && g_sync_file_done) || g_repl_backlog_enabled)) {
                 if (g_repl_backlog_count < REPL_BACKLOG_MAX) {
                     int index = g_repl_backlog_tail; 
                     g_repl_backlog[index].data = kvs_malloc(single_cmd_len);
@@ -321,37 +314,32 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             }
         }
 
+        // ---- 执行业务层（单条） ----
+        if (g_command_handler) {
+            // 传入单条命令
+            g_command_handler(&cmd, &reply, 1);
+        } else {
+            reply.status = KVS_RESP_UNKNOWN;
+        }
+
+        // ---- 打包回复 ----
+        if (wbuf && wcap && wlen) {
+            resp_pack_with_realloc(wbuf, wcap, wlen, &reply);
+        }
+
+        // ---- 释放资源 ----
+        // 释放 temp_req 的动态资源（如果有）
         free_resp_request(&temp_req);
+        // 释放 reply body
+        if (reply.body) {
+            kvs_free(reply.body);
+            reply.body = NULL;
+        }
+
         processed += single_cmd_len;
-        cmd_num++;
     }
 
     *parsed = processed;
-
-
-    // 阶段 3：批量执行业务层
-    if (cmd_num > 0) {
-        if (g_command_handler) {
-            g_command_handler(cmds, replies, cmd_num);
-        } else {
-            for (int i = 0; i < cmd_num; i++) {
-                replies[i].status = KVS_RESP_UNKNOWN;
-            }
-        }
-    }
-
-    // 阶段 5：打包回复 & 释放
-    for (int i = 0; i < cmd_num; i++) {
-        if (wbuf && wcap && wlen) {
-            resp_pack_with_realloc(wbuf, wcap, wlen, &replies[i]);
-        }
-        free_resp_request(&cmds[i].req);
-        if (replies[i].body) {           
-            kvs_free(replies[i].body);
-            replies[i].body = NULL;
-        }
-    }
-
     return 0;
 }
 

@@ -51,7 +51,6 @@ void *kvs_malloc(size_t size) {
     if (!g_enable_mempool) return malloc(size);
 
     if (size <= MAX_SLAB_SIZE) {
-        if (!g_size_map[size]) kvs_mempool_init();
         mem_pool_t *pool = g_size_map[size];
         if (pool) {
             void **ptr = (void **)mem_pool_alloc(pool);
@@ -467,16 +466,16 @@ command_t *lookup_command(const char *name, int len) {
 // 批量执行入口
 
 int kvs_execute_batch(parsed_cmd_t *cmds, resp_reply_t *replies, int cmd_num) {
-    for (int i = 0; i < cmd_num; i++) {
-        replies[i].status = KVS_RESP_ERROR;
-        replies[i].body = NULL;
-        replies[i].body_len = 0;
 
-        if (cmds[i].cmd && cmds[i].cmd->proc) {
-            cmds[i].cmd->proc(&cmds[i].req, &replies[i]);
+        replies[0].status = KVS_RESP_ERROR;
+        replies[0].body = NULL;
+        replies[0].body_len = 0;
+
+        if (cmds[0].cmd && cmds[0].cmd->proc) {
+            cmds[0].cmd->proc(&cmds[0].req, &replies[0]);
         } else {
-            replies[i].status = KVS_RESP_UNKNOWN;
+            replies[0].status = KVS_RESP_UNKNOWN;
         }
-    }
+
     return 0;
 }
