@@ -206,7 +206,7 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
     }
 
     // 预分配池
-    #define MAX_ARGC 16  // 足够大
+    #define MAX_ARGC 16
     char *cmd_argv_pool[PIPELINE_MAX][MAX_ARGC];
     int cmd_argv_len_pool[PIPELINE_MAX][MAX_ARGC];
 
@@ -229,10 +229,12 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         memset(&temp_req, 0, sizeof(resp_request_t));
         resp_unpack_no_modify(cmd_raw_ptr, single_cmd_len, &temp_req);
 
-        // 特殊命令处理（RDMA / SYNC / PING） 
+        // 特殊命令处理（RDMA / SYNC / PING）
         int is_special_network_cmd = 0;
-        int is_rdma_cmd = (temp_req.argv_len[0] == 12 && strncasecmp(temp_req.argv[0], "RDMA_CONNECT", 12) == 0);
-        int is_sync_cmd = (temp_req.argv_len[0] == 4 && strncasecmp(temp_req.argv[0], "SYNC", 4) == 0);
+        int is_rdma_cmd = (temp_req.argc > 0 && temp_req.argv_len[0] == 12 && 
+                          strncasecmp(temp_req.argv[0], "RDMA_CONNECT", 12) == 0);
+        int is_sync_cmd = (temp_req.argc > 0 && temp_req.argv_len[0] == 4 && 
+                          strncasecmp(temp_req.argv[0], "SYNC", 4) == 0);
 
         if (g_enable_repl_master && temp_req.argc > 0 && (is_rdma_cmd || is_sync_cmd)) {
             extern struct conn ntyco_conn_list[]; 
@@ -248,7 +250,8 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             }
         }
 
-        if (temp_req.argc > 0 && temp_req.argv_len[0] == 4 && strncasecmp(temp_req.argv[0], "PING", 4) == 0) {
+        if (temp_req.argc > 0 && temp_req.argv_len[0] == 4 && 
+            strncasecmp(temp_req.argv[0], "PING", 4) == 0) {
             resp_reply_t ping_reply = {KVS_RESP_ERROR, NULL, 0};
             if (temp_req.argc == 1) ping_reply.status = KVS_RESP_PONG;
             else if (temp_req.argc == 2) {
@@ -271,10 +274,9 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             continue; 
         }
         
-        // 存储命令信息（使用池，零拷贝） 
+        // 存储命令信息（使用池，零拷贝）
         int argc = temp_req.argc;
         if (argc > MAX_ARGC) {
-            // 参数超过预定义，改用动态分配（fallback）
             cmds[cmd_num].req.argc = argc;
             cmds[cmd_num].req.is_dynamic = 1;
             cmds[cmd_num].req.argv = (char **)kvs_malloc(sizeof(char *) * argc);
@@ -283,7 +285,7 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             memcpy(cmds[cmd_num].req.argv_len, temp_req.argv_len, sizeof(int) * argc);
         } else {
             cmds[cmd_num].req.argc = argc;
-            cmds[cmd_num].req.is_dynamic = 0;               // 使用池，不释放
+            cmds[cmd_num].req.is_dynamic = 0;
             cmds[cmd_num].req.argv = cmd_argv_pool[cmd_num];
             cmds[cmd_num].req.argv_len = cmd_argv_len_pool[cmd_num];
             memcpy(cmd_argv_pool[cmd_num], temp_req.argv, sizeof(char *) * argc);
@@ -298,7 +300,7 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         replies[cmd_num].body = NULL;
         replies[cmd_num].body_len = 0;
 
-        // 写入 WAL 
+        // 写入 WAL
         int is_write = (argc > 0 && is_write_command(temp_req.argv[0], temp_req.argv_len[0]));
         if (is_write) {
             if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
@@ -319,22 +321,13 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
             }
         }
 
-        // 释放 temp_req 的动态资源（如果有）
         free_resp_request(&temp_req);
-
         processed += single_cmd_len;
         cmd_num++;
     }
 
     *parsed = processed;
 
-    // 阶段 2：执行前替换 \r 为 \0
-    for (int i = 0; i < cmd_num; i++) {
-        resp_request_t *req = &cmds[i].req;
-        for (int j = 0; j < req->argc; j++) {
-            req->argv[j][req->argv_len[j]] = '\0';
-        }
-    }
 
     // 阶段 3：批量执行业务层
     if (cmd_num > 0) {
@@ -347,20 +340,11 @@ int protocol_process_stream(char *in_buf, int in_len, int *parsed, char **wbuf, 
         }
     }
 
-    // 阶段 4：恢复 \r
-    for (int i = 0; i < cmd_num; i++) {
-        resp_request_t *req = &cmds[i].req;
-        for (int j = 0; j < req->argc; j++) {
-            req->argv[j][req->argv_len[j]] = '\r';
-        }
-    }
-
     // 阶段 5：打包回复 & 释放
     for (int i = 0; i < cmd_num; i++) {
         if (wbuf && wcap && wlen) {
             resp_pack_with_realloc(wbuf, wcap, wlen, &replies[i]);
         }
-        // 如果是动态分配的（fallback），释放；池中的不释放
         free_resp_request(&cmds[i].req);
         if (replies[i].body) {           
             kvs_free(replies[i].body);
@@ -412,7 +396,6 @@ int protocol_process_recover(char *in_buf, int in_len) {
     }
 
     int processed = 0;
-    int recovered_count = 0;
 
     while (processed < in_len) {
         int single_cmd_len = 0;
@@ -425,7 +408,7 @@ int protocol_process_recover(char *in_buf, int in_len) {
         memset(&temp_req, 0, sizeof(resp_request_t));
         resp_unpack_no_modify(in_buf + processed, single_cmd_len, &temp_req);
 
-        // 构造单条命令（独立分配 argv 数组）
+        // 构造单条命令
         parsed_cmd_t cmds[1];
         resp_reply_t replies[1];
         
@@ -444,24 +427,12 @@ int protocol_process_recover(char *in_buf, int in_len) {
         replies[0].body = NULL;
         replies[0].body_len = 0;
 
-        // 替换 \r 为 \0（因为我们复制了指针，替换 in_buf 会影响复制后的内容）
-        for (int j = 0; j < temp_req.argc; j++) {
-            temp_req.argv[j][temp_req.argv_len[j]] = '\0';
-        }
-
         if (g_command_handler) {
             g_command_handler(cmds, replies, 1);
         }
 
-        // 恢复 \r
-        for (int j = 0; j < temp_req.argc; j++) {
-            temp_req.argv[j][temp_req.argv_len[j]] = '\r';
-        }
-
-        // 释放 temp_req 的动态资源（如果有）
         free_resp_request(&temp_req);
         
-        // 释放命令的独立资源
         if (replies[0].body) {
             kvs_free(replies[0].body);
         }
@@ -470,6 +441,6 @@ int protocol_process_recover(char *in_buf, int in_len) {
         processed += single_cmd_len;
     }
     
-    return recovered_count;
+    return processed;
 }
 

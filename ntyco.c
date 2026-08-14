@@ -277,8 +277,8 @@ void ntyco_slave_init_co(void *arg) {
 
         ntyco_conn_list[fd].fd = fd;
         ntyco_conn_list[fd].role = CONN_MASTER;
-        ntyco_conn_list[fd].rcapacity = 5*1024*1024;
-        ntyco_conn_list[fd].rbuffer = (char *)kvs_malloc(5*1024*1024);
+        ntyco_conn_list[fd].rcapacity = 4*1024*1024;
+        ntyco_conn_list[fd].rbuffer = (char *)kvs_malloc(4*1024*1024);
         ntyco_conn_list[fd].rlength = 0;
         ntyco_conn_list[fd].wcapacity = 0;
         ntyco_conn_list[fd].wbuffer = NULL;
