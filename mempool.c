@@ -39,17 +39,6 @@ mem_pool_t *mem_pool_create(size_t user_size) {
     return pool;
 }
 
-void mem_pool_destroy(mem_pool_t *pool) {
-    if (!pool) return;
-    pool_block_t *block = pool->blocks;
-    while (block) {
-        pool_block_t *next = block->next;
-        free(block);   // posix_memalign 分配的内存用 free 释放
-        block = next;
-    }
-    free(pool);
-}
-
 // 分配一个新的 64KB 对齐块
 static int add_new_block(mem_pool_t *pool) {
     void *mem = NULL;

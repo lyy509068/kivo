@@ -80,7 +80,7 @@ void ntyco_client_co(void *arg) {
 
     while (1) {
         if (c->rlength >= MAX_RBUFFER_SIZE) {
-            nty_coroutine_sleep(1); 
+            nty_coroutine_sleep(0); 
             continue;
         }
 
@@ -299,10 +299,8 @@ int ntyco_start(unsigned short port, stream_handler_t handler) {
         nty_coroutine_create(&expire_co, ntyco_expire_co, NULL);
     }
     
-    if (g_enable_repl_master || g_enable_repl_slave || g_enable_persistence) {
-        nty_coroutine *persistence_co = NULL;
-        nty_coroutine_create(&persistence_co, ntyco_persistence_co, NULL);
-    }
+    nty_coroutine *persistence_co = NULL;
+    nty_coroutine_create(&persistence_co, ntyco_persistence_co, NULL);
     
     if (g_enable_repl_master) {
         nty_coroutine *send_co = NULL;

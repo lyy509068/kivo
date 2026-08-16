@@ -6,23 +6,18 @@
 
 REDIS_PORT=6379
 KV_PORT=2000
-# 提示：若虚拟机内存小于 4G，建议先将 TEST_N 设为 100000 (10w) 进行测试，防止触发 OOM
-TEST_N=1000000  
-
-# Pipeline 梯度数组
+TEST_N=1000000
 PIPELINES=(1 10 20 40 80 160)
+KV_AOF_FILE="kvstore.aof"
 declare -A RESULTS
 SERVER_PID=""
 
-# 格式化提取 QPS 值的辅助函数
 parse_qps() {
     local cmd="$1"
     local output
     output=$(eval "$cmd" 2>&1)
-    
     local qps
     qps=$(echo "$output" | grep -oP '\d+(\.\d+)?(?=\s+requests per second)' | head -n 1 | awk '{print int($1)}')
-    
     if [[ -z "$qps" || "$qps" -eq 0 ]]; then
         echo "FAIL"
     else
@@ -31,20 +26,64 @@ parse_qps() {
 }
 
 # ==========================================
-# 辅助函数：精准杀掉 KVstore 服务器
+# 彻底杀掉 KVstore 进程并释放端口
 # ==========================================
 kill_server() {
+    echo "正在彻底清理 KVstore 进程和端口..."
+    
+    # 1. 杀掉记录的 PID
     if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill -9 "$SERVER_PID" 2>/dev/null
     fi
-    # 依靠端口精准清理残留进程，避免模糊 pkill 误伤
+
+    # 2. 杀掉所有名为 server 的进程（避免残留）
+    sudo pkill -9 -x server 2>/dev/null
+
+    # 3. 释放被占用的端口（如果有）
     sudo fuser -k -9 ${KV_PORT}/tcp >/dev/null 2>&1
-    sleep 1
+
+    # 4. 等待进程完全退出
+    sleep 3
+
+    # 5. 再次确认没有残留
+    if pgrep -x server > /dev/null; then
+        echo "警告：仍有 server 进程残留，强制再杀..."
+        sudo pkill -9 -x server 2>/dev/null
+        sleep 3
+    fi
+
+    # 6. 确认端口已释放
+    if nc -z 127.0.0.1 $KV_PORT 2>/dev/null; then
+        echo "警告：端口 $KV_PORT 仍被占用！"
+        sleep 3
+    fi
 }
 
 # ==========================================
-# 辅助函数：重启 Redis 并关闭 AOF
+# 启动 KVstore（确保干净环境）
 # ==========================================
+start_kvstore() {
+    kill_server
+
+    # 删除旧日志文件，确保引擎从空状态开始
+    echo "删除旧 AOF 文件..."
+    sudo rm -f "$KV_AOF_FILE"
+
+    echo "正在启动 KVstore 服务器..."
+    ./server config.conf > server.log 2>&1 &
+    SERVER_PID=$!
+
+    # 等待服务器监听端口
+    sleep 3
+
+    # 确认进程还活着
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo "错误：KVstore 服务器启动失败，请查看 server.log"
+        cat server.log
+        exit 1
+    fi
+}
+
 restart_redis() {
     echo "正在重启 Redis 服务并关闭 AOF..."
     sudo systemctl restart redis-server >/dev/null 2>&1 || sudo service redis-server restart >/dev/null 2>&1
@@ -57,25 +96,8 @@ restart_redis() {
     fi
 }
 
-# ==========================================
-# 辅助函数：启动 KVstore 服务器（带输出隔离与就绪等待）
-# ==========================================
-start_kvstore() {
-    kill_server
-    echo "正在启动 KVstore 服务器..."
-    # 重定向 stdout 和 stderr 到日志文件，防止污染终端控制码
-    ./server config.conf > server.log 2>&1 &
-    SERVER_PID=$!
-    # 给服务器 1 秒时间完成 socket 监听绑定
-    sleep 1
-}
-
-# 脚本退出时自动清理后台服务器
 trap kill_server EXIT
 
-# ==========================================
-# 2. 开始测试
-# ==========================================
 echo "=================================================="
 echo "    开始测试 Redis vs KVstore ($TEST_N 条)        "
 echo "=================================================="
@@ -84,14 +106,14 @@ for p in "${PIPELINES[@]}"; do
     echo "--------------------------------------------------"
     echo ">>> 正在测试 Pipeline -P $p ..."
 
-    # 2.1 Redis PING
+    # Redis PING
     restart_redis
     echo -n "  [1/6] Redis PING ... "
     qps_redis_ping=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TEST_N -c 1 -P $p -q PING")
     RESULTS["REDIS_PING_$p"]=$qps_redis_ping
     echo "$qps_redis_ping QPS"
 
-    # 2.2 KVstore PING
+    # KVstore PING
     echo -n "  [2/6] KVstore PING ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
@@ -100,14 +122,14 @@ for p in "${PIPELINES[@]}"; do
     echo "$qps_kv_ping QPS"
     kill_server
 
-    # 2.3 Redis SET
+    # Redis SET
     restart_redis
     echo -n "  [3/6] Redis SET ... "
     qps_redis_set=$(parse_qps "redis-benchmark -p $REDIS_PORT -n $TEST_N -r 100000000 -c 1 -P $p -q SET key:__rand_int__ value:__rand_int__")
     RESULTS["REDIS_SET_$p"]=$qps_redis_set
     echo "$qps_redis_set QPS"
 
-    # 2.4 KVstore RBTree (RSET)
+    # KVstore RBTree
     echo -n "  [4/6] KVstore RBTree (RSET) ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
@@ -116,7 +138,7 @@ for p in "${PIPELINES[@]}"; do
     echo "$qps_rbt QPS"
     kill_server
 
-    # 2.5 KVstore Hash (HSET)
+    # KVstore Hash
     echo -n "  [5/6] KVstore Hash (HSET) ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
@@ -125,7 +147,7 @@ for p in "${PIPELINES[@]}"; do
     echo "$qps_hsh QPS"
     kill_server
 
-    # 2.6 KVstore SkipList (SSET)
+    # KVstore SkipList
     echo -n "  [6/6] KVstore SkipList (SSET) ... "
     sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
     start_kvstore
@@ -133,12 +155,8 @@ for p in "${PIPELINES[@]}"; do
     RESULTS["KV_SKL_$p"]=$qps_skl
     echo "$qps_skl QPS"
     kill_server
-
 done
 
-# ==========================================
-# 3. 打印最终对比表格
-# ==========================================
 OUTPUT_FILE="batchcommand_result.txt"
 
 {

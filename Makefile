@@ -68,6 +68,14 @@ $(TESTCASES): %: %.c
 
 IFACE = ens33
 
+rdma:
+	@if [ -f "./rdma.sh" ]; then \
+		chmod +x ./rdma.sh; \
+		./rdma.sh; \
+	else \
+		echo "❌ 错误: 当前目录下未找到 rdma.sh 脚本！"; \
+	fi
+
 load_bpf: $(BPF_KERN_OBJ)
 	@echo "加载 eBPF 程序并强行 Pin Maps..."
 	@sudo rm -rf /sys/fs/bpf/* 2>/dev/null || true

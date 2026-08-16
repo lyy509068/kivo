@@ -32,7 +32,6 @@ extern mem_pool_t *g_size_map[MAX_SLAB_SIZE + 1];
 extern int g_enable_mempool;
 
 mem_pool_t *mem_pool_create(size_t user_size);
-void mem_pool_destroy(mem_pool_t *pool);
 void *mem_pool_alloc(mem_pool_t *pool);
 void mem_pool_trim(mem_pool_t *pool);
 
