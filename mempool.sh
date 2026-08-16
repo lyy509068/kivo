@@ -9,7 +9,7 @@ SERVER_CONF="config.conf"
 CLIENT_BIN="./test_mempool"
 JEMALLOC_LIB="/usr/lib/x86_64-linux-gnu/libjemalloc.so.2"
 
-RUNS=1
+RUNS=3          # <--- 修改这里：每种分配器测试次数
 OPS=1000000
 RESULT_FILE="mempool_results.txt"
 LOG_FILE="mempool_bench.log"
@@ -62,8 +62,6 @@ stop_server() {
 
 # ========================== 关键修改：适配你的配置格式 ==========================
 
-# 修改配置文件中的 mempool 参数
-# 支持两种格式: "mempool ON/OFF" 和 "mempool 1/0" 和 "mempool=1/0"
 set_mempool_config() {
     local val=$1  # ON 或 OFF
     
@@ -131,6 +129,7 @@ run_single_round() {
     log_info ""
     log_info "--- $strategy_name (第 $run_id/$RUNS 次) ---"
 
+    # 重要：每次测试前强制停止旧服务器，清理数据，重新配置，然后启动全新服务器
     stop_server
     clean_data
     set_mempool_config "$mempool_val"
@@ -203,7 +202,6 @@ main() {
     log_info "  每次操作数: $OPS"
     log_info "============================================================"
 
-    # 简洁控制台输出
     echo "============================================"
     echo "  内存池性能对比测试"
     echo "  日志: $LOG_FILE"

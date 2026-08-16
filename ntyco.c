@@ -47,7 +47,7 @@ void ntyco_close_and_free_connection(int fd) {
 void ntyco_expire_co(void *arg) {
     while (1) {
         expire_process_deletes();
-        nty_coroutine_sleep(100);
+        nty_coroutine_sleep(1);
     }
 }
 
@@ -56,7 +56,7 @@ void ntyco_persistence_co(void *arg) {
         if (g_enable_persistence || g_enable_repl_master || g_enable_repl_slave) {
             kvs_persistence_flush_pending();
         }
-        nty_coroutine_sleep(10);
+        nty_coroutine_sleep(1);
     }
 }
 
@@ -80,7 +80,7 @@ void ntyco_client_co(void *arg) {
 
     while (1) {
         if (c->rlength >= MAX_RBUFFER_SIZE) {
-            nty_coroutine_sleep(100); 
+            nty_coroutine_sleep(1); 
             continue;
         }
 
@@ -157,41 +157,31 @@ void ntyco_client_co(void *arg) {
 void ntyco_master_repl_send_co(void *arg) {
     while (1) {
         if (g_slave_fd > 0 && g_repl_backlog_count > 0) {
-            int max_per_loop = 1000;
-            int sent_count = 0;
-            
-            while (g_repl_backlog_count > 0 && sent_count < max_per_loop) {
-                repl_backlog_node_t *node = &g_repl_backlog[g_repl_backlog_head];
-                ssize_t sent = send(g_slave_fd, node->data, node->len, MSG_DONTWAIT);
+            repl_backlog_node_t *node = &g_repl_backlog[g_repl_backlog_head];
+            ssize_t sent = send(g_slave_fd, node->data, node->len, MSG_DONTWAIT);
 
-                if (sent > 0) {
-                    if ((size_t)sent == node->len) {
-                        kvs_free(node->data);
-                        g_repl_backlog_head = (g_repl_backlog_head + 1) % REPL_BACKLOG_MAX;
-                        g_repl_backlog_count--;
-                        sent_count++;
-                    } else {
-                        memmove(node->data, node->data + sent, node->len - sent);
-                        node->len -= sent;
-                        break;
-                    }
-                } else if (sent < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        break;
-                    } else {
-                        ntyco_close_and_free_connection(g_slave_fd);
-                        g_slave_fd = -1; 
-                        break;
-                    }
+            if (sent > 0) {
+                if ((size_t)sent == node->len) {
+                    kvs_free(node->data);
+                    g_repl_backlog_head = (g_repl_backlog_head + 1) % REPL_BACKLOG_MAX;
+                    g_repl_backlog_count--;
+                } else {
+                    memmove(node->data, node->data + sent, node->len - sent);
+                    node->len -= sent;
+                    break;
+                }
+            } else if (sent < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    break;
+                } else {
+                    ntyco_close_and_free_connection(g_slave_fd);
+                    g_slave_fd = -1; 
+                    break;
                 }
             }
-            if (g_repl_backlog_count > 10000) {
-                nty_coroutine_sleep(0);   
-            } else if (g_repl_backlog_count > 0) {
-                nty_coroutine_sleep(1);   
-            }
+        nty_coroutine_sleep(1);
         } else {
-            nty_coroutine_sleep(10);
+            nty_coroutine_sleep(100);
         }
     }
 }

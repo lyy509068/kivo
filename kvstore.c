@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include "mempool.h"
+#include <malloc.h>
 #include <arpa/inet.h>
 #include <strings.h> 
 #include "resp.h" 
@@ -34,87 +35,6 @@ extern kvs_hash_t global_hash;
 #if ENABLE_SKIPLIST
 extern kvs_skip_t global_skip;
 #endif
-
-//内存池相关函数
-mem_pool_t *array_item_pool;
-mem_pool_t *rbtree_node_pool;
-mem_pool_t *hash_node_pool;
-mem_pool_t *skip_node_pool;
-
-typedef struct {
-    size_t size;
-    void *owner; 
-} fallback_header_t;
-
-void *kvs_malloc(size_t size) {
-    if (size == 0) return NULL;
-    if (!g_enable_mempool) return malloc(size);
-
-    if (size <= MAX_SLAB_SIZE) {
-        mem_pool_t *pool = g_size_map[size];
-        if (pool) {
-            void **ptr = (void **)mem_pool_alloc(pool);
-            if (ptr) {
-                *ptr = pool;        
-                return ptr + 1;    
-            }
-        }
-    }
-
-    fallback_header_t *fh = (fallback_header_t *)malloc(sizeof(fallback_header_t) + size);
-    if (!fh) return NULL;
-    fh->owner = NULL;
-    fh->size = size;
-    return fh + 1;
-}
-
-void kvs_free(void *ptr) {
-    if (!ptr) return;
-    if (!g_enable_mempool) { free(ptr); return; }
-
-    void **base = (void **)ptr - 1;       
-    mem_pool_t *pool = (mem_pool_t *)*base; 
-
-    if (pool != NULL) {
-        mem_pool_free(pool, base);
-    } else {
-        fallback_header_t *fh = (fallback_header_t *)ptr - 1;
-        free(fh);
-    }
-}
-
-void *kvs_calloc(size_t nmemb, size_t size) {
-    size_t total = nmemb * size;
-    void *ptr = kvs_malloc(total);
-    if (ptr) memset(ptr, 0, total);
-    return ptr;
-}
-
-void *kvs_realloc(void *ptr, size_t size) {
-    if (!ptr) return kvs_malloc(size);
-    if (size == 0) { kvs_free(ptr); return NULL; }
-    if (!g_enable_mempool) return realloc(ptr, size);
-
-    void **base = (void **)ptr - 1;
-    mem_pool_t *pool = (mem_pool_t *)*base;
-    size_t old_size;
-
-    if (pool != NULL) {
-        old_size = pool->chunk_size - sizeof(void *);
-    } else {
-        fallback_header_t *fh = (fallback_header_t *)ptr - 1;
-        old_size = fh->size;
-    }
-
-    if (size <= old_size) return ptr;
-
-    void *new_ptr = kvs_malloc(size);
-    if (new_ptr) {
-        memcpy(new_ptr, ptr, old_size);
-        kvs_free(ptr);
-    }
-    return new_ptr;
-}
 
 /**
  * 解析命令中的过期时间参数
@@ -370,6 +290,21 @@ static void cmd_sys_sync_done(resp_request_t *req, resp_reply_t *reply) {
     g_repl_backlog_enabled = 0;
 }
 
+static void cmd_sys_memtrim(resp_request_t *req, resp_reply_t *reply) {
+    if (req->argc != 1) {
+        reply->status = KVS_RESP_PARSE_ERROR;
+        return;
+    }
+
+    if (g_enable_mempool) {
+        kvs_mempool_trim_all();
+    } else {
+        malloc_trim(0);
+    }
+
+    reply->status = KVS_RESP_OK;
+}
+
 // command_t 命令表
 
 command_t g_cmd_table[] = {
@@ -404,6 +339,7 @@ command_t g_cmd_table[] = {
     {"SAVE",      1, cmd_sys_save},
     {"SYNC",      1, cmd_sys_sync},
     {"SYNC_DONE", 1, cmd_sys_sync_done},
+    {"MEMTRIM",   1, cmd_sys_memtrim},
     {NULL, 0, NULL}  // 哨兵
 };
 

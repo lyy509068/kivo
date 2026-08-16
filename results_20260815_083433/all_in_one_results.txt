@@ -1,22 +1,22 @@
-生成时间: 2026-08-14 12:51:54
+生成时间: 2026-08-15 08:34:33
 
 =================== 第一轮：基准测试 ===================
 QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
-  [10000/100000] QPS: 2200
-  [20000/100000] QPS: 2057
-  [30000/100000] QPS: 2094
-  [40000/100000] QPS: 2072
-  [50000/100000] QPS: 2028
-  [60000/100000] QPS: 2024
-  [70000/100000] QPS: 1988
-  [80000/100000] QPS: 1962
-  [90000/100000] QPS: 1941
-  [100000/100000] QPS: 1927
+  [10000/100000] QPS: 2354
+  [20000/100000] QPS: 2243
+  [30000/100000] QPS: 2215
+  [40000/100000] QPS: 2143
+  [50000/100000] QPS: 2092
+  [60000/100000] QPS: 2048
+  [70000/100000] QPS: 2027
+  [80000/100000] QPS: 2006
+  [90000/100000] QPS: 1981
+  [100000/100000] QPS: 1971
 
 === QPS Test Complete ===
 Total:       100000 commands
-Time:        51.886 seconds
-Average QPS: 1927
+Time:        50.737 seconds
+Average QPS: 1971
 
 Engine distribution (fixed rotation):
   SET  (Array):    25000 (25.0%)
@@ -27,21 +27,21 @@ Engine distribution (fixed rotation):
 
 =================== 第二轮：eBPF 转发 ===================
 QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
-  [10000/100000] QPS: 2339
-  [20000/100000] QPS: 2213
-  [30000/100000] QPS: 2124
-  [40000/100000] QPS: 2045
-  [50000/100000] QPS: 1986
-  [60000/100000] QPS: 1945
-  [70000/100000] QPS: 1911
-  [80000/100000] QPS: 1883
-  [90000/100000] QPS: 1857
-  [100000/100000] QPS: 1839
+  [10000/100000] QPS: 2145
+  [20000/100000] QPS: 2000
+  [30000/100000] QPS: 1942
+  [40000/100000] QPS: 1930
+  [50000/100000] QPS: 1902
+  [60000/100000] QPS: 1878
+  [70000/100000] QPS: 1856
+  [80000/100000] QPS: 1832
+  [90000/100000] QPS: 1817
+  [100000/100000] QPS: 1797
 
 === QPS Test Complete ===
 Total:       100000 commands
-Time:        54.370 seconds
-Average QPS: 1839
+Time:        55.638 seconds
+Average QPS: 1797
 
 Engine distribution (fixed rotation):
   SET  (Array):    25000 (25.0%)
@@ -52,21 +52,21 @@ Engine distribution (fixed rotation):
 
 =================== 第三轮：TCP 网络转发 ===================
 QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
-  [10000/100000] QPS: 2295
-  [20000/100000] QPS: 2211
-  [30000/100000] QPS: 2217
-  [40000/100000] QPS: 2130
-  [50000/100000] QPS: 2054
-  [60000/100000] QPS: 2077
-  [70000/100000] QPS: 2042
-  [80000/100000] QPS: 2006
-  [90000/100000] QPS: 1975
-  [100000/100000] QPS: 1946
+  [10000/100000] QPS: 1882
+  [20000/100000] QPS: 1749
+  [30000/100000] QPS: 1697
+  [40000/100000] QPS: 1655
+  [50000/100000] QPS: 1615
+  [60000/100000] QPS: 1596
+  [70000/100000] QPS: 1572
+  [80000/100000] QPS: 1568
+  [90000/100000] QPS: 1546
+  [100000/100000] QPS: 1538
 
 === QPS Test Complete ===
 Total:       100000 commands
-Time:        51.390 seconds
-Average QPS: 1946
+Time:        64.999 seconds
+Average QPS: 1538
 
 Engine distribution (fixed rotation):
   SET  (Array):    25000 (25.0%)

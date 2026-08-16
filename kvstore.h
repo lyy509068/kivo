@@ -33,7 +33,6 @@ extern mem_pool_t *hash_node_pool;
 extern mem_pool_t *skip_node_pool;
 
 void *kvs_malloc(size_t size);
-void *kvs_calloc(size_t nmemb, size_t size);
 void *kvs_realloc(void *ptr, size_t new_size);
 void kvs_free(void *ptr);
 

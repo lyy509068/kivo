@@ -342,9 +342,26 @@ int run_single_test(int strategy, long total_ops, const char *log_filename) {
         fflush(stdout);
     }
     printf(" done\n");
-    
-    // 等待内存回收
-    sleep(10);
+
+    printf("  Sending MEMTRIM... ");
+    fflush(stdout);
+    const char *trim_cmd = "*1\r\n$7\r\nMEMTRIM\r\n";
+    if (send(sock, trim_cmd, strlen(trim_cmd), 0) < 0) {
+        printf("send failed\n");
+    } else {
+        // 接收服务器响应（期望 +OK\r\n）
+        char resp_buf[64];
+        int n = recv(sock, resp_buf, sizeof(resp_buf) - 1, 0);
+        if (n > 0) {
+            resp_buf[n] = '\0';
+            printf("OK\n");
+        } else {
+            printf("no response\n");
+        }
+    }
+
+    // 等待内存回收完成（可适当缩短，MEMTRIM 是同步操作）
+    sleep(2);
     
     // 清理后内存
     long clean_vmsize, clean_vmrss;
