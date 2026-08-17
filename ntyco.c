@@ -258,7 +258,8 @@ void ntyco_slave_init_co(void *arg) {
         }
         const char *sync = "*1\r\n$4\r\nSYNC\r\n";
         send(fd, sync, strlen(sync), 0);
-        
+        printf("[Slave] SYNC sent.\n");
+
         pthread_t tid;
         int *pfd = kvs_malloc(sizeof(int));
         *pfd = fd;

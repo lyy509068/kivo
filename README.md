@@ -151,14 +151,77 @@ Custom_Mempool |    30924 |   165896 |   151304 |     7896 |    84516 |     8912
 # 全量同步性能测试
 服务端（接收方）：iperf3 -s
 客户端（发送方）：iperf3 -c 192.168.37.129 -t 10
-[Perf TCP] Received 1073745705/1073745705 bytes in 2.140 seconds, throughput: 478.56 MB/s
-[Repl RDMA] Synchronized EXACT 1073745705 / 1073745705 bytes in 10.117 seconds, throughput: 101.22 MB/s
+[TCP] Received 1073745705 bytes in 3.942 seconds, throughput: 259.74 MB/s
+lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.37.129 -t 20
+Connecting to host 192.168.37.129, port 5201
+[  5] local 192.168.37.128 port 59646 connected to 192.168.37.129 port 5201
+[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
+[  5]   0.00-1.00   sec   320 MBytes  2.68 Gbits/sec   10   1.55 MBytes       
+[  5]   1.00-2.00   sec   278 MBytes  2.33 Gbits/sec   15   1.55 MBytes       
+[  5]   2.00-3.00   sec   378 MBytes  3.17 Gbits/sec  136   1.06 MBytes       
+[  5]   3.00-4.00   sec   445 MBytes  3.73 Gbits/sec   78    874 KBytes       
+[  5]   4.00-5.00   sec   422 MBytes  3.54 Gbits/sec  132    769 KBytes       
+[  5]   5.00-6.00   sec   385 MBytes  3.23 Gbits/sec   37   1.18 MBytes       
+[  5]   6.00-7.00   sec   432 MBytes  3.63 Gbits/sec   90    961 KBytes       
+[  5]   7.00-8.00   sec   496 MBytes  4.16 Gbits/sec  109   1.13 MBytes       
+[  5]   8.00-9.00   sec   358 MBytes  3.00 Gbits/sec   35    935 KBytes       
+[  5]   9.00-10.00  sec   365 MBytes  3.06 Gbits/sec   24    996 KBytes       
+[  5]  10.00-11.00  sec   388 MBytes  3.26 Gbits/sec   57   1014 KBytes       
+[  5]  11.00-12.00  sec   426 MBytes  3.57 Gbits/sec   37    751 KBytes       
+[  5]  12.00-13.00  sec   366 MBytes  3.07 Gbits/sec   39    856 KBytes       
+[  5]  13.00-14.00  sec   465 MBytes  3.90 Gbits/sec   73   1.17 MBytes       
+[  5]  14.00-15.00  sec   440 MBytes  3.69 Gbits/sec   96    682 KBytes       
+[  5]  15.00-16.00  sec   405 MBytes  3.40 Gbits/sec   32   1.07 MBytes       
+[  5]  16.00-17.00  sec   418 MBytes  3.50 Gbits/sec   49   1.14 MBytes       
+[  5]  17.00-18.00  sec   341 MBytes  2.86 Gbits/sec    1   1.27 MBytes       
+[  5]  18.00-19.00  sec   425 MBytes  3.56 Gbits/sec   31   1.19 MBytes       
+[  5]  19.00-20.00  sec   391 MBytes  3.28 Gbits/sec   29   1.04 MBytes       
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-20.00  sec  7.76 GBytes  3.33 Gbits/sec  1110             sender
+[  5]   0.00-20.03  sec  7.76 GBytes  3.33 Gbits/sec                  receiver
+
+iperf Done.
+
+
+[RDMA] Received 1073745705 bytes in 8.668 seconds, throughput: 118.14 MB/s
+lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.37.129 -t 20
+Connecting to host 192.168.37.129, port 5201
+[  5] local 192.168.37.128 port 47370 connected to 192.168.37.129 port 5201
+[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
+[  5]   0.00-1.00   sec   409 MBytes  3.43 Gbits/sec   42    918 KBytes       
+[  5]   1.00-2.00   sec   369 MBytes  3.09 Gbits/sec   53    437 KBytes       
+[  5]   2.00-3.00   sec   298 MBytes  2.50 Gbits/sec   50    655 KBytes       
+[  5]   3.00-4.00   sec   202 MBytes  1.70 Gbits/sec   79    821 KBytes       
+[  5]   4.00-5.00   sec   404 MBytes  3.39 Gbits/sec   33    647 KBytes       
+[  5]   5.00-6.00   sec   380 MBytes  3.19 Gbits/sec   28    874 KBytes       
+[  5]   6.00-7.00   sec   382 MBytes  3.20 Gbits/sec   35    918 KBytes       
+[  5]   7.00-8.00   sec   425 MBytes  3.57 Gbits/sec   55   1.14 MBytes       
+[  5]   8.00-9.00   sec   545 MBytes  4.57 Gbits/sec   59    900 KBytes       
+[  5]   9.00-10.00  sec   572 MBytes  4.80 Gbits/sec   34   1.14 MBytes       
+[  5]  10.00-11.00  sec   581 MBytes  4.87 Gbits/sec   46   1.19 MBytes       
+[  5]  11.00-12.00  sec   596 MBytes  5.01 Gbits/sec   35   1.14 MBytes       
+[  5]  12.00-13.00  sec   568 MBytes  4.76 Gbits/sec   19   1.06 MBytes       
+[  5]  13.00-14.00  sec   559 MBytes  4.68 Gbits/sec   98   1.13 MBytes       
+[  5]  14.00-15.00  sec   591 MBytes  4.96 Gbits/sec   42   1.11 MBytes       
+[  5]  15.00-16.00  sec   559 MBytes  4.70 Gbits/sec   49   1.05 MBytes       
+[  5]  16.00-17.00  sec   591 MBytes  4.95 Gbits/sec   34   1.01 MBytes       
+[  5]  17.00-18.00  sec   580 MBytes  4.85 Gbits/sec   72   1.11 MBytes       
+[  5]  18.00-19.00  sec   576 MBytes  4.84 Gbits/sec   15   1.15 MBytes       
+[  5]  19.00-20.00  sec   476 MBytes  4.01 Gbits/sec   44   1.13 MBytes       
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-20.00  sec  9.44 GBytes  4.05 Gbits/sec  922             sender
+[  5]   0.00-20.04  sec  9.44 GBytes  4.04 Gbits/sec                  receiver
+
+iperf Done.
+
 
 # 增量同步性能测试
  转发方式	  QPS	    	
 基准（无同步）	 2022	 
 eBPF 转发       1816 	 	
-TCP 网络转发	1598
+TCP 网络转发	 1598
 
 ### 面试题
 1. 为什么会实现kvstore，使用场景在哪里？
