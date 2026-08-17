@@ -1,0 +1,123 @@
+测试启动时间: 2026-08-17 11:05:03
+
+=================== 第一轮：基准测试 ===================
+配置: replication=OFF transport=OFF
+时间: 2026-08-17 11:05:03
+--- 基准 QPS ---
+QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
+  [10000/100000] QPS: 2365
+  [20000/100000] QPS: 2286
+  [30000/100000] QPS: 2175
+  [40000/100000] QPS: 2119
+  [50000/100000] QPS: 2090
+  [60000/100000] QPS: 2054
+  [70000/100000] QPS: 2020
+  [80000/100000] QPS: 1995
+  [90000/100000] QPS: 1976
+  [100000/100000] QPS: 1961
+
+=== QPS Test Complete ===
+Total:       100000 commands
+Time:        50.990 seconds
+Average QPS: 1961
+
+Engine distribution (fixed rotation):
+  SET  (Array):    25000 (25.0%)
+  RSET (RBTree):   25000 (25.0%)
+  HSET (Hash):     25000 (25.0%)
+  SSET (SkipList): 25000 (25.0%)
+
+
+=================== 第 2 轮：RDMA 全量 + eBPF 增量转发 ===================
+全量同步: RDMA
+时间: 2026-08-17 11:06:04
+--- 主机 AOF 文件大小 ---
+-rw-r--r-- 1 root root 1.1G Aug 17 11:06 /home/lyy/course/project/KVstore/9.1-kvstore/kvstore.aof
+
+--- 主端 RDMA 全量同步日志 ---
+  [1] RDMA_CONNECT 握手:
+[Master] Recieved RDMA_CONNECT.
+  [2] ACK 发送:
+[Master] RDMA_CONNECT_ACK sent.
+  [3] 全量同步性能:
+[RDMA] Sent 1073745705 bytes in 10.686 seconds, throughput: 95.83 MB/s
+  [4] 错误/失败:
+
+--- 全量同步期间网络带宽 (iperf3) ---
+[  5]   0.00-20.00  sec  7.19 GBytes  3.09 Gbits/sec  1489             sender
+[  5]   0.00-20.05  sec  7.19 GBytes  3.08 Gbits/sec                  receiver
+
+--- 从机 AOF 文件大小 ---
+-rw-r--r-- 1 root root 1.1G Aug 17 11:07 /home/c2/project/KVstore6/9.1-kvstore/kvstore.aof
+
+--- eBPF 增量 QPS ---
+QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
+  [10000/100000] QPS: 2134
+  [20000/100000] QPS: 2042
+  [30000/100000] QPS: 1989
+  [40000/100000] QPS: 1945
+  [50000/100000] QPS: 1932
+  [60000/100000] QPS: 1910
+  [70000/100000] QPS: 1885
+  [80000/100000] QPS: 1866
+  [90000/100000] QPS: 1845
+  [100000/100000] QPS: 1825
+
+=== QPS Test Complete ===
+Total:       100000 commands
+Time:        54.808 seconds
+Average QPS: 1825
+
+Engine distribution (fixed rotation):
+  SET  (Array):    25000 (25.0%)
+  RSET (RBTree):   25000 (25.0%)
+  HSET (Hash):     25000 (25.0%)
+  SSET (SkipList): 25000 (25.0%)
+
+
+=================== 第 3 轮：TCP 全量 + TCP 增量转发 ===================
+全量同步: TCP
+时间: 2026-08-17 11:08:48
+--- 主机 AOF 文件大小 ---
+-rw-r--r-- 1 root root 1.1G Aug 17 11:09 /home/lyy/course/project/KVstore/9.1-kvstore/kvstore.aof
+
+--- 主端 TCP 全量同步日志 ---
+  [1] RDMA_CONNECT 握手:
+    (未找到)
+  [2] ACK 发送:
+    (未找到)
+  [3] 全量同步性能:
+[TCP] Sent 1073745705 bytes in 6.859 seconds, throughput: 149.30 MB/s
+  [4] 错误/失败:
+
+--- 全量同步期间网络带宽 (iperf3) ---
+[  5]   0.00-20.00  sec  7.17 GBytes  3.08 Gbits/sec  1129             sender
+[  5]   0.00-20.06  sec  7.17 GBytes  3.07 Gbits/sec                  receiver
+
+--- 从机 AOF 文件大小 ---
+-rw-r--r-- 1 root root 1.1G Aug 17 11:09 /home/c2/project/KVstore6/9.1-kvstore/kvstore.aof
+
+--- TCP 增量 QPS ---
+QPS Test (single-command mode): 100000 commands (fixed order: SET → RSET → HSET → SSET)
+  [10000/100000] QPS: 1849
+  [20000/100000] QPS: 1797
+  [30000/100000] QPS: 1754
+  [40000/100000] QPS: 1706
+  [50000/100000] QPS: 1664
+  [60000/100000] QPS: 1642
+  [70000/100000] QPS: 1625
+  [80000/100000] QPS: 1600
+  [90000/100000] QPS: 1588
+  [100000/100000] QPS: 1580
+
+=== QPS Test Complete ===
+Total:       100000 commands
+Time:        63.297 seconds
+Average QPS: 1580
+
+Engine distribution (fixed rotation):
+  SET  (Array):    25000 (25.0%)
+  RSET (RBTree):   25000 (25.0%)
+  HSET (Hash):     25000 (25.0%)
+  SSET (SkipList): 25000 (25.0%)
+

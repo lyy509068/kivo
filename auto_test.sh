@@ -9,7 +9,7 @@ SLAVE_IP="192.168.37.129"
 CLIENT_IP="192.168.37.130"
 MASTER_PORT=2000
 
-MASTER_PROJ_DIR="/home/lyy/course/project/KVstore2/9.1-kvstore"
+MASTER_PROJ_DIR="/home/lyy/course/project/KVstore/9.1-kvstore"
 SLAVE_PROJ_DIR="/home/c2/project/KVstore6/9.1-kvstore"
 CLIENT_PROJ_DIR="/home/c1/project"
 
@@ -114,15 +114,8 @@ stop_ebpf_relay() {
 
 collect_master_full_sync_perf() {
     local transport="$1"
-    echo "--- 主端 $transport 全量同步日志 ---" >> "$RESULT_FILE"
-    echo "  [1] RDMA_CONNECT 握手:" >> "$RESULT_FILE"
-    remote_exec "$MASTER_USER" "$MASTER_IP" "grep -F 'Recieved RDMA_CONNECT' /tmp/server_MASTER.log 2>/dev/null" >> "$RESULT_FILE" || echo "    (未找到)" >> "$RESULT_FILE"
-    echo "  [2] ACK 发送:" >> "$RESULT_FILE"
-    remote_exec "$MASTER_USER" "$MASTER_IP" "grep -F 'RDMA_CONNECT_ACK sent' /tmp/server_MASTER.log 2>/dev/null" >> "$RESULT_FILE" || echo "    (未找到)" >> "$RESULT_FILE"
-    echo "  [3] 全量同步性能:" >> "$RESULT_FILE"
+    echo " 全量同步性能:" >> "$RESULT_FILE"
     remote_exec "$MASTER_USER" "$MASTER_IP" "grep -E '\[(RDMA|TCP)\] (Sent|Received)' /tmp/server_MASTER.log 2>/dev/null" >> "$RESULT_FILE" || echo "    (未找到)" >> "$RESULT_FILE"
-    echo "  [4] 错误/失败:" >> "$RESULT_FILE"
-    remote_exec "$MASTER_USER" "$MASTER_IP" "grep -E 'Failed|Error|failed|error' /tmp/server_MASTER.log 2>/dev/null" >> "$RESULT_FILE" || true
     echo "" >> "$RESULT_FILE"
 }
 
@@ -150,14 +143,13 @@ wait_for_full_sync() {
         fi
         
         if remote_exec "$MASTER_USER" "$MASTER_IP" "grep -qF '[${transport}] Empty sync completed' /tmp/server_MASTER.log 2>/dev/null"; then
-            echo "⚠️ [警告] 主端报告 Empty sync completed（AOF 文件为空！）"
+            echo " 主端报告 Empty sync completed（AOF 文件为空！）"
             return 1
         fi
         
         local elapsed=$(( $(date +%s) - start ))
         if [ $elapsed -gt $timeout ]; then
-            echo "❌ [错误] 全量同步等待超时 (${timeout}秒)"
-            echo "--- 主端完整日志 ---"
+            echo " [错误] 全量同步等待超时 (${timeout}秒)"
             remote_exec "$MASTER_USER" "$MASTER_IP" "cat /tmp/server_MASTER.log 2>/dev/null"
             return 1
         fi
@@ -223,7 +215,7 @@ run_full_sync_with_bandwidth() {
     remote_exec "$MASTER_USER" "$MASTER_IP" "ls -lh $MASTER_PROJ_DIR/kvstore.aof 2>/dev/null" >> "$RESULT_FILE" || echo "AOF 文件不存在" >> "$RESULT_FILE"
     echo "" >> "$RESULT_FILE"
     
-    # ★★★ 关键修复：先启动 iperf3，再启动从机触发全量同步 ★★★
+    # 先启动 iperf3，再启动从机触发全量同步
     echo "[带宽] 启动 iperf3 服务端(从机)..."
     remote_exec "$SLAVE_USER" "$SLAVE_IP" "nohup iperf3 -s > /dev/null 2>&1 &"
     sleep 1
