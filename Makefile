@@ -1,7 +1,6 @@
 CC = gcc
 CLANG = clang
 
-# ========== 编译标志（开启优化和帧指针，适合 perf 热点分析） ==========
 CFLAGS = -Wall -g -O2 -fno-omit-frame-pointer -I ./NtyCo/core/
 
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm
@@ -21,7 +20,7 @@ RELAY_TARGET = ebpf_relay
 BPF_KERN_OBJ = sync_filter.bpf.o
 
 TESTCASES = test_fullpersistence1 test_fullpersistence2 test_incrementpersistence1 \
-            test_incrementpersistence2 test_mempool test_master test_slave test_TTL \
+            test_incrementpersistence2 test_mempool test_mempool_slab test_master test_slave test_TTL \
             test_batchcommand test_batchcommand_verify test_specialchars test_save \
             test_1G test_1G_verify test_transport test_transport_verify \
 
@@ -123,9 +122,18 @@ auto_test:
 		echo "❌ 错误: 当前目录下未找到 auto_test.sh 脚本！"; \
 	fi
 
-clean: 
-	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap kvstore.snap.tmp $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o  \
-												  reactor.o proactor.o ntyco.o resp.o \
-												  kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
-												  config.o rdma.o repl.o expire.o
+fire_test:
+	@if [ -f "./fire_test.sh" ]; then \
+		chmod +x ./fire_test.sh; \
+		./fire_test.sh; \
+	else \
+		echo "❌ 错误: 当前目录下未找到 fire_test.sh 脚本！"; \
+	fi
+
+clean:
+	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap kvstore.snap.tmp $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o \
+	                                          reactor.o proactor.o ntyco.o resp.o \
+	                                          kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
+	                                          config.o rdma.o repl.o expire.o
+	rm -rf perf.data out.folded out.perf kvstore.svg *.svg
 	make -C $(SUBDIR) clean

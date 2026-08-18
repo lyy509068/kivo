@@ -157,34 +157,41 @@ void ntyco_client_co(void *arg) {
 void ntyco_master_repl_send_co(void *arg) {
     while (1) {
         if (g_slave_fd > 0 && g_repl_backlog_count > 0) {
-            repl_backlog_node_t *node = &g_repl_backlog[g_repl_backlog_head];
-            ssize_t sent = send(g_slave_fd, node->data, node->len, MSG_DONTWAIT);
+            int max_per_loop = 100;
+            int sent_count = 0;
+            
+            while (g_repl_backlog_count > 0 && sent_count < max_per_loop) {
+                repl_backlog_node_t *node = &g_repl_backlog[g_repl_backlog_head];
+                ssize_t sent = send(g_slave_fd, node->data, node->len, MSG_DONTWAIT);
 
-            if (sent > 0) {
-                if ((size_t)sent == node->len) {
-                    kvs_free(node->data);
-                    g_repl_backlog_head = (g_repl_backlog_head + 1) % REPL_BACKLOG_MAX;
-                    g_repl_backlog_count--;
-                } else {
-                    memmove(node->data, node->data + sent, node->len - sent);
-                    node->len -= sent;
-                    break;
-                }
-            } else if (sent < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    break;
-                } else {
-                    ntyco_close_and_free_connection(g_slave_fd);
-                    g_slave_fd = -1; 
-                    break;
+                if (sent > 0) {
+                    if ((size_t)sent == node->len) {
+                        kvs_free(node->data);
+                        g_repl_backlog_head = (g_repl_backlog_head + 1) % REPL_BACKLOG_MAX;
+                        g_repl_backlog_count--;
+                        sent_count++;
+                    } else {
+                        memmove(node->data, node->data + sent, node->len - sent);
+                        node->len -= sent;
+                        break;
+                    }
+                } else if (sent < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        break;
+                    } else {
+                        ntyco_close_and_free_connection(g_slave_fd);
+                        g_slave_fd = -1; 
+                        break;
+                    }
                 }
             }
-        nty_coroutine_sleep(1);
+            nty_coroutine_sleep(0);              
         } else {
-            nty_coroutine_sleep(100);
+            nty_coroutine_sleep(10);
         }
     }
 }
+
 
 void ntyco_server_co(void *arg) {
     int listen_fd = (int)(long)arg;
@@ -302,7 +309,7 @@ int ntyco_start(unsigned short port, stream_handler_t handler) {
     
     nty_coroutine *persistence_co = NULL;
     nty_coroutine_create(&persistence_co, ntyco_persistence_co, NULL);
-    
+
     if (g_enable_repl_master) {
         nty_coroutine *send_co = NULL;
         nty_coroutine_create(&send_co, ntyco_master_repl_send_co, NULL);

@@ -3,11 +3,11 @@
 =========================================================================
 测试命令 / 数据结构         | 关闭日志 QPS | 开启日志 QPS
 ------------------------------------------------------------------------- 
-Redis PING                          | 15311           | 15127          
-Redis SET                           | 14540           | 13424          
-KVstore PING                        | 31680           | 32074          
-KVstore SET (Array)                 | 12180           | 11806          
-KVstore RSET (Red-Black)            | 22530           | 22407          
-KVstore HSET (Hash)                 | 25556           | 24988          
-KVstore SSET (SkipList)             | 21479           | 21400          
+Redis PING                          | 15194           | 15241          
+Redis SET                           | 14618           | 13299          
+KVstore PING                        | 31337           | 32234          
+KVstore SET (Array)                 | 12771           | 12484          
+KVstore RSET (Red-Black)            | 22200           | 21604          
+KVstore HSET (Hash)                 | 25868           | 25057          
+KVstore SSET (SkipList)             | 20723           | 21583          
 =========================================================================
