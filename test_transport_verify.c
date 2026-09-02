@@ -7,7 +7,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
-#define SERVER_IP "192.168.37.128"
+#define SERVER_IP "192.168.88.128"
 #define SERVER_PORT 2000
 
 // 验证的 key 范围：从 0 到 TOTAL_VERIFY - 1

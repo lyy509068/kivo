@@ -8,7 +8,7 @@
 #include <sys/time.h>
 #include <errno.h>
 
-#define SERVER_IP "192.168.37.128"
+#define SERVER_IP "192.168.88.128"
 #define SERVER_PORT 2000
 #define TOTAL_COMMANDS 100000
 

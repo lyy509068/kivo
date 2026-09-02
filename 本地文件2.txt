@@ -243,8 +243,8 @@ MASTER_PID=$(pgrep -f "./server config.conf")
 # 追踪 sendto/sendmsg 系统调用，打印数据内容
 sudo strace -p $MASTER_PID -e trace=sendto,sendmsg -s 500 -x 2>&1 | grep -v "res=0"
 
-# 假设从机 IP 是 192.168.37.129
-sudo tcpdump -i any -s 0 -A -nn 'host 192.168.37.129 and port 2000' 2>/dev/null | grep -E '^\*|^\$|^\+|^\-'
+# 假设从机 IP 是 192.168.88.130
+sudo tcpdump -i any -s 0 -A -nn 'host 192.168.88.130 and port 2000' 2>/dev/null | grep -E '^\*|^\$|^\+|^\-'
 
 从端 - 看从内核收到的数据
 # 找到 server 进程 PID
@@ -253,5 +253,5 @@ SLAVE_PID=$(pgrep -f "./server config.conf")
 # 追踪 recvfrom/recvmsg 系统调用
 sudo strace -p $SLAVE_PID -e trace=recvfrom,recvmsg -s 500 -x 2>&1 | head -50
 
-# 假设主机 IP 是 192.168.37.128
-sudo tcpdump -i any -s 0 -A -nn 'host 192.168.37.128 and port 2000' 2>/dev/null | grep -E '^\*|^\$|^\+|^\-'
+# 假设主机 IP 是 192.168.88.128
+sudo tcpdump -i any -s 0 -A -nn 'host 192.168.88.128 and port 2000' 2>/dev/null | grep -E '^\*|^\$|^\+|^\-'

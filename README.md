@@ -150,11 +150,11 @@ Custom_Mempool |    30924 |   165896 |   151304 |     7896 |    84516 |     8912
 
 # 全量同步性能测试
 服务端（接收方）：iperf3 -s
-客户端（发送方）：iperf3 -c 192.168.37.129 -t 10
+客户端（发送方）：iperf3 -c 192.168.88.130 -t 10
 [TCP] Received 1073745705 bytes in 3.942 seconds, throughput: 259.74 MB/s
-lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.37.129 -t 20
-Connecting to host 192.168.37.129, port 5201
-[  5] local 192.168.37.128 port 59646 connected to 192.168.37.129 port 5201
+lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.88.130 -t 20
+Connecting to host 192.168.88.130, port 5201
+[  5] local 192.168.88.128 port 59646 connected to 192.168.88.130 port 5201
 [ ID] Interval           Transfer     Bitrate         Retr  Cwnd
 [  5]   0.00-1.00   sec   320 MBytes  2.68 Gbits/sec   10   1.55 MBytes       
 [  5]   1.00-2.00   sec   278 MBytes  2.33 Gbits/sec   15   1.55 MBytes       
@@ -185,9 +185,9 @@ iperf Done.
 
 
 [RDMA] Received 1073745705 bytes in 8.668 seconds, throughput: 118.14 MB/s
-lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.37.129 -t 20
-Connecting to host 192.168.37.129, port 5201
-[  5] local 192.168.37.128 port 47370 connected to 192.168.37.129 port 5201
+lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.88.130 -t 20
+Connecting to host 192.168.88.130, port 5201
+[  5] local 192.168.88.128 port 47370 connected to 192.168.88.130 port 5201
 [ ID] Interval           Transfer     Bitrate         Retr  Cwnd
 [  5]   0.00-1.00   sec   409 MBytes  3.43 Gbits/sec   42    918 KBytes       
 [  5]   1.00-2.00   sec   369 MBytes  3.09 Gbits/sec   53    437 KBytes       

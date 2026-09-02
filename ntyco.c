@@ -249,7 +249,7 @@ static int init_listen_socket(unsigned short port) {
 }
 
 void ntyco_slave_init_co(void *arg) {
-    const char *master_ip = "192.168.37.128";
+    const char *master_ip = "192.168.88.128";
     unsigned short master_port = 2000;
     
     if (g_use_tcp_sync) {

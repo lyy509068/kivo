@@ -7,13 +7,13 @@ FLAME_GRAPH_DIR="../FlameGraph"
 BENCH_CMD=(
     redis-benchmark
     -p "$SERVER_PORT"
-    -t RSET
+    -t SSET
     -n 1000000
     -r 100000000
-    -P 1
+    -P 40
     -c 1
     -q
-    RSET key:__rand_int__ value:__rand_int__
+    SSET key:__rand_int__ value:__rand_int__
 )
 
 # ========================================
