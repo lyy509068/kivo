@@ -7,7 +7,7 @@
 #include <bpf/bpf_endian.h>
 #include <stddef.h>
 
-#define MAX_PAYLOAD_SIZE 16384
+#define MAX_PAYLOAD_SIZE 1024
 
 struct event_t {
     __u32 src_ip;

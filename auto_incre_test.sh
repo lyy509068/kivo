@@ -1,6 +1,6 @@
 #!/bin/bash
 # 一键主从同步性能测试脚本
-# 使用方式: ./auto_test.sh
+# 使用方式: ./auto_incre_test.sh
 
 set -e
 
@@ -11,7 +11,7 @@ CLIENT_IP="192.168.88.129"
 MASTER_PORT=2000
 
 MASTER_PROJ_DIR="/home/lyy/course/project/KVstore/9.1-kvstore"
-SLAVE_PROJ_DIR="/home/c2/project/KVstore6/9.1-kvstore"
+SLAVE_PROJ_DIR="/home/c2/project/KVstore8/9.1-kvstore"
 CLIENT_PROJ_DIR="/home/c1/project"
 
 MASTER_USER="lyy"

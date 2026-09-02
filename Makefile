@@ -114,12 +114,20 @@ save:
 		echo "❌ 错误: 当前目录下未找到 save.sh 脚本！"; \
 	fi
 
-auto_test:
-	@if [ -f "./auto_test.sh" ]; then \
-		chmod +x ./auto_test.sh; \
-		./auto_test.sh; \
+auto_incre_test:
+	@if [ -f "./auto_incre_test.sh" ]; then \
+		chmod +x ./auto_incre_test.sh; \
+		./auto_incre_test.sh; \
 	else \
-		echo "❌ 错误: 当前目录下未找到 auto_test.sh 脚本！"; \
+		echo "❌ 错误: 当前目录下未找到 auto_incre_test.sh 脚本！"; \
+	fi
+
+auto_full_test:
+	@if [ -f "./auto_full_test.sh" ]; then \
+		chmod +x ./auto_full_test.sh; \
+		./auto_full_test.sh; \
+	else \
+		echo "❌ 错误: 当前目录下未找到 auto_full_test.sh 脚本！"; \
 	fi
 
 fire_test:

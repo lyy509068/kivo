@@ -14,9 +14,16 @@
 #include <poll.h>
 #include <signal.h>
 
+/* ============================================================
+ * 实验开关
+ * ============================================================ */
+#define ENABLE_REORDER    0   // 实验B/C：是否启用 TCP 序号排序
+#define ENABLE_FORWARD    0   // 实验C：是否转发给从机
+/* ============================================================ */
+
 #define SLAVE_IP "192.168.88.130"
 #define SLAVE_PORT 2000
-#define MAX_PAYLOAD_SIZE 16384
+#define MAX_PAYLOAD_SIZE 1024
 #define RING_SIZE (64 * 1024 * 1024)
 #define OOO_MAX 128
 
@@ -41,9 +48,9 @@ struct ooo_node {
 struct ring_buf {
     char *buf;
     size_t size;
-    size_t head;   // 待发送数据起始
-    size_t tail;   // 待写入位置
-    size_t bytes;  // 有效字节数
+    size_t head;
+    size_t tail;
+    size_t bytes;
 };
 
 int slave_sock = -1;
@@ -73,7 +80,6 @@ static int rb_init(struct ring_buf *rb, size_t size) {
 
 static int rb_write(struct ring_buf *rb, const char *data, size_t len) {
     if (rb->bytes + len > rb->size) {
-        // 扩容：将旧数据整理到新缓冲区开头
         size_t new_size = rb->size * 2;
         while (new_size < rb->bytes + len) new_size *= 2;
         char *new_buf = malloc(new_size);
@@ -97,7 +103,6 @@ static int rb_write(struct ring_buf *rb, const char *data, size_t len) {
         rb->tail = rb->bytes;
     }
 
-    // 写入，处理跨尾部
     size_t space_to_end = rb->size - rb->tail;
     if (len <= space_to_end) {
         memcpy(rb->buf + rb->tail, data, len);
@@ -113,18 +118,15 @@ static int rb_write(struct ring_buf *rb, const char *data, size_t len) {
     return 0;
 }
 
-/* 从环形缓冲区发送尽可能多的数据，返回发送的字节数（可能为0） */
 static ssize_t rb_send(int fd) {
     if (rb.bytes == 0) return 0;
 
-    // 计算当前连续可发送的最大长度
     size_t avail;
     if (rb.head < rb.tail) {
         avail = rb.tail - rb.head;
     } else if (rb.head > rb.tail) {
         avail = rb.size - rb.head;
     } else {
-        // bytes 不为0，但 head==tail，不可能出现，除非 size 不对
         return 0;
     }
     if (avail > rb.bytes) avail = rb.bytes;
@@ -138,7 +140,7 @@ static ssize_t rb_send(int fd) {
         return sent;
     } else if (sent < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;  // 缓冲区满，下次再发
+            return 0;
         }
         running = 0;
         return -1;
@@ -148,7 +150,6 @@ static ssize_t rb_send(int fd) {
     }
 }
 
-/* 批量发送所有待发送数据，直到 EAGAIN 或发送完毕 */
 static void flush_all(void) {
     while (rb.bytes > 0 && running) {
         ssize_t ret = rb_send(slave_sock);
@@ -157,6 +158,7 @@ static void flush_all(void) {
 }
 
 /* ---------- 乱序队列 ---------- */
+#if ENABLE_REORDER
 static int ooo_find_seq(uint32_t seq) {
     for (int i = 0; i < OOO_MAX; i++) {
         if (ooo_pool[i].used && ooo_pool[i].seq == seq) return i;
@@ -175,7 +177,6 @@ static void ooo_insert(uint32_t seq, const char *data, uint32_t len) {
     if (ooo_find_seq(seq) >= 0) return;
     int idx = ooo_find_free();
     if (idx < 0) {
-        // 清空重新同步
         memset(ooo_pool, 0, sizeof(ooo_pool));
         seq_initialized = 0;
         return;
@@ -203,9 +204,11 @@ static void ooo_flush(void) {
         }
     } while (merged);
 }
+#endif
 
 /* ---------- TCP 重组 ---------- */
 static void process_tcp_payload(uint32_t seq, const char *data, uint32_t len) {
+#if ENABLE_REORDER
     if (!seq_initialized) {
         expected_seq = seq;
         seq_initialized = 1;
@@ -227,13 +230,18 @@ static void process_tcp_payload(uint32_t seq, const char *data, uint32_t len) {
             ooo_flush();
         }
     }
+#else
+    (void)seq;
+    rb_write(&rb, data, len);
+#endif
 }
 
 /* ---------- eBPF 回调 ---------- */
 static int handle_event(void *ctx, void *data, size_t data_sz) {
     (void)ctx; (void)data_sz;
     struct event_t *e = data;
-    if (e->payload_len == 0 || e->payload_len > MAX_PAYLOAD_SIZE) return 0;
+    if (e->payload_len == 0 || e->payload_len > MAX_PAYLOAD_SIZE)
+        return 0;
 
     recv_event++;
     recv_bytes += e->payload_len;
@@ -254,6 +262,7 @@ int main(void) {
 
     rb_init(&rb, RING_SIZE);
 
+#if ENABLE_FORWARD
     slave_sock = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(SLAVE_PORT)};
     inet_pton(AF_INET, SLAVE_IP, &sa.sin_addr);
@@ -266,6 +275,7 @@ int main(void) {
     fcntl(slave_sock, F_SETFL, flags | O_NONBLOCK);
     int sndbuf = 8 * 1024 * 1024;
     setsockopt(slave_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+#endif
 
     int map_fd = bpf_obj_get("/sys/fs/bpf/payload_ringbuf");
     if (map_fd < 0) { perror("bpf_obj_get"); return 1; }
@@ -274,30 +284,38 @@ int main(void) {
     if (!ringbuf) { fprintf(stderr, "ring_buffer__new failed\n"); return 1; }
 
     printf("[Relay] Ready\n");
+    printf("[Mode] reorder=%d forward=%d\n", ENABLE_REORDER, ENABLE_FORWARD);
 
     while (running) {
-        // 消费一批事件（内部会多次调用 handle_event）
         ring_buffer__poll(ringbuf, 100);
-        // 批量发送所有重组好的数据
-        flush_all();
-    }
 
-    // 退出前尝试发送剩余数据
-    while (rb.bytes > 0 && running) {
+#if ENABLE_FORWARD
         flush_all();
+#else
+        /* 实验A/B：不转发，只消费数据 */
+        rb.bytes = 0;
+        rb.head = 0;
+        rb.tail = 0;
+#endif
     }
 
     printf("\n[Relay] Final Stats:\n");
     printf("  recv_event: %lu\n", recv_event);
     printf("  recv_bytes: %lu\n", recv_bytes);
+#if ENABLE_FORWARD
     printf("  sent_bytes: %lu\n", sent_bytes);
+#endif
+#if ENABLE_REORDER
     printf("  ooo_stored: %lu\n", ooo_stored);
     printf("  ooo_merged: %lu\n", ooo_merged);
+#endif
     printf("  rb_left:    %zu\n", rb.bytes);
 
     ring_buffer__free(ringbuf);
     close(map_fd);
+#if ENABLE_FORWARD
     close(slave_sock);
+#endif
     free(rb.buf);
     return 0;
 }
