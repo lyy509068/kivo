@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include "ai_chat.h"
 
 // 全局保存子进程 PID
 static pid_t g_save_pid = -1;
@@ -305,6 +306,92 @@ static void cmd_sys_memtrim(resp_request_t *req, resp_reply_t *reply) {
     reply->status = KVS_RESP_OK;
 }
 
+/* KEEP命令处理：存储键值并构建索引 */
+static void cmd_keep(resp_request_t *req, resp_reply_t *reply){
+    printf("[KEEP] enter cmd_keep\n");
+    if (req->argc < 3) {
+        printf("[KEEP] parse error, argc=%d\n", req->argc);
+        reply->status = KVS_RESP_PARSE_ERROR;
+        return;
+    }
+    kv_data_t key = { req->argv[1], (size_t)req->argv_len[1] };
+    kv_data_t value = { req->argv[2], (size_t)req->argv_len[2] };
+    printf("[KEEP] key_len=%d, value_len=%d\n", req->argv_len[1], req->argv_len[2]);
+    if (kvs_hash_set(&global_hash, &key, &value, 0) != 0) {
+        printf("[KEEP] hash set failed\n");
+        reply->status = KVS_RESP_ERROR;
+        return;
+    }
+    printf("[KEEP] hash set ok\n");
+
+    size_t key_len = (size_t)req->argv_len[1];
+
+    char *index_key = kvs_malloc(key_len + 1);
+    memcpy(index_key, req->argv[1], key_len);
+    index_key[key_len] = '\0';
+    int ret=keep_build_index(index_key, req->argv[2], (size_t)req->argv_len[2]);
+    kvs_free(index_key);
+
+    if (ret != 0) {
+        printf("[KEEP] build index failed, ret=%d\n", ret);
+        reply->status = KVS_RESP_ERROR;
+        return;
+    }
+    printf("[KEEP] build index ok\n");
+    reply->status = KVS_RESP_OK;
+    printf("[KEEP] success\n");
+}
+
+/* MATCH命令处理：根据问题匹配答案 */
+static void cmd_match(resp_request_t *req, resp_reply_t *reply){
+    printf("[MATCH] enter cmd_match\n");
+    if (req->argc != 2) {
+        printf("[MATCH] parse error, argc=%d\n", req->argc);
+        reply->status = KVS_RESP_PARSE_ERROR;
+        return;
+    }
+    size_t question_len = (size_t)req->argv_len[1];
+    char *question = kvs_malloc(question_len + 1);
+    if (question == NULL) {
+        reply->status = KVS_RESP_ERROR;
+        return;
+    }
+    memcpy(question, req->argv[1], question_len);
+    question[question_len] = '\0';
+    printf("[MATCH] question_len=%zu question=%s\n", question_len, question);
+    char *answer = NULL;
+    size_t answer_len = 0;
+    float score = 0.0f;
+    int ret = match_find_answer(question, &answer, &answer_len, &score);
+    kvs_free(question);
+    if (ret < 0) {
+        printf("[MATCH] internal error\n");
+        reply->status = KVS_RESP_ERROR;
+        return;
+    }
+    if (ret == 1 || answer == NULL) {
+        printf("[MATCH] no answer found\n");
+        reply->status = KVS_RESP_NO_EXISTS;
+        reply->body = NULL;
+        reply->body_len = 0;
+        return;
+    }
+    printf("[MATCH] answer found, score=%.6f\n", score);
+    char *tmp = kvs_malloc(answer_len + 1);
+    if (tmp == NULL) {
+        kvs_free(answer);
+        reply->status = KVS_RESP_ERROR;
+        return;
+    }
+    memcpy(tmp, answer, answer_len);
+    tmp[answer_len] = '\0';
+    reply->body = tmp;
+    reply->body_len = answer_len;
+    reply->status = KVS_RESP_GET_OK;
+    printf("[MATCH] success, answer_len=%zu\n", answer_len);
+    kvs_free(answer);
+}
+
 // command_t 命令表
 
 command_t g_cmd_table[] = {
@@ -336,6 +423,8 @@ command_t g_cmd_table[] = {
     {"SMOD",    3, cmd_skip_mod},
     {"SEXISTS", 2, cmd_skip_exists},
 #endif
+    {"KEEP",    3, cmd_keep},
+    {"MATCH",   2, cmd_match},
     {"SAVE",      1, cmd_sys_save},
     {"SYNC",      1, cmd_sys_sync},
     {"SYNC_DONE", 1, cmd_sys_sync_done},

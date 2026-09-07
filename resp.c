@@ -28,6 +28,7 @@ static int is_write_command(const char *cmd, int len) {
     if (len == 4 && strncasecmp(cmd, "SSET", 4) == 0) return 1;
     if (len == 4 && strncasecmp(cmd, "SDEL", 4) == 0) return 1;
     if (len == 4 && strncasecmp(cmd, "SMOD", 4) == 0) return 1;
+    if (len == 4 && strncasecmp(cmd, "KEEP", 4) == 0) return 1;
     return 0;
 }
 

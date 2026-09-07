@@ -3,7 +3,7 @@ CLANG = clang
 
 CFLAGS = -Wall -g -O2 -fno-omit-frame-pointer -I ./NtyCo/core/
 
-LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm
+LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm -lcjson -lm -lcurl
 
 BPF_LDFLAGS = -lbpf -lelf -lz
 
@@ -11,7 +11,7 @@ BPF_CFLAGS = -target bpf -D__TARGET_ARCH_x86 -I/usr/include/x86_64-linux-gnu -I/
 
 SRCS = server.c kvstore.c mempool.c persistence.c snapshot.c reactor.c proactor.c ntyco.c resp.c \
        kvs_array.c kvs_rbtree.c kvs_hash.c kvs_skiptable.c kv_utils.c config.c\
-       rdma.c repl.c expire.c
+       rdma.c repl.c expire.c ai_chat.c
 
 TARGET = server
 
@@ -28,7 +28,7 @@ SUBDIR = ./NtyCo/
 
 OBJS = server.o kvstore.o mempool.o persistence.o snapshot.o reactor.o proactor.o ntyco.o resp.o \
        kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o config.o\
-       rdma.o repl.o expire.o
+       rdma.o repl.o expire.o ai_chat.o
 
 .PHONY: all clean ECHO $(SUBDIR) load_bpf unload_bpf
 
@@ -142,6 +142,6 @@ clean:
 	rm -rf $(TARGET) $(RELAY_TARGET) $(TESTCASES) kvstore.aof kvstore.snap kvstore.snap.tmp $(BPF_KERN_OBJ) ebpf_relay.o server.o kvstore.o mempool.o persistence.o snapshot.o \
 	                                          reactor.o proactor.o ntyco.o resp.o \
 	                                          kvs_array.o kvs_rbtree.o kvs_hash.o kvs_skiptable.o kv_utils.o \
-	                                          config.o rdma.o repl.o expire.o
+	                                          config.o rdma.o repl.o expire.o ai_chat.o
 	rm -rf perf.data out.folded out.perf kvstore.svg *.svg
 	make -C $(SUBDIR) clean

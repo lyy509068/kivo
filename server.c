@@ -8,6 +8,7 @@
 #include "rdma.h"
 #include "config.h"
 #include "expire.h"
+#include "ai_chat.h"
 
 // 全局配置变量
 int g_enable_persistence = 0;
@@ -80,10 +81,15 @@ int init_kvengine(void) {
         const char *rdma_dev = RDMA_DEV_NAME;
         if (repl_init(rdma_dev) != 0) return -1;
     }
+
+    keep_index_init();
+
     return 0;
 }
 
 void dest_kvengine(void) {
+    keep_index_destroy();
+
     if (g_use_rdma_sync && (g_enable_repl_master || g_enable_repl_slave)) {
         if (g_enable_repl_slave) {
             repl_destroy();

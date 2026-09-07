@@ -11,6 +11,7 @@ redis文件模式：
         redis-cli -p 2000 --raw GET io_multiplexing_article | head -n 20
         批量命令 
         redis-cli -p 2000 < test_cmd.txt 
+        redis-cli -p 2000 < test_vector.txt 
 
 ./test_batchcommand 一次性插入100条命令并验证回复，然后获取，重复1000次
 ./test_specialchars 四种数据结构都插入5个特殊字符串，由本地五个文件作为value构建resp命令，先插入并验证回复，然后获取并逐字对比和本地文件是否相同
