@@ -9,9 +9,6 @@
 
 #include "kvstore.h"
 
-static keyword_index_entry_t keyword_index[MAX_KEYWORD_INDEX];
-static size_t keyword_index_count = 0;
-
 vector_index_entry_t global_vector_index[MAX_VECTOR_INDEX];
 size_t global_vector_index_count = 0;
 
@@ -35,22 +32,9 @@ static size_t embedding_write_callback(void *contents, size_t size, size_t nmemb
     return total;
 }
 
-/* 初始化关键词索引和向量索引 */
+/* 初始化向量索引 */
 int keep_index_init(void) {
-    keyword_index_count = 0;
     global_vector_index_count = 0;
-    return 0;
-}
-
-/* 添加关键词到关键词索引 */
-int keep_add_keyword_index(const char *keyword, const char *key) {
-    if (keyword == NULL || key == NULL) return -1;
-    if (keyword_index_count >= MAX_KEYWORD_INDEX) return -1;
-    strncpy(keyword_index[keyword_index_count].keyword, keyword, MAX_KEYWORD_LEN - 1);
-    keyword_index[keyword_index_count].keyword[MAX_KEYWORD_LEN - 1] = '\0';
-    strncpy(keyword_index[keyword_index_count].key, key, MAX_KEY_LEN - 1);
-    keyword_index[keyword_index_count].key[MAX_KEY_LEN - 1] = '\0';
-    keyword_index_count++;
     return 0;
 }
 
@@ -69,46 +53,19 @@ int keep_add_vector_index(const char *key, const float *vector, size_t dim) {
     return 0;
 }
 
-/* 解析JSON并构建关键词与向量索引 */
+/* 构建索引：对问题文本生成向量并加入向量索引 */
 int keep_build_index(const char *key, const char *value, size_t value_len) {
-    if (key == NULL || value == NULL) return -1;
-    char *json = kvs_malloc(value_len + 1);
-    if (json == NULL) return -1;
-    memcpy(json, value, value_len);
-    json[value_len] = '\0';
-    cJSON *root = cJSON_Parse(json);
-    kvs_free(json);
-    if (root == NULL) return -1;
+    (void)value;      // value 此处不需要，仅为兼容签名
+    (void)value_len;
+    if (key == NULL) return -1;
 
-    cJSON *keywords = cJSON_GetObjectItem(root, "user_msg_keywords");
-    if (keywords != NULL && cJSON_IsArray(keywords)) {
-        int count = cJSON_GetArraySize(keywords);
-        for (int i = 0; i < count; i++) {
-            cJSON *item = cJSON_GetArrayItem(keywords, i);
-            if (!cJSON_IsString(item)) continue;
-            if (keep_add_keyword_index(item->valuestring, key) != 0) {
-                cJSON_Delete(root);
-                return -1;
-            }
-        }
-    }
-
-    cJSON *user_msg = cJSON_GetObjectItem(root, "user_msg");
-    if (user_msg == NULL || !cJSON_IsString(user_msg) || user_msg->valuestring == NULL) {
-        cJSON_Delete(root);
-        return -1;
-    }
     float vector[MATCH_VECTOR_DIM];
-    if (ai_text_to_vector(user_msg->valuestring, vector, MATCH_VECTOR_DIM) != 0) {
-        cJSON_Delete(root);
+    if (ai_text_to_vector(key, vector, MATCH_VECTOR_DIM) != 0) {
         return -1;
     }
     if (keep_add_vector_index(key, vector, MATCH_VECTOR_DIM) != 0) {
-        cJSON_Delete(root);
         return -1;
     }
-
-    cJSON_Delete(root);
     return 0;
 }
 
@@ -226,39 +183,7 @@ float match_get_threshold(void) {
     return g_match_threshold;
 }
 
-/* 判断问题是否包含关键词 */
-static int question_contains_keyword(const char *question, const char *keyword) {
-    if (question == NULL || keyword == NULL || keyword[0] == '\0') return 0;
-    return strstr(question, keyword) != NULL;
-}
-
-/* 检查候选数组中是否已存在某key */
-static int candidate_exists(char **candidates, size_t count, const char *key) {
-    if (candidates == NULL || key == NULL) return 0;
-    for (size_t i = 0; i < count; i++) {
-        if (candidates[i] != NULL && strcmp(candidates[i], key) == 0) return 1;
-    }
-    return 0;
-}
-
-/* 从关键词索引中查找候选key */
-static size_t match_find_keyword_candidates(const char *question, char **candidates, size_t max_candidates) {
-    if (question == NULL || candidates == NULL || max_candidates == 0) return 0;
-    size_t count = 0;
-    for (size_t i = 0; i < keyword_index_count; i++) {
-        const char *keyword = keyword_index[i].keyword;
-        const char *key = keyword_index[i].key;
-        if (!question_contains_keyword(question, keyword)) continue;
-        if (candidate_exists(candidates, count, key)) continue;
-        if (count >= max_candidates) break;
-        strncpy(candidates[count], key, MAX_KEY_LEN - 1);
-        candidates[count][MAX_KEY_LEN - 1] = '\0';
-        count++;
-    }
-    return count;
-}
-
-/* 根据问题查找最佳匹配的key */
+/* 根据问题查找最佳匹配的key（遍历全部向量） */
 int match_find_best_key(const char *question, char *best_key, size_t best_key_size, float *best_score) {
     if (question == NULL || best_key == NULL || best_key_size == 0) return -1;
     if (global_vector_index_count == 0) return 1;
@@ -266,29 +191,11 @@ int match_find_best_key(const char *question, char *best_key, size_t best_key_si
     float question_vector[MATCH_VECTOR_DIM];
     if (ai_text_to_vector(question, question_vector, MATCH_VECTOR_DIM) != 0) return -1;
 
-    char **candidates = kvs_malloc(sizeof(char *) * MAX_KEYWORD_INDEX);
-    if (candidates == NULL) return -1;
-    size_t allocated = 0;
-    for (size_t i = 0; i < MAX_KEYWORD_INDEX; i++) {
-        candidates[i] = kvs_malloc(MAX_KEY_LEN);
-        if (candidates[i] == NULL) {
-            for (size_t j = 0; j < allocated; j++) kvs_free(candidates[j]);
-            kvs_free(candidates);
-            return -1;
-        }
-        candidates[i][0] = '\0';
-        allocated++;
-    }
-
-    size_t candidate_count = match_find_keyword_candidates(question, candidates, MAX_KEYWORD_INDEX);
-    int use_all_vectors = (candidate_count == 0);
-
     float max_score = -1.0f;
     const char *max_key = NULL;
 
     for (size_t i = 0; i < global_vector_index_count; i++) {
         vector_index_entry_t *entry = &global_vector_index[i];
-        if (!use_all_vectors && !candidate_exists(candidates, candidate_count, entry->key)) continue;
         if (entry->dim != MATCH_VECTOR_DIM) continue;
         float score = ai_cosine_similarity(question_vector, entry->vector, MATCH_VECTOR_DIM);
         if (score < 0.0f) continue;
@@ -297,9 +204,6 @@ int match_find_best_key(const char *question, char *best_key, size_t best_key_si
             max_key = entry->key;
         }
     }
-
-    for (size_t i = 0; i < allocated; i++) kvs_free(candidates[i]);
-    kvs_free(candidates);
 
     if (max_key == NULL) return 1;
     if (max_score < g_match_threshold) return 1;
@@ -322,38 +226,21 @@ int match_find_answer(const char *question, char **answer, size_t *answer_len, f
     if (ret < 0) return -1;
     if (ret == 1) return 1;
 
+    // 从哈希表获取答案
     extern kv_data_t *kvs_hash_get(kvs_hash_t *hash, kv_data_t *key);
     extern kvs_hash_t global_hash;
     kv_data_t key_data = { best_key, strlen(best_key) };
     kv_data_t *result = kvs_hash_get(&global_hash, &key_data);
     if (result == NULL || result->data == NULL || result->len == 0) return -1;
 
-    char *json = kvs_malloc(result->len + 1);
-    if (json == NULL) return -1;
-    memcpy(json, result->data, result->len);
-    json[result->len] = '\0';
-    cJSON *root = cJSON_Parse(json);
-    kvs_free(json);
-    if (root == NULL) return -1;
-
-    cJSON *ai_msg = cJSON_GetObjectItem(root, "ai_msg");
-    if (ai_msg == NULL || !cJSON_IsString(ai_msg) || ai_msg->valuestring == NULL) {
-        cJSON_Delete(root);
-        return -1;
-    }
-
-    size_t len = strlen(ai_msg->valuestring);
-    char *output = kvs_malloc(len + 1);
-    if (output == NULL) {
-        cJSON_Delete(root);
-        return -1;
-    }
-    memcpy(output, ai_msg->valuestring, len);
-    output[len] = '\0';
+    // 直接复制答案
+    char *output = kvs_malloc(result->len + 1);
+    if (output == NULL) return -1;
+    memcpy(output, result->data, result->len);
+    output[result->len] = '\0';
     *answer = output;
-    *answer_len = len;
+    *answer_len = result->len;
     if (best_score != NULL) *best_score = score;
-    cJSON_Delete(root);
     return 0;
 }
 
@@ -365,5 +252,4 @@ void keep_index_destroy(void) {
         global_vector_index[i].dim = 0;
     }
     global_vector_index_count = 0;
-    keyword_index_count = 0;
 }
