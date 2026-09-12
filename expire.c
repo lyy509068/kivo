@@ -20,6 +20,7 @@ extern kvs_rbtree_t global_rbtree;
 #endif
 #if ENABLE_HASH
 extern kvs_hash_t global_hash;
+extern kvs_hash_t global_hash2;   // 上下文表
 #endif
 #if ENABLE_SKIPLIST
 extern kvs_skip_t global_skip;
@@ -44,7 +45,7 @@ static int queue_push(expire_queue_t *q, expire_item_t *item) {
         return -1; // 队列满
     }
 
-    q->items[head] = *item;  // 浅拷贝（key.data 指向的是堆内存，由调用方保证生命周期）
+    q->items[head] = *item;
     __atomic_store_n(&q->head, (head + 1) & EXPIRE_QUEUE_MASK, __ATOMIC_RELEASE);
     return 0;
 }
@@ -91,7 +92,6 @@ static void heap_push(expire_item_t *item) {
     g_heap.data[g_heap.size] = *item;
     int curr = g_heap.size++;
 
-    // 上浮
     while (curr > 0) {
         int parent = (curr - 1) / 2;
         if (g_heap.data[curr].expire_time >= g_heap.data[parent].expire_time) break;
@@ -105,7 +105,6 @@ static int heap_pop(expire_item_t *out) {
     *out = g_heap.data[0];
     g_heap.data[0] = g_heap.data[--g_heap.size];
 
-    // 下沉
     int curr = 0;
     while (1) {
         int left = 2 * curr + 1, right = 2 * curr + 2, smallest = curr;
@@ -126,7 +125,6 @@ static void* expire_thread_routine(void *arg) {
     expire_item_t item;
 
     while (g_expire_running) {
-        // 1. 从 cmd_queue 中消费全部新命令，放入最小堆
         while (queue_pop(&g_cmd_queue, &item) == 0) {
             heap_push(&item);
         }
@@ -134,17 +132,14 @@ static void* expire_thread_routine(void *arg) {
         int64_t now = get_current_ms();
         int did_work = 0;
 
-        // 2. 将堆顶所有到期项移入 delete_queue
         while (g_heap.size > 0 && g_heap.data[0].expire_time <= now) {
             heap_pop(&item);
-            // 如果 delete_queue 满了，短暂等待后重试
             while (queue_push(&g_delete_queue, &item) != 0) {
                 usleep(50);
             }
             did_work = 1;
         }
 
-        // 空闲时休眠 1ms，避免 CPU 空转
         if (!did_work) {
             usleep(1000);
         }
@@ -172,7 +167,6 @@ int expire_push_cmd(int type, kv_data_t *key, int64_t expire_time, uint64_t vers
     item.version    = version;
     item.type       = type;
 
-    // 深拷贝 key，因为调用方持有的内存可能马上失效
     item.key.len = key->len;
     item.key.data = (char *)kvs_malloc(key->len);
     if (!item.key.data) return -1;
@@ -180,14 +174,12 @@ int expire_push_cmd(int type, kv_data_t *key, int64_t expire_time, uint64_t vers
 
     if (queue_push(&g_cmd_queue, &item) != 0) {
         kvs_free(item.key.data);
-        return -1; // 队列满
+        return -1;
     }
     return 0;
 }
 
-/* 条件删除辅助函数：由 expire_process_deletes 内部使用
- * 返回 1 表示真正删除了，0 表示 key 不存在或 expire_time 不匹配
- */
+/* 条件删除辅助函数：由 expire_process_deletes 内部使用 */
 static int engine_del_if_expired(int type, kv_data_t *key, int64_t expected_expire) {
     switch (type) {
 
@@ -196,6 +188,9 @@ static int engine_del_if_expired(int type, kv_data_t *key, int64_t expected_expi
 
         case EXPIRE_TYPE_HASH:
             return kvs_hash_del_if_expired(&global_hash, key, expected_expire);
+
+        case EXPIRE_TYPE_HASH2:
+            return kvs_hash_del_if_expired(&global_hash2, key, expected_expire);
 
         case EXPIRE_TYPE_RBTREE:
             return kvs_rbtree_del_if_expired(&global_rbtree, key, expected_expire);
@@ -212,28 +207,24 @@ static int engine_del_if_expired(int type, kv_data_t *key, int64_t expected_expi
 void expire_process_deletes(void) {
     expire_item_t item;
     int cnt = 0;
-    // 每次最多处理 500 个，防止主线程阻塞太久
-    while (cnt < 500 && queue_pop(&g_delete_queue, &item) == 0) {// 这里已经是删除队列的数据了 为什么还要在进行条件删除呢？？？不能直接删除呢
+    while (cnt < 500 && queue_pop(&g_delete_queue, &item) == 0) {
         cnt++;
 
-        // 条件删除（防旧 timer 误删）
         int deleted = engine_del_if_expired(item.type, &item.key, item.expire_time);
 
         if (deleted) {
-            // 根据引擎类型选择正确的命令字符串
             const char *cmd = NULL;
             switch (item.type) {
             case EXPIRE_TYPE_ARRAY:    cmd = "DEL";  break;
             case EXPIRE_TYPE_HASH:     cmd = "HDEL"; break;
+            case EXPIRE_TYPE_HASH2:    cmd = "DELCTX"; break;   // 上下文表用 HDEL 记录
             case EXPIRE_TYPE_RBTREE:   cmd = "RDEL"; break;
             case EXPIRE_TYPE_SKIPLIST: cmd = "SDEL"; break;
             default: cmd = "DEL"; break;
             }
-            // 交给协议层写 AOF 和主从复制
             protocol_handle_internal_del(cmd, item.key.data, (int)item.key.len);
         }
 
-        // 释放队列中 key 的内存
         kvs_free(item.key.data);
     }
 }

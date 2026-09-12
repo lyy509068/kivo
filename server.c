@@ -38,6 +38,10 @@ extern kvs_rbtree_t global_rbtree;
 #endif
 #if ENABLE_HASH
 extern kvs_hash_t global_hash;
+extern kvs_hash_t global_hash1;   // KEEP/MATCH   语义缓存
+extern kvs_hash_t global_hash2;   // SETCTX/GETCTX  上下文
+extern kvs_hash_t global_hash3;   // SETREC/GETREC  全量记录
+extern kvs_hash_t global_hash4;   // SETIDX/GETIDX  关键词索引
 #endif
 #if ENABLE_SKIPLIST
 extern kvs_skip_t global_skip;
@@ -60,6 +64,14 @@ int init_kvengine(void) {
     #if ENABLE_HASH
     memset(&global_hash, 0, sizeof(kvs_hash_t));
     kvs_hash_create(&global_hash);
+    memset(&global_hash1, 0, sizeof(kvs_hash_t));
+    kvs_hash_create(&global_hash1);
+    memset(&global_hash2, 0, sizeof(kvs_hash_t));
+    kvs_hash_create(&global_hash2);
+    memset(&global_hash3, 0, sizeof(kvs_hash_t));
+    kvs_hash_create(&global_hash3);
+    memset(&global_hash4, 0, sizeof(kvs_hash_t));
+    kvs_hash_create(&global_hash4);
     #endif
     #if ENABLE_SKIPLIST
     memset(&global_skip, 0, sizeof(kvs_skip_t));
@@ -113,6 +125,10 @@ void dest_kvengine(void) {
     #endif
     #if ENABLE_HASH
     kvs_hash_destroy(&global_hash);
+    kvs_hash_destroy(&global_hash1);
+    kvs_hash_destroy(&global_hash2);
+    kvs_hash_destroy(&global_hash3);
+    kvs_hash_destroy(&global_hash4);
     #endif
     #if ENABLE_SKIPLIST
     kvs_skip_destroy(&global_skip);

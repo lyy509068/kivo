@@ -28,7 +28,13 @@ static int is_write_command(const char *cmd, int len) {
     if (len == 4 && strncasecmp(cmd, "SSET", 4) == 0) return 1;
     if (len == 4 && strncasecmp(cmd, "SDEL", 4) == 0) return 1;
     if (len == 4 && strncasecmp(cmd, "SMOD", 4) == 0) return 1;
+
     if (len == 4 && strncasecmp(cmd, "KEEP", 4) == 0) return 1;
+    if (len == 6 && strncasecmp(cmd, "SETCTX", 6) == 0) return 1;   // 上下文写入
+    if (len == 6 && strncasecmp(cmd, "SETREC", 6) == 0) return 1;   // 全量记录写入
+    if (len == 6 && strncasecmp(cmd, "SETIDX", 6) == 0) return 1;   // 关键词索引写入
+    if (len == 4 && strncasecmp(cmd, "ZADD",  4) == 0) return 1;    // 时间索引写入
+    if (len == 6 && strncasecmp(cmd, "DELCTX", 6) == 0) return 1;
     return 0;
 }
 

@@ -310,4 +310,165 @@ int kvs_skip_get_value_len(kvs_skip_t *skip, kv_data_t *key) {
     return value ? (int)value->len : -1;
 }
 
+/* ============================================================
+ * ZSet 封装：复合 key = "15位零填充时间戳:ID"
+ * 复用现有跳表的字典序排序，时间戳升序 == 字典序升序
+ * ============================================================ */
+
+/* 拼 key 的内部辅助函数，返回 key 长度，失败返回 -1 */
+static int zset_make_key(char *buf, size_t buf_size, int64_t ts,
+                         const void *id, size_t id_len) {
+    int n = snprintf(buf, buf_size, "%015lld:", (long long)ts);
+    if (n < 0 || (size_t)n + id_len >= buf_size) return -1;
+    memcpy(buf + n, id, id_len);
+    return n + (int)id_len;
+}
+
+/* 从复合 key 中提取 ID（冒号后面的部分） */
+static char *zset_extract_id(const char *kdata, int klen) {
+    if (klen < 16) return NULL;
+    // 前 15 位是时间戳，第 16 位是冒号，后面是 ID
+    int id_len = klen - 16;
+    char *id = (char *)kvs_malloc(id_len + 1);
+    if (!id) return NULL;
+    memcpy(id, kdata + 16, id_len);
+    id[id_len] = '\0';
+    return id;
+}
+
+/* ------------------------------------------------------------
+ * 1. 插入：ZADD 时间戳 ID
+ * ------------------------------------------------------------ */
+int kvs_zset_add(kvs_skip_t *skip, int64_t timestamp, kv_data_t *id) {
+    if (!skip || !skip->header || !id || !id->data || id->len == 0) {
+        return -1;
+    }
+
+    char keybuf[128];
+    int klen = zset_make_key(keybuf, sizeof(keybuf), timestamp,
+                             id->data, id->len);
+    if (klen < 0) return -1;
+
+    kv_data_t key = { keybuf, (size_t)klen, 0 };
+    kv_data_t empty_val = { NULL, 0, 0 };
+
+    return kvs_skip_set(skip, &key, &empty_val, 0);
+}
+
+/* ------------------------------------------------------------
+ * 2. 取最近 N 条：返回 ID 数组（调用方负责释放）
+ * ------------------------------------------------------------ */
+int kvs_zset_recent(kvs_skip_t *skip, int n,
+                    char ***out_ids, int *out_count) {
+    if (!skip || !skip->header || n <= 0 || !out_ids || !out_count) {
+        return -1;
+    }
+    *out_ids = NULL;
+    *out_count = 0;
+
+    // 先数总数
+    int total = 0;
+    skipnode_binary_t *node = skip->header->forward[0];
+    while (node) {
+        total++;
+        node = node->forward[0];
+    }
+    if (total == 0) return 0;
+
+    int start = (total > n) ? (total - n) : 0;
+    int want = total - start;
+
+    char **ids = (char **)kvs_malloc(sizeof(char *) * want);
+    if (!ids) return -1;
+
+    // 跳过前 start 个
+    node = skip->header->forward[0];
+    for (int i = 0; i < start && node; i++) {
+        node = node->forward[0];
+    }
+
+    int idx = 0;
+    while (node && idx < want) {
+        char *id = zset_extract_id((const char *)node->key.data,
+                                   (int)node->key.len);
+        if (id) {
+            ids[idx++] = id;
+        }
+        node = node->forward[0];
+    }
+
+    *out_ids = ids;
+    *out_count = idx;
+    return 0;
+}
+
+/* ------------------------------------------------------------
+ * 3. 范围查：[min_ts, max_ts] 内的所有 ID
+ * ------------------------------------------------------------ */
+int kvs_zset_range(kvs_skip_t *skip, int64_t min_ts, int64_t max_ts,
+                   char ***out_ids, int *out_count) {
+    if (!skip || !skip->header || !out_ids || !out_count) return -1;
+    if (min_ts > max_ts) return -1;
+
+    *out_ids = NULL;
+    *out_count = 0;
+
+    char min_prefix[20], max_prefix[20];
+    snprintf(min_prefix, sizeof(min_prefix), "%015lld", (long long)min_ts);
+    snprintf(max_prefix, sizeof(max_prefix), "%015lld", (long long)max_ts);
+
+    // 第一次遍历：统计数量
+    int count = 0;
+    skipnode_binary_t *node = skip->header->forward[0];
+    while (node) {
+        if (node->key.len < 16) { node = node->forward[0]; continue; }
+        const char *kdata = (const char *)node->key.data;
+
+        int cmp_min = strncmp(kdata, min_prefix, 15);
+        int cmp_max = strncmp(kdata, max_prefix, 15);
+
+        if (cmp_min < 0) { node = node->forward[0]; continue; }
+        if (cmp_max > 0) break;   // 后面都比 max 大，直接退出
+        count++;
+        node = node->forward[0];
+    }
+    if (count == 0) return 0;
+
+    char **ids = (char **)kvs_malloc(sizeof(char *) * count);
+    if (!ids) return -1;
+
+    // 第二次遍历：收集
+    node = skip->header->forward[0];
+    int idx = 0;
+    while (node && idx < count) {
+        if (node->key.len < 16) { node = node->forward[0]; continue; }
+        const char *kdata = (const char *)node->key.data;
+
+        int cmp_min = strncmp(kdata, min_prefix, 15);
+        int cmp_max = strncmp(kdata, max_prefix, 15);
+
+        if (cmp_min < 0) { node = node->forward[0]; continue; }
+        if (cmp_max > 0) break;
+
+        char *id = zset_extract_id(kdata, (int)node->key.len);
+        if (id) ids[idx++] = id;
+        node = node->forward[0];
+    }
+
+    *out_ids = ids;
+    *out_count = idx;
+    return 0;
+}
+
+/* ------------------------------------------------------------
+ * 释放 ID 数组
+ * ------------------------------------------------------------ */
+void kvs_zset_free_list(char **ids, int count) {
+    if (!ids) return;
+    for (int i = 0; i < count; i++) {
+        if (ids[i]) kvs_free(ids[i]);
+    }
+    kvs_free(ids);
+}
+
 #endif

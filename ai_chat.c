@@ -228,9 +228,9 @@ int match_find_answer(const char *question, char **answer, size_t *answer_len, f
 
     // 从哈希表获取答案
     extern kv_data_t *kvs_hash_get(kvs_hash_t *hash, kv_data_t *key);
-    extern kvs_hash_t global_hash;
+    extern kvs_hash_t global_hash1;
     kv_data_t key_data = { best_key, strlen(best_key) };
-    kv_data_t *result = kvs_hash_get(&global_hash, &key_data);
+    kv_data_t *result = kvs_hash_get(&global_hash1, &key_data);
     if (result == NULL || result->data == NULL || result->len == 0) return -1;
 
     // 直接复制答案

@@ -176,6 +176,10 @@ int  kvs_hash_exist(kvs_hash_t *hash, kv_data_t *key);
 int  kvs_hash_get_value_len(kvs_hash_t *hash, kv_data_t *key);
 void kvs_hash_foreach(kvs_hash_t *hash, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);
 int kvs_hash_del_if_expired(kvs_hash_t *hash, kv_data_t *key, int64_t expected_expire);
+
+int  kvs_hash_append(kvs_hash_t *hash, kv_data_t *key, kv_data_t *id);
+int  kvs_hash_get_list(kvs_hash_t *hash, kv_data_t *key, char ***out_ids, int *out_count);
+void kvs_hash_free_list(char **ids, int count);
 #endif
 
 
@@ -215,6 +219,11 @@ int kvs_skip_exist(kvs_skip_t *skip, kv_data_t *key);
 void kvs_skip_foreach(kvs_skip_t *skip, void (*callback)(kv_data_t *key, kv_data_t *value, void *arg), void *arg);
 int kvs_skip_get_value_len(kvs_skip_t *skip, kv_data_t *key);
 int kvs_skip_del_if_expired(kvs_skip_t *skip, kv_data_t *key, int64_t expected_expire);
+
+int  kvs_zset_add(kvs_skip_t *skip, int64_t timestamp, kv_data_t *id);
+int  kvs_zset_recent(kvs_skip_t *skip, int n, char ***out_ids, int *out_count);
+int  kvs_zset_range(kvs_skip_t *skip, int64_t min_ts, int64_t max_ts, char ***out_ids, int *out_count);
+void kvs_zset_free_list(char **ids, int count);
 
 #endif
 

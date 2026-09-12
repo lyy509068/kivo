@@ -10,6 +10,7 @@
 #define EXPIRE_TYPE_HASH     1
 #define EXPIRE_TYPE_RBTREE   2
 #define EXPIRE_TYPE_SKIPLIST 3
+#define EXPIRE_TYPE_HASH2    4    // 上下文表 global_hash2
 
 /* 定时器堆节点：值拷贝 Key，附带类型和版本号 */
 typedef struct {
