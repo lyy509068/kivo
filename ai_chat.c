@@ -14,6 +14,10 @@ size_t global_vector_index_count = 0;
 
 static float g_match_threshold = DEFAULT_MATCH_THRESHOLD;
 
+static CURL *g_curl = NULL;                         // ← 新增
+static struct curl_slist *g_curl_headers = NULL;    // ← 新增
+
+
 typedef struct {
     char *data;
     size_t size;
@@ -69,13 +73,27 @@ int keep_build_index(const char *key, const char *value, size_t value_len) {
     return 0;
 }
 
-/* 调用本地embedding服务将文本转换为向量 */
+/* 调用本地embedding服务将文本转换为向量（CURL 连接复用） */
 int ai_text_to_vector(const char *text, float *vector, size_t dim) {
     if (text == NULL || vector == NULL || dim == 0) return -1;
-    const char *base_url = "http://127.0.0.1:8000";
-    char url[512];
-    snprintf(url, sizeof(url), "%s/embed", base_url);
 
+    // 第一次调用时初始化 CURL handle（连接复用）
+    if (g_curl == NULL) {
+        g_curl = curl_easy_init();
+        if (g_curl == NULL) return -1;
+
+        g_curl_headers = curl_slist_append(g_curl_headers, "Content-Type: application/json");
+
+        curl_easy_setopt(g_curl, CURLOPT_URL, "http://127.0.0.1:8000/embed");
+        curl_easy_setopt(g_curl, CURLOPT_HTTPHEADER, g_curl_headers);
+        curl_easy_setopt(g_curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(g_curl, CURLOPT_WRITEFUNCTION, embedding_write_callback);
+        curl_easy_setopt(g_curl, CURLOPT_CONNECTTIMEOUT, 5L);
+        curl_easy_setopt(g_curl, CURLOPT_TIMEOUT, 30L);
+        curl_easy_setopt(g_curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    }
+
+    // 构造请求 JSON
     cJSON *request = cJSON_CreateObject();
     if (request == NULL) return -1;
     cJSON_AddStringToObject(request, "text", text);
@@ -83,30 +101,18 @@ int ai_text_to_vector(const char *text, float *vector, size_t dim) {
     cJSON_Delete(request);
     if (request_body == NULL) return -1;
 
-    CURL *curl = curl_easy_init();
-    if (curl == NULL) {
-        free(request_body);
-        return -1;
-    }
+    // 复用 handle，只更新动态部分
     http_buffer_t response;
     response.data = NULL;
     response.size = 0;
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request_body);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, embedding_write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 
-    CURLcode curl_ret = curl_easy_perform(curl);
+    curl_easy_setopt(g_curl, CURLOPT_POSTFIELDS, request_body);
+    curl_easy_setopt(g_curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode curl_ret = curl_easy_perform(g_curl);
     long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+    curl_easy_getinfo(g_curl, CURLINFO_RESPONSE_CODE, &http_code);
+
     free(request_body);
 
     if (curl_ret != CURLE_OK) {
@@ -119,6 +125,7 @@ int ai_text_to_vector(const char *text, float *vector, size_t dim) {
     }
     if (response.data == NULL) return -1;
 
+    // 解析响应
     cJSON *root = cJSON_Parse(response.data);
     free(response.data);
     if (root == NULL) return -1;

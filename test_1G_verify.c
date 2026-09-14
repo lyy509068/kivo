@@ -29,12 +29,30 @@ int connect_server() {
 
 char* read_file(const char *filename, size_t *out_len) {
     FILE *fp = fopen(filename, "rb");
-    if (!fp) { *out_len = 0; return NULL; }
+    if (!fp) {
+        *out_len = 0;
+        return NULL;
+    }
+
     fseek(fp, 0, SEEK_END);
     *out_len = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    char *buf = (char *)malloc(*out_len);
-    if (buf) fread(buf, 1, *out_len, fp);
+
+    char *buf = (char *)malloc(*out_len ? *out_len : 1);
+    if (!buf) {
+        fclose(fp);
+        *out_len = 0;
+        return NULL;
+    }
+
+    size_t n = fread(buf, 1, *out_len, fp);
+    if (n != *out_len) {
+        free(buf);
+        fclose(fp);
+        *out_len = 0;
+        return NULL;
+    }
+
     fclose(fp);
     return buf;
 }
