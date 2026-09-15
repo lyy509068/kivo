@@ -13,12 +13,13 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sched.h>
 
 /* ============================================================
  * 实验开关
  * ============================================================ */
-#define ENABLE_REORDER    1   // 实验B/C：是否启用 TCP 序号排序
-#define ENABLE_FORWARD    1   // 实验C：是否转发给从机
+#define ENABLE_REORDER    1   /* TCP 序号排序：从机能正常解析 RESP 的关键 */
+#define ENABLE_FORWARD    1   /* 是否转发给从机 */
 /* ============================================================ */
 
 #define SLAVE_IP "192.168.88.130"
@@ -26,6 +27,10 @@
 #define MAX_PAYLOAD_SIZE 1024
 #define RING_SIZE (64 * 1024 * 1024)
 #define OOO_MAX 128
+
+#define TARGET_NUMA_NODE   0
+#define SNDBUF_SIZE        (16 * 1024 * 1024)
+#define POLL_TIMEOUT_MS    100
 
 #define SEQ_GT(a,b)  ((int32_t)((a)-(b)) > 0)
 
@@ -67,6 +72,52 @@ static volatile uint64_t sent_bytes  = 0;
 static volatile uint64_t ooo_stored  = 0;
 static volatile uint64_t ooo_merged  = 0;
 
+/* ============================================================
+ * CPU 亲和性绑定：读取 NUMA node 的 cpulist
+ * ============================================================ */
+static int bind_to_numa(int node) {
+    char path[128];
+    snprintf(path, sizeof(path),
+             "/sys/devices/system/node/node%d/cpulist", node);
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "[Affinity] open %s failed: %s\n",
+                path, strerror(errno));
+        return -1;
+    }
+
+    char buf[1024] = {0};
+    if (!fgets(buf, sizeof(buf), f)) { fclose(f); return -1; }
+    fclose(f);
+
+    cpu_set_t set;
+    CPU_ZERO(&set);
+
+    char *p = buf;
+    while (*p) {
+        int a = -1, b = -1;
+        if (sscanf(p, "%d-%d", &a, &b) == 2) {
+            for (int i = a; i <= b; i++) CPU_SET(i, &set);
+        } else if (sscanf(p, "%d", &a) == 1) {
+            CPU_SET(a, &set);
+        } else {
+            break;
+        }
+        while (*p && *p != ',') p++;
+        if (*p == ',') p++;
+    }
+
+    if (sched_setaffinity(0, sizeof(set), &set) < 0) {
+        fprintf(stderr, "[Affinity] sched_setaffinity failed: %s\n",
+                strerror(errno));
+        return -1;
+    }
+
+    printf("[Affinity] Bound to NUMA node %d (cpulist=%s)\n", node, buf);
+    return 0;
+}
+
 /* ---------- 环形缓冲区操作 ---------- */
 static int rb_init(struct ring_buf *rb, size_t size) {
     rb->buf = malloc(size);
@@ -97,7 +148,7 @@ static int rb_write(struct ring_buf *rb, const char *data, size_t len) {
             remaining -= chunk;
         }
         free(rb->buf);
-        rb->buf = new_buf;
+        rb->buf  = new_buf;
         rb->size = new_size;
         rb->head = 0;
         rb->tail = rb->bytes;
@@ -135,13 +186,11 @@ static ssize_t rb_send(int fd) {
     if (sent > 0) {
         rb.head += sent;
         if (rb.head == rb.size) rb.head = 0;
-        rb.bytes -= sent;
+        rb.bytes   -= sent;
         sent_bytes += sent;
         return sent;
     } else if (sent < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;
-        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
         running = 0;
         return -1;
     } else {
@@ -151,7 +200,8 @@ static ssize_t rb_send(int fd) {
 }
 
 static void flush_all(void) {
-    while (rb.bytes > 0 && running) {
+    int max_rounds = 64;   /* 限制单次轮次，避免 CPU 空转 */
+    while (rb.bytes > 0 && running && max_rounds-- > 0) {
         ssize_t ret = rb_send(slave_sock);
         if (ret <= 0) break;
     }
@@ -250,6 +300,23 @@ static int handle_event(void *ctx, void *data, size_t data_sz) {
     return 0;
 }
 
+/* ---------- 读取 eBPF 侧丢弃计数 ---------- */
+static uint64_t read_drop_count(int map_fd) {
+    int ncpu = libbpf_num_possible_cpus();
+    if (ncpu <= 0) return 0;
+
+    uint64_t *vals = calloc(ncpu, sizeof(uint64_t));
+    if (!vals) return 0;
+
+    uint32_t key = 0;
+    uint64_t total = 0;
+    if (bpf_map_lookup_elem(map_fd, &key, vals) == 0) {
+        for (int i = 0; i < ncpu; i++) total += vals[i];
+    }
+    free(vals);
+    return total;
+}
+
 /* ---------- 信号处理 ---------- */
 static void sig_handler(int sig) {
     (void)sig;
@@ -257,15 +324,24 @@ static void sig_handler(int sig) {
 }
 
 int main(void) {
-    signal(SIGINT, sig_handler);
+    signal(SIGINT,  sig_handler);
     signal(SIGTERM, sig_handler);
+
+    /* 【优化】CPU 亲和性绑定到与 eBPF ringbuf 相同的 NUMA node */
+    bind_to_numa(TARGET_NUMA_NODE);
 
     rb_init(&rb, RING_SIZE);
 
 #if ENABLE_FORWARD
     slave_sock = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(SLAVE_PORT)};
+    if (slave_sock < 0) { perror("socket"); return 1; }
+
+    struct sockaddr_in sa = {
+        .sin_family = AF_INET,
+        .sin_port   = htons(SLAVE_PORT)
+    };
     inet_pton(AF_INET, SLAVE_IP, &sa.sin_addr);
+
     if (connect(slave_sock, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         perror("connect");
         return 1;
@@ -273,29 +349,42 @@ int main(void) {
 
     int flags = fcntl(slave_sock, F_GETFL, 0);
     fcntl(slave_sock, F_SETFL, flags | O_NONBLOCK);
-    int sndbuf = 8 * 1024 * 1024;
+
+    /* 【优化】SO_SNDBUF 提升到 16MB，并打印实际生效值 */
+    int sndbuf = SNDBUF_SIZE;
     setsockopt(slave_sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+
+    int actual_sndbuf = 0;
+    socklen_t optlen = sizeof(actual_sndbuf);
+    getsockopt(slave_sock, SOL_SOCKET, SO_SNDBUF, &actual_sndbuf, &optlen);
+    printf("[Socket] SO_SNDBUF requested=%d, actual=%d\n",
+           SNDBUF_SIZE, actual_sndbuf);
 #endif
 
     int map_fd = bpf_obj_get("/sys/fs/bpf/payload_ringbuf");
     if (map_fd < 0) { perror("bpf_obj_get"); return 1; }
 
-    struct ring_buffer *ringbuf = ring_buffer__new(map_fd, handle_event, NULL, NULL);
+    struct ring_buffer *ringbuf =
+        ring_buffer__new(map_fd, handle_event, NULL, NULL);
     if (!ringbuf) { fprintf(stderr, "ring_buffer__new failed\n"); return 1; }
+
+    /* 打开 drop_counter map（若未 pin 则为 -1，不打印即可） */
+    int drop_fd = bpf_obj_get("/sys/fs/bpf/drop_counter");
 
     printf("[Relay] Ready\n");
     printf("[Mode] reorder=%d forward=%d\n", ENABLE_REORDER, ENABLE_FORWARD);
+    printf("[Poll] timeout=%d ms\n", POLL_TIMEOUT_MS);
 
     while (running) {
-        ring_buffer__poll(ringbuf, 100);
+        ring_buffer__poll(ringbuf, POLL_TIMEOUT_MS);
 
 #if ENABLE_FORWARD
         flush_all();
 #else
-        /* 实验A/B：不转发，只消费数据 */
+        /* 不转发时只消费数据，清空环形缓冲区 */
         rb.bytes = 0;
-        rb.head = 0;
-        rb.tail = 0;
+        rb.head  = 0;
+        rb.tail  = 0;
 #endif
     }
 
@@ -310,9 +399,13 @@ int main(void) {
     printf("  ooo_merged: %lu\n", ooo_merged);
 #endif
     printf("  rb_left:    %zu\n", rb.bytes);
+    if (drop_fd >= 0) {
+        printf("  eBPF_dropped: %lu\n", read_drop_count(drop_fd));
+    }
 
     ring_buffer__free(ringbuf);
     close(map_fd);
+    if (drop_fd >= 0) close(drop_fd);
 #if ENABLE_FORWARD
     close(slave_sock);
 #endif

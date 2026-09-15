@@ -98,24 +98,27 @@ redis-benchmark -p 2000 -n 1000000 -r 100000000 -c 1 -q SSET key:__rand_int__ va
 =========================================================================
                      日志开关性能影响对比测试汇总                        
 =========================================================================
-测试命令 / 数据结构                  | 关闭日志 QPS | 开启日志 QPS
+测试命令 / 数据结构         | 关闭日志 QPS | 开启日志 QPS
 ------------------------------------------------------------------------- 
-Redis PING                          | 15342           | 15417          
-Redis SET                           | 14793           | 13618          
-KVstore PING                        | 32930           | 32823          
-KVstore SET (Array)                 | 12004           | 11737          
-KVstore RSET (Red-Black)            | 22532           | 22386          
-KVstore HSET (Hash)                 | 26432           | 25095          
-KVstore SSET (SkipList)             | 21802           | 21662          
+Redis PING                          | 14189           | 14183          
+Redis SET                           | 13578           | 12860          
+KVstore PING                        | 23830           | 23023          
+KVstore SET (Array)                 | 17574           | 17921          
+KVstore RSET (Red-Black)            | 19754           | 19126          
+KVstore HSET (Hash)                 | 20643           | 20361          
+KVstore SSET (SkipList)             | 19293           | 18970          
 =========================================================================
 
 
 # 超时功能测试
 ./test_TTL a b 插入as超时的数据->立即读取，此时数据都存在->等待bs读取数据全部被删掉
-
 如果不传超时时间，默认永不超时；
 底层存储结构执行SET GET EXISTS 遍历时会进行惰性删除，从而保证快照实现超时删除；
-后台超时清理线程不停存储结构，如果发现某个节点被删掉，就追加一条删除命令的日志，并向从端发送一条删除的增量命令；
+===========================================================================
+| 测试场景       |   数据量   | TTL |   QPS  |   相对基准 |    过期验证             
+| 无 TTL        | 1,000,000  |   — | 21,905 |     100%  | 100 万条均存在        
+| 开启 TTL      | 1,000,000  | 30s | 21,618 |    98.69% | 等待 35s 后过期 
+===========================================================================
 
 # 分段锁
 一种数据结构用同一套读写锁，对这个数据结构在一个时间只能进行增删改查的一种操作，增删改加写锁，查加读锁；
@@ -152,93 +155,57 @@ Custom_Mempool |    30924 |   165896 |   151304 |     7896 |    84516 |     8912
 # 全量同步性能测试
 服务端（接收方）：iperf3 -s
 客户端（发送方）：iperf3 -c 192.168.88.130 -t 10
-[TCP] Received 1073745705 bytes in 3.942 seconds, throughput: 259.74 MB/s
-lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.88.130 -t 20
+=================== 第一轮：基准带宽 ===================
+时间: 2026-09-02 07:43:37
+--- 基准网络带宽 (iperf3 20s) ---
 Connecting to host 192.168.88.130, port 5201
-[  5] local 192.168.88.128 port 59646 connected to 192.168.88.130 port 5201
+[  5] local 192.168.88.128 port 42168 connected to 192.168.88.130 port 5201
 [ ID] Interval           Transfer     Bitrate         Retr  Cwnd
-[  5]   0.00-1.00   sec   320 MBytes  2.68 Gbits/sec   10   1.55 MBytes       
-[  5]   1.00-2.00   sec   278 MBytes  2.33 Gbits/sec   15   1.55 MBytes       
-[  5]   2.00-3.00   sec   378 MBytes  3.17 Gbits/sec  136   1.06 MBytes       
-[  5]   3.00-4.00   sec   445 MBytes  3.73 Gbits/sec   78    874 KBytes       
-[  5]   4.00-5.00   sec   422 MBytes  3.54 Gbits/sec  132    769 KBytes       
-[  5]   5.00-6.00   sec   385 MBytes  3.23 Gbits/sec   37   1.18 MBytes       
-[  5]   6.00-7.00   sec   432 MBytes  3.63 Gbits/sec   90    961 KBytes       
-[  5]   7.00-8.00   sec   496 MBytes  4.16 Gbits/sec  109   1.13 MBytes       
-[  5]   8.00-9.00   sec   358 MBytes  3.00 Gbits/sec   35    935 KBytes       
-[  5]   9.00-10.00  sec   365 MBytes  3.06 Gbits/sec   24    996 KBytes       
-[  5]  10.00-11.00  sec   388 MBytes  3.26 Gbits/sec   57   1014 KBytes       
-[  5]  11.00-12.00  sec   426 MBytes  3.57 Gbits/sec   37    751 KBytes       
-[  5]  12.00-13.00  sec   366 MBytes  3.07 Gbits/sec   39    856 KBytes       
-[  5]  13.00-14.00  sec   465 MBytes  3.90 Gbits/sec   73   1.17 MBytes       
-[  5]  14.00-15.00  sec   440 MBytes  3.69 Gbits/sec   96    682 KBytes       
-[  5]  15.00-16.00  sec   405 MBytes  3.40 Gbits/sec   32   1.07 MBytes       
-[  5]  16.00-17.00  sec   418 MBytes  3.50 Gbits/sec   49   1.14 MBytes       
-[  5]  17.00-18.00  sec   341 MBytes  2.86 Gbits/sec    1   1.27 MBytes       
-[  5]  18.00-19.00  sec   425 MBytes  3.56 Gbits/sec   31   1.19 MBytes       
-[  5]  19.00-20.00  sec   391 MBytes  3.28 Gbits/sec   29   1.04 MBytes       
+[  5]   0.00-1.00   sec   658 MBytes  5.51 Gbits/sec   50   1.33 MBytes       
+[  5]   1.00-2.00   sec   664 MBytes  5.58 Gbits/sec   24    918 KBytes       
+[  5]   2.00-3.00   sec   669 MBytes  5.60 Gbits/sec   37   1.05 MBytes       
+[  5]   3.00-4.00   sec   620 MBytes  5.20 Gbits/sec   41    926 KBytes       
+[  5]   4.00-5.00   sec   645 MBytes  5.41 Gbits/sec   22    769 KBytes       
+[  5]   5.00-6.00   sec   626 MBytes  5.25 Gbits/sec   16   1.07 MBytes       
+[  5]   6.00-7.00   sec   655 MBytes  5.49 Gbits/sec    1   1.04 MBytes       
+[  5]   7.00-8.00   sec   649 MBytes  5.44 Gbits/sec   40   1.04 MBytes       
+[  5]   8.00-9.00   sec   658 MBytes  5.51 Gbits/sec   21    987 KBytes       
+[  5]   9.00-10.00  sec   672 MBytes  5.64 Gbits/sec   17   1005 KBytes       
+[  5]  10.00-11.00  sec   654 MBytes  5.49 Gbits/sec   29    690 KBytes       
+[  5]  11.00-12.00  sec   649 MBytes  5.44 Gbits/sec   23    821 KBytes       
+[  5]  12.00-13.00  sec   642 MBytes  5.39 Gbits/sec   49    874 KBytes       
+[  5]  13.00-14.00  sec   626 MBytes  5.25 Gbits/sec   11    891 KBytes       
+[  5]  14.00-15.00  sec   658 MBytes  5.52 Gbits/sec   33    909 KBytes       
+[  5]  15.00-16.00  sec   646 MBytes  5.42 Gbits/sec   28   1.02 MBytes       
+[  5]  16.00-17.00  sec   646 MBytes  5.43 Gbits/sec   18    900 KBytes       
+[  5]  17.00-18.00  sec   636 MBytes  5.34 Gbits/sec    6    900 KBytes       
+[  5]  18.00-19.00  sec   638 MBytes  5.35 Gbits/sec    5    778 KBytes       
+[  5]  19.00-20.00  sec   635 MBytes  5.32 Gbits/sec   30   1.16 MBytes       
 - - - - - - - - - - - - - - - - - - - - - - - - -
 [ ID] Interval           Transfer     Bitrate         Retr
-[  5]   0.00-20.00  sec  7.76 GBytes  3.33 Gbits/sec  1110             sender
-[  5]   0.00-20.03  sec  7.76 GBytes  3.33 Gbits/sec                  receiver
-
+[  5]   0.00-20.00  sec  12.6 GBytes  5.43 Gbits/sec  501             sender
+[  5]   0.00-20.04  sec  12.6 GBytes  5.42 Gbits/sec                  receiver
 iperf Done.
-
-
-[RDMA] Received 1073745705 bytes in 8.668 seconds, throughput: 118.14 MB/s
-lyy@myubuntu:~/course/project/KVstore2/9.1-kvstore$ iperf3 -c 192.168.88.130 -t 20
-Connecting to host 192.168.88.130, port 5201
-[  5] local 192.168.88.128 port 47370 connected to 192.168.88.130 port 5201
-[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
-[  5]   0.00-1.00   sec   409 MBytes  3.43 Gbits/sec   42    918 KBytes       
-[  5]   1.00-2.00   sec   369 MBytes  3.09 Gbits/sec   53    437 KBytes       
-[  5]   2.00-3.00   sec   298 MBytes  2.50 Gbits/sec   50    655 KBytes       
-[  5]   3.00-4.00   sec   202 MBytes  1.70 Gbits/sec   79    821 KBytes       
-[  5]   4.00-5.00   sec   404 MBytes  3.39 Gbits/sec   33    647 KBytes       
-[  5]   5.00-6.00   sec   380 MBytes  3.19 Gbits/sec   28    874 KBytes       
-[  5]   6.00-7.00   sec   382 MBytes  3.20 Gbits/sec   35    918 KBytes       
-[  5]   7.00-8.00   sec   425 MBytes  3.57 Gbits/sec   55   1.14 MBytes       
-[  5]   8.00-9.00   sec   545 MBytes  4.57 Gbits/sec   59    900 KBytes       
-[  5]   9.00-10.00  sec   572 MBytes  4.80 Gbits/sec   34   1.14 MBytes       
-[  5]  10.00-11.00  sec   581 MBytes  4.87 Gbits/sec   46   1.19 MBytes       
-[  5]  11.00-12.00  sec   596 MBytes  5.01 Gbits/sec   35   1.14 MBytes       
-[  5]  12.00-13.00  sec   568 MBytes  4.76 Gbits/sec   19   1.06 MBytes       
-[  5]  13.00-14.00  sec   559 MBytes  4.68 Gbits/sec   98   1.13 MBytes       
-[  5]  14.00-15.00  sec   591 MBytes  4.96 Gbits/sec   42   1.11 MBytes       
-[  5]  15.00-16.00  sec   559 MBytes  4.70 Gbits/sec   49   1.05 MBytes       
-[  5]  16.00-17.00  sec   591 MBytes  4.95 Gbits/sec   34   1.01 MBytes       
-[  5]  17.00-18.00  sec   580 MBytes  4.85 Gbits/sec   72   1.11 MBytes       
-[  5]  18.00-19.00  sec   576 MBytes  4.84 Gbits/sec   15   1.15 MBytes       
-[  5]  19.00-20.00  sec   476 MBytes  4.01 Gbits/sec   44   1.13 MBytes       
-- - - - - - - - - - - - - - - - - - - - - - - - -
-[ ID] Interval           Transfer     Bitrate         Retr
-[  5]   0.00-20.00  sec  9.44 GBytes  4.05 Gbits/sec  922             sender
-[  5]   0.00-20.04  sec  9.44 GBytes  4.04 Gbits/sec                  receiver
-
-iperf Done.
-
+=================== 第二轮：RDMA 全量同步 ===================
+时间: 2026-09-02 07:44:05
+--- 主机 RDMA 全量同步输出 ---
+[RDMA] Sent 1073745705 bytes in 7.277 seconds, throughput: 140.72 MB/s
+--- 从机 AOF 文件大小 ---
+-rw-r--r-- 1 root root 1.1G Sep  2 07:45 /home/c2/project/KVstore8/9.1-kvstore/kvstore.aof
+=================== 第三轮：TCP 全量同步 ===================
+时间: 2026-09-02 07:45:16
+--- 主机 TCP 全量同步输出 ---
+[TCP] Sent 1073745705 bytes in 2.352 seconds, throughput: 435.41 MB/s
+--- 从机 AOF 文件大小 ---
+-rw-r--r-- 1 root root 1.1G Sep  2 07:46 /home/c2/project/KVstore8/9.1-kvstore/kvstore.aof
 
 # 增量同步性能测试
  转发方式	  QPS	    	
-基准    	 2022	 
-eBPF 转发        1816 	 	
-TCP 网络转发	  1598
-
-### 面试题
-1. 为什么会实现kvstore，使用场景在哪里？
-2. reactor, ntyco, io_uring的三种网络模型的性能差异？ 
-3. 多线程的kvstore该如何改进？
-4. 私有协议如何设计会更加安全可靠？
-5. 协议改进以后，对已有的代码有哪些改变？
-6. kv引擎实现了哪些？
-7. 每个kv引擎的使用场景，以及性能差异？
-8. 测试用例如何实现？并且保证代码覆盖率超过90%
-9. 网络并发量如何？qps如何？
-10. 能够跟哪些系统交互使用？
+基准    	 2025	 
+eBPF 转发        1967 	 	
+TCP 网络转发	 1924
 
 
-### 架构设计
-![image](https://disk.0voice.com/p/py)
 
 
 

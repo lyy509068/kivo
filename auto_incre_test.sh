@@ -10,7 +10,7 @@ SLAVE_IP="192.168.88.130"
 CLIENT_IP="192.168.88.129"
 MASTER_PORT=2000
 
-MASTER_PROJ_DIR="/home/lyy/course/project/KVstore/9.1-kvstore"
+MASTER_PROJ_DIR="/home/lyy/course/project/KVstore/kvstore"
 SLAVE_PROJ_DIR="/home/c2/project/KVstore8/9.1-kvstore"
 CLIENT_PROJ_DIR="/home/c1/project"
 

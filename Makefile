@@ -20,7 +20,7 @@ RELAY_TARGET = ebpf_relay
 BPF_KERN_OBJ = sync_filter.bpf.o
 
 TESTCASES = test_fullpersistence1 test_fullpersistence2 test_incrementpersistence1 \
-            test_incrementpersistence2 test_mempool test_mempool_slab test_master test_slave test_TTL \
+            test_incrementpersistence2 test_mempool test_mempool_slab test_master test_slave test_TTL test_ttl\
             test_batchcommand test_batchcommand_verify test_specialchars test_save \
             test_1G test_1G_verify test_transport test_transport_verify \
 
