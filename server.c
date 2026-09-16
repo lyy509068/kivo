@@ -1,24 +1,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
-#include "kvstore.h"   
-#include "resp.h"    
-#include "network.h" 
-#include "repl.h"  
+#include "kvstore.h"
+#include "resp.h"
+#include "network.h"
+#include "repl.h"
 #include "rdma.h"
 #include "config.h"
 #include "expire.h"
 #include "ai_chat.h"
 
-// 全局配置变量
+/* 全局配置变量 */
 int g_enable_persistence = 0;
 int g_enable_snapshot    = 0;
 int g_enable_ttl         = 0;
 int g_enable_mempool     = 0;
 int g_enable_repl_master = 0;
 int g_enable_repl_slave  = 0;
-int g_use_tcp_sync = 0;
-int g_use_rdma_sync =0;
+int g_use_tcp_sync       = 0;
+int g_use_rdma_sync      = 0;
+int g_use_embedding = 0;
 
 #ifndef RDMA_DEV_NAME
 #define RDMA_DEV_NAME "rxe0"
@@ -38,17 +39,16 @@ extern kvs_rbtree_t global_rbtree;
 #endif
 #if ENABLE_HASH
 extern kvs_hash_t global_hash;
-extern kvs_hash_t global_hash1;   // KEEP/MATCH   语义缓存
-extern kvs_hash_t global_hash2;   // SETCTX/GETCTX  上下文
-extern kvs_hash_t global_hash3;   // SETREC/GETREC  全量记录
-extern kvs_hash_t global_hash4;   // SETIDX/GETIDX  关键词索引
+extern kvs_hash_t global_hash1;
+extern kvs_hash_t global_hash2;
+extern kvs_hash_t global_hash3;
+extern kvs_hash_t global_hash4;
 #endif
 #if ENABLE_SKIPLIST
 extern kvs_skip_t global_skip;
 #endif
 
 int init_kvengine(void) {
-
     if (g_enable_mempool) {
         kvs_mempool_init();
     }
@@ -89,7 +89,7 @@ int init_kvengine(void) {
         if (expire_system_init() != 0) return -1;
     }
 
-    if ( g_use_rdma_sync && (g_enable_repl_master || g_enable_repl_slave)) {
+    if (g_use_rdma_sync && (g_enable_repl_master || g_enable_repl_slave)) {
         const char *rdma_dev = RDMA_DEV_NAME;
         if (repl_init(rdma_dev) != 0) return -1;
     }
@@ -137,7 +137,6 @@ void dest_kvengine(void) {
     if (g_enable_mempool) {
         // 销毁内存池
     }
-
 }
 
 int main(int argc, char *argv[]) {
@@ -145,15 +144,16 @@ int main(int argc, char *argv[]) {
     const char *config_file = (argc >= 2) ? argv[1] : "config.conf";
     load_config(config_file, &cfg);
 
-    g_enable_persistence = (cfg.persistence == 1);          
-    g_enable_snapshot    = (cfg.snapshot == 1);             
+    g_enable_persistence = (cfg.persistence == 1);
+    g_enable_snapshot    = (cfg.snapshot == 1);
     g_enable_ttl         = cfg.expire;
     g_enable_mempool     = cfg.mempool;
     g_enable_repl_master = (cfg.replication == 1);
     g_enable_repl_slave  = (cfg.replication == 2);
     g_use_rdma_sync      = (cfg.transport == 1);
     g_use_tcp_sync       = (cfg.transport == 2);
-    
+
+    g_use_embedding = cfg.embedding;
 
     protocol_set_command_handler(kvs_execute_batch);
     init_kvengine();

@@ -4,9 +4,9 @@
 #include <stddef.h>
 
 #define MAX_KEY_LEN         128
-#define MAX_VECTOR_INDEX    1024
+#define MAX_VECTOR_INDEX    10000
 #define MATCH_VECTOR_DIM    512
-#define DEFAULT_MATCH_THRESHOLD 0.70f
+#define DEFAULT_MATCH_THRESHOLD 0.90f
 
 typedef struct {
     char key[MAX_KEY_LEN];

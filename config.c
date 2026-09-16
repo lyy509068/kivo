@@ -5,7 +5,7 @@
 
 static int parse_persistence(const char *val) {
     if (strcmp(val, "ON") == 0)  return 1;
-    return 0;  
+    return 0;
 }
 
 static int parse_onoff(const char *val) {
@@ -21,7 +21,7 @@ static int parse_replication(const char *val) {
 static int parse_transport(const char *val) {
     if (strcmp(val, "RDMA") == 0)  return 1;
     if (strcmp(val, "TCP") == 0)   return 2;
-    return 0;  
+    return 0;
 }
 
 int load_config(const char *filename, server_config_t *cfg) {
@@ -32,6 +32,7 @@ int load_config(const char *filename, server_config_t *cfg) {
     cfg->mempool = 0;
     cfg->replication = 0;
     cfg->transport = 0;
+    cfg->embedding = 1;        // ★ 默认：真调用 embedding
 
     FILE *fp = fopen(filename, "r");
     if (!fp) {
@@ -52,11 +53,13 @@ int load_config(const char *filename, server_config_t *cfg) {
             if (strcmp(key, "mempool") == 0)       cfg->mempool = parse_onoff(val);
             if (strcmp(key, "replication") == 0)   cfg->replication = parse_replication(val);
             if (strcmp(key, "transport") == 0)     cfg->transport = parse_transport(val);
+            if (strcmp(key, "embedding") == 0)     cfg->embedding = parse_onoff(val);   // ★ 新增
         }
     }
     fclose(fp);
 
-    printf("[Config] port=%d persistence=%d snapshot=%d expire=%d mempool=%d replication=%d transport=%d\n",
-           cfg->port, cfg->persistence, cfg->snapshot, cfg->expire, cfg->mempool, cfg->replication, cfg->transport);
+    printf("[Config] port=%d persistence=%d snapshot=%d expire=%d mempool=%d replication=%d transport=%d embedding=%d\n",
+           cfg->port, cfg->persistence, cfg->snapshot, cfg->expire,
+           cfg->mempool, cfg->replication, cfg->transport, cfg->embedding);
     return 0;
 }

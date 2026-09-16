@@ -1,7 +1,7 @@
 CC = gcc
 CLANG = clang
 
-CFLAGS = -Wall -g -O2 -fno-omit-frame-pointer -I ./NtyCo/core/
+CFLAGS = -Wall -g -O2 -fno-omit-frame-pointer -I ./NtyCo/core/ -mavx2 -mfma
 
 LDFLAGS = -L ./NtyCo/ -lntyco -lpthread -luring -ldl -libverbs -lrdmacm -lcjson -lm -lcurl
 
